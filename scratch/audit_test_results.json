@@ -1,0 +1,194 @@
+[
+  {
+    "test": "1. Boss Hit without active battle session",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/use-weapon",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "weapon": "punchChest",
+        "count": 1
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 200,
+      "body": "{\"success\":true,\"bossDead\":true,\"damage\":0,\"currentHp\":0,\"isCritical\":false,\"personalDamage\":0,\"rublesByDamage\":null,\"zshAppliedHits\":0,\"zshConsumed\":false,\"zshReward\":null,\"combo\":null,\"comboReward\":null,\"newAchievements\":[],\"activeBuffsByCategory\":null,\"buffCooldowns\":null,\"weaponStatsEffective\":null,\"achievementsCount\":0,\"achievementsPoints\":0,\"stashCoolness\":0,\"talentStatus\":null}"
+    }
+  },
+  {
+    "test": "2. Boss Hit with spoofed targetUserId (non-friend 9000000000309813)",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/use-weapon",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "weapon": "punchChest",
+        "count": 1,
+        "targetUserId": 9000000000309813,
+        "userId": 9000000000309813
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 200,
+      "body": "{\"success\":true,\"bossDead\":true,\"damage\":0,\"currentHp\":0,\"isCritical\":false,\"personalDamage\":0,\"rublesByDamage\":null,\"zshAppliedHits\":0,\"zshConsumed\":false,\"zshReward\":null,\"combo\":null,\"comboReward\":null,\"newAchievements\":[],\"activeBuffsByCategory\":null,\"buffCooldowns\":null,\"weaponStatsEffective\":null,\"achievementsCount\":0,\"achievementsPoints\":0,\"stashCoolness\":0,\"talentStatus\":null}"
+    }
+  },
+  {
+    "test": "3. Boss Friend Damage with spoofed targetUserId query param",
+    "request": {
+      "method": "GET",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/friend-damage",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": null,
+      "params": {
+        "targetUserId": 9000000000309813,
+        "userId": 9000000000309813
+      }
+    },
+    "response": {
+      "status_code": 200,
+      "body": "{\"success\":true,\"sessionId\":null,\"items\":[],\"isOver\":true}"
+    }
+  },
+  {
+    "test": "4. Boss Hit with invalid Authorization token",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/use-weapon",
+      "headers": {
+        "Authorization": "Bearer invalid_token..."
+      },
+      "json": {
+        "weapon": "punchChest",
+        "count": 1
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 401,
+      "body": "🛑 Access denied: Unauthorized"
+    }
+  },
+  {
+    "test": "5. Boss Hit without Authorization header",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/use-weapon",
+      "headers": {
+        "Authorization": "..."
+      },
+      "json": {
+        "weapon": "punchChest",
+        "count": 1
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 401,
+      "body": "🛑 Access denied: Unauthorized"
+    }
+  },
+  {
+    "test": "6. Start Attack with spoofed targetUserId",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/start-attack",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "bossId": 1,
+        "mode": "pacansky",
+        "targetUserId": 9000000000309813,
+        "friendUserId": 9000000000309813
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 400,
+      "body": "{\"success\":false,\"code\":\"PENDING_REWARD\",\"message\":\"Reward not claimed\"}"
+    }
+  },
+  {
+    "test": "7. Claim reward with fake/foreign claimId",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/boss/claim",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "claimId": "fake_claim_id_0000000000000000"
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 200,
+      "body": "{\"success\":false,\"status\":\"error\",\"message\":\"Reward not found\"}"
+    }
+  },
+  {
+    "test": "8. VPI spend damage with spoofed targetUserId",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/vpi/spend-damage",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "bossId": 39,
+        "amount": 100,
+        "targetUserId": 9000000000309813
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 400,
+      "body": "{\"error\":\"no_active\"}"
+    }
+  },
+  {
+    "test": "9. Dungeon Battle Hit with foreign/fake battleId",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/dungeons/battle/hit",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": {
+        "battleId": "fake_battle_id_9999",
+        "weapon": "punchChest",
+        "count": 1
+      },
+      "params": null
+    },
+    "response": {
+      "status_code": 400,
+      "body": "{\"success\":false,\"error\":\"bad_request\"}"
+    }
+  },
+  {
+    "test": "10. Friendship accept-request without incoming request",
+    "request": {
+      "method": "POST",
+      "url": "https://oldprison-prod.luckygem.online/api/friendship/accept-request?fromUserId=9000000000309813",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIU..."
+      },
+      "json": null,
+      "params": null
+    },
+    "response": {
+      "status_code": 400,
+      "body": "{\"success\":false,\"message\":\"Заявка от этого игрока не найдена или уже была обработана.\"}"
+    }
+  }
+]

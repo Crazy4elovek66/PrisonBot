@@ -1,0 +1,6204 @@
+[
+  {
+    "route": "/api/admin/announcements",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1qqzc2eeh_3g8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/api-usage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/app-settings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 4,
+    "files": [
+      "36d4vpt6_1uk4.js",
+      "3b9rdk0xcf1ur.js",
+      "3tnitfwod1zc5.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/audit",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0821nxf9a48ne.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/banners",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "13xd8xqrilosf.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/blacklist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3s5frxcj78osq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/boss-presets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0yhtw15fwkbec.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/bot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3ilo00ejshgka.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/brigades/overview",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1rv_4os-l_15e.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/broadcasts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "22u4j1f8btchg.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/client-errors",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2kw7qq7r2zbkv.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/combo-accounts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1ia96dse22tee.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/combo-copies",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/combo-donations",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "123bxt4o5j7kq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/combo-leaderboard",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/debug-logs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0kx7ma-29vp98.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/debug-logs/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/donations",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/fae/enter",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3ik26zh-99iy8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/fae/rental-accounts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3ik26zh-99iy8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/fae/rental-requests",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3ik26zh-99iy8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/gift-exchange",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/giveaways",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "36d4vpt6_1uk4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/giveaways/check-bot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "36d4vpt6_1uk4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/impersonate",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "113x69l86les-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/luckygem/auto-register",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1d7c7jks38kyv.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/news-ads",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/news-posts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1xxxmlqzpjvw0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/pending-counts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 6,
+    "files": [
+      "0mjc-0wl-fjxj.js",
+      "194i8aod-zsc1.js",
+      "1dpb7u10n8v2n.js",
+      "2_siesx-pe_ou.js",
+      "37_c7jf_1g1cf.js"
+    ]
+  },
+  {
+    "route": "/api/admin/pending-counts/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 6,
+    "files": [
+      "0mjc-0wl-fjxj.js",
+      "194i8aod-zsc1.js",
+      "1dpb7u10n8v2n.js",
+      "2_siesx-pe_ou.js",
+      "37_c7jf_1g1cf.js"
+    ]
+  },
+  {
+    "route": "/api/admin/promo-codes",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3l40og-ojcxmo.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/promo-codes/brigade-pack",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3l40og-ojcxmo.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/promo-codes/brigades",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0szlpi7c97g5r.js",
+      "3l40og-ojcxmo.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/proxies",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1-4kpoep8rb29.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/proxies/import",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1-4kpoep8rb29.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/proxy-economics",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "340fj63c3vpj3.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/proxy-health",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1-4kpoep8rb29.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/proxy-provider",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "340fj63c3vpj3.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/raid-managers",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0szlpi7c97g5r.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/raid-managers/members",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/raids",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0szlpi7c97g5r.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/refund",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "35ax5t_isy43k.js",
+      "36d4vpt6_1uk4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 6,
+    "files": [
+      "0mjc-0wl-fjxj.js",
+      "113x69l86les-.js",
+      "1dpb7u10n8v2n.js",
+      "2_siesx-pe_ou.js",
+      "37_c7jf_1g1cf.js"
+    ]
+  },
+  {
+    "route": "/api/admin/subscriptions",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/subscriptions-bulk-bonus",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "35ax5t_isy43k.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/talent-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2d0-x2z56pjc8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/telegram-client",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1a0t4cf6wss-6.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/users",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/wheel-blocks",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1jwy3dgbeg9ek.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/whoami",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0mjc-0wl-fjxj.js",
+      "1dpb7u10n8v2n.js",
+      "2_siesx-pe_ou.js",
+      "37_c7jf_1g1cf.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/worker-logs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/workers/config",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3b9rdk0xcf1ur.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/workers/control",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3b9rdk0xcf1ur.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/workers/reset-user",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "113x69l86les-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/admin/workers/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3b9rdk0xcf1ur.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/announcements",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3l3f0mkm66t1z.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/bag-tattoo-stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/battle-train/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/baul-farm",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1wnz9s00gldf8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/damage-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/deferred-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0fl4wey_7fjtb.js",
+      "0_kto_scyk3gh.js",
+      "1byu6xllnqky0.js",
+      "1wnz9s00gldf8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/preset-catalog",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1wnz9s00gldf8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/preset-share",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1wnz9s00gldf8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/presets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0zjm91me4ecop.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/queue",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/boss/scheduled-presets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/apply",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/battle",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/battle-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/consent",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/dashboard",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/invite",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/journal",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/live",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/managers",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/member",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/presets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/rollback",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/brigade-control/shodnyak",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/dungeons/availability",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/dungeons/schedule",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/accounts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/attack",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/config",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/grant",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/invite",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/invite-all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/kick-all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/member-ids",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/rent-free",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/rent-invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/rental",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/fae/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/lets-cook-fae/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/otrabotka/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/player/resolve-username",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/player/talent-top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/player/telegram-info",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/player/telegram-mention",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/player/weekly-rank",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/prison/queue",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/raid-prompts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2p-gruifay5-q.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/shodnyak/auto",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/block",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/jackpot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/reward-logs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/spin-state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/unblock-free",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/unblock-invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/app/wheel/unblock-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "0bk3g_c32xbpz.js"
+    ]
+  },
+  {
+    "route": "/api/auth/game-email/send",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/game-email/verify",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/game-login",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/login",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/refresh-game-token",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/telegram-login",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/token-init",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/auth/web-init",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/banners",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/blacklist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/blacklist/check",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1rv_4os-l_15e.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-blacklist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-blacklist/auto-remove",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-blacklist/bulk",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-blacklist/force",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-whitelist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "3rpoos3xi22w4.js",
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-whitelist/bulk",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade-whitelist/check",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/damage-leaderboard",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/fae-members",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0bw70w693ie56.js",
+      "1foy673dixnww.js",
+      "2krt5gfl18cax.js",
+      "3iypkv3ppucxd.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/guild-members",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/join-requests/auto-filter",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/raid-manager",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/brigade/search",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/client-error",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "23_5bernwt1pf.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/client-metrics",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/active-sessions",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/admin-delete",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/admin-save",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/auto-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/coop-events",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/copy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/daily",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/donate/invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "2skhye16t4x2y.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/donate/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "2skhye16t4x2y.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/donate/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/donate/summary",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "2skhye16t4x2y.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/guess-coop-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/guess-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/guessed",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/guessing-session",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/leaderboard",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/prize/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0-94ha6pgddgq.js",
+      "123bxt4o5j7kq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/reset-status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/combo/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "1ohk_du8t8ozu.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/donate/invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/donate/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/online-attack-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/vip-invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/vip-status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/vip-worker-control",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/vip-worker-status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/doorBreaker/vip-worker-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/fae/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/fae/rent-process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/friendship/friend-load-job",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/friendship/friend-load-results",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/friendship/friend-load-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/friendship/weekly-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "0bk3g_c32xbpz.js"
+    ]
+  },
+  {
+    "route": "/api/game/achievement/load",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/action",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/config",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/open-chests-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/presents",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/rating",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/battle-train/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/baul/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/baul/stat",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/beard/shave",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/beard/update",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss-buffs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss-buffs/activate",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/arrivals",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/arrivals/39/contribute",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "351r1szvf9qht.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/bootstrap",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 4,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/buy-keys",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/categories",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/check-session",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/friend-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/restore-free-hit",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/rewards",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/start-attack",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/surrender",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/use-weapon",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/use-weapon-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2nhwoaz3lu1a4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/weapon/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/boss/weapons",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 4,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/business/all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/business/collect",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/camera/friends",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2u-42xez2tfos.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/camera/friends/remove",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2u-42xez2tfos.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/camera/friends/set",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2u-42xez2tfos.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/camera/select",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/card/finish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/card/play-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/card/reroll",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/card/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/card/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/clothing/apply",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/clothing/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/clothing/by-zone",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/clothing/inventory",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/full",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/player/give",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/player/give-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/player/wishlist/add",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/player/wishlist/remove",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/vparit",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/vparit-job",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/vparit-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/collection/vparit-stream-job",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/daily/toilet-paper",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/bets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/chest-open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/chest-open-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/finish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/leave",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/play-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/risk",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/roll",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dice/tutorial-finish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/donate/invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/change",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/hit",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/inventory",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/leave",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/revenge/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/search",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/weapons/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/attack/weapons/buy/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/chests/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/chests/open-all-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/def",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/def/items/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/def/layout",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/def/traps/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/machines/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/machines/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/machines/exchange",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/machines/skip",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/machines/upgrade",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/news",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/news/seen",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/tattoos/set",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/doorBreaker/player/top/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/activity",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/battle/finish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/battle/hit",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/battle/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/flags/set",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/log",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/run/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/run/map",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/run/ratings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/run/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/selector",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/spell/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/dungeons/spell/use",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/energy/use-chefir",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/energy/use-soap",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/active",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/birthday-cake/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/birthday-cake/claim-total",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/birthday-cake/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/boss-chests/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/boss-chests/skip",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/boss-chests/start-unlock",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/boss-chests/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/limited-offer/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/limited-offer/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/events/trotil/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friend/top100",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/accept-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 7,
+    "files": [
+      "0bw70w693ie56.js",
+      "0n84enmj5kw90.js",
+      "1foy673dixnww.js",
+      "2krt5gfl18cax.js",
+      "3iypkv3ppucxd.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/batch-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0bw70w693ie56.js",
+      "1foy673dixnww.js",
+      "2krt5gfl18cax.js",
+      "3iypkv3ppucxd.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/decline-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/fight-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0bw70w693ie56.js",
+      "1foy673dixnww.js",
+      "2krt5gfl18cax.js",
+      "3iypkv3ppucxd.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/profiles",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/remove-friend",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/requests",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/send-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 6,
+    "files": [
+      "0bw70w693ie56.js",
+      "1foy673dixnww.js",
+      "2krt5gfl18cax.js",
+      "3iypkv3ppucxd.js",
+      "3u-g3c3-h26yk.js"
+    ]
+  },
+  {
+    "route": "/api/game/friendship/weekly-top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/buy-and-send-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/claimed-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/find-recipient",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/inbox",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "351r1szvf9qht.js",
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/send",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/gifts/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "351r1szvf9qht.js",
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/create",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/daily-message",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/description",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/emblem",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/emblem/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/emblem/inventory",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/emblems",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/invite",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/invites/accept",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/invites/decline",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/join-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/join-requests",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/join-requests/accept",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/join-requests/decline",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/journal",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/leave",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/leave-leader",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/member/kick",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/members",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/my-invites",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/ranks/assign",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/ranks/privileges",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/recruitment",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/recruitment/announce",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/recruitment/join",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/recruitment/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/rename",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0_kto_scyk3gh.js",
+      "351r1szvf9qht.js",
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/guild/view",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/huckster-offer/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/huckster-offer/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/interaction/perform",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/kolsik/roll",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/kolsik/roll-paper",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/kolsik/roll-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2u-42xez2tfos.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/accept-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/buy-energy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/buy-shield",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/candidates",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/change-role",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/change-target",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/claim-quick-reward",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/claim-reward",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/complete-case",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/do-action",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/notifications",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/open-locker",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/requests",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/reveal-seen",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/send-request",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/sent",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/letsCook/watcher-action",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/luska/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/luska/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/masters/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/masters/work",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/menyala/open-bag",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/menyala/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/mobile/collect",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/mobile/escape-progress",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/mobile/progress",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/monthly/buy-day",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/monthly/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/monthly/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/opt-wholesale/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/opt-wholesale/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/otrabotka/action",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/otrabotka/config",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/otrabotka/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/otrabotka/top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/player/avatar",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/player/init",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/player/set-nickname",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/player/set-status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/player/summary",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/collect/all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/collect/selected",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/friends",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/send",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/podogrev/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/box/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/box/open-all-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/daily/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/daily/history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/daily/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/draw",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/finish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/play-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/poker/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/prison/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/prison/rewards-map",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/prison/work",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/raid/choose",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/raid/offer",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/board",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/buffs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/buffs/activate",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/cells/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/guild-rating",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/place-reward/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/shodnyak/top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/bonus/open-box",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/buy-grass",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/info",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/open-chest",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/open-chest-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/set-bet",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/spin",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/slots-game/spin-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/smuggling/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/smuggling/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/smuggling/exchange",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/smuggling/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2icl9j-qzs-h0.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/baryga/spin",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/buy-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/craft",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/inventory",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/slots",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stashgear/spin-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stew/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stew/open-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stew/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stew/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/stream/stop",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 30,
+    "files": [
+      "00y376kr70csk.js",
+      "0821nxf9a48ne.js",
+      "0mmxibk-hlshs.js",
+      "0q18b1r5l2ddi.js",
+      "0ru3-5j-jzwfa.js"
+    ]
+  },
+  {
+    "route": "/api/game/talent/auto-upgrade-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/talent/reset",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "3bpzgsgig4vb5.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/talent/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 4,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0_kto_scyk3gh.js",
+      "3bpzgsgig4vb5.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/talent/upgrade",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0_kto_scyk3gh.js",
+      "3bpzgsgig4vb5.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo-clothing-cache",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 5,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "1d4v6g8qti6iu.js",
+      "1mpp9dce_l5tx.js",
+      "1wnz9s00gldf8.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo-clothing-cache/refresh/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo-clothing-cache/utils",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo/apply",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/tattoo/by-zone",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vbox/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vbox/open-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vpi/buy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vpi/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0n84enmj5kw90.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vpi/damage-left",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 4,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vpi/spend-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0n84enmj5kw90.js",
+      "0_kto_scyk3gh.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/vpi/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/weekly-top/achievement-rank",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/weekly-top/achievement-top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/weekly-top/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "351r1szvf9qht.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/weekly-top/claim-info",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/weekly-top/damage-rank",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/buy-tickets",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/open-case",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/open-case-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/prize-choice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/risk-ui",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/spin",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/spin-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/wheel/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/claim",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/exchange-ore",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/experimental-run-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/skip",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/start",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/well/bag",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/well/open",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/well/open-all-stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/game/zaruba/well/state",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/gift-exchange/offer",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/gift-exchange/offers",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/gift-exchange/trade",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/gift-exchange/trades",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways/active-count",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways/check-condition",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways/checkin",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways/join",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/giveaways/my-prizes",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/guild-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/links",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/raids",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "2p-gruifay5-q.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/refresh",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/snapshots",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/guild-stats/sync-members",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "1o2odim7a6ttk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/health",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/img-proxy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/broadcast-daily-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/broadcast-damage-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/broadcast-monthly-badge",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/broadcast-notification",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/broadcast-settings-update",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/dbr-proxies",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/internal/ping/history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lets-cook-exchange/list",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lets-cook-exchange/publish",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lets-cook-exchange/sent",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lottery/admin-stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "36d4vpt6_1uk4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lottery/auto-draw",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lottery/buy-ticket",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lottery/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/lottery/settings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "36d4vpt6_1uk4.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/metrics",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/metrics/client",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/miniapp/init",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0o5uo4k-guwtq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news-ads",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "39aopsuqaj4w-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news-ads/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news/mark-read",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "39aopsuqaj4w-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news/parse",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/news/views",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "39aopsuqaj4w-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/offer",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/personal-blacklist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/personal-blacklist/bulk",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/profile/share-image",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/public/app-settings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/raids",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "39aopsuqaj4w-.js",
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/raids/mark-read",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "39aopsuqaj4w-.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/stats/online",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/stats/online-sse",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/check-promo",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/check-user",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/invoice",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/purchase-status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/subscription/set-referrer",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "2cll5-wi01uke.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/system/status",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/telegram/webhook",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/achievement-snapshot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3x0x8ms3-krx5.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/adopt-game-token",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/baryga-purchase-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/baul-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/boss-chests-stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/boss-chests-worker-logs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/combo-account",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/combo-snapshot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0bk3g_c32xbpz.js",
+      "3j44qqt8acear.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/daily-damage",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0o5uo4k-guwtq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/daily-snapshot",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "3j44qqt8acear.js",
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/event-rewards",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/friend-action-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/gift-send-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/lets-cook-worker-logs",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/linked-accounts",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/logout",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0o5uo4k-guwtq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/notifications",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 3,
+    "files": [
+      "0o5uo4k-guwtq.js",
+      "0zjm91me4ecop.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/notifications/poll",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/notifications/read",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0zjm91me4ecop.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/notifications/read-all",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0zjm91me4ecop.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/notifications/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/proxy",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/proxy-test",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/push/subscribe",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3_uqbz4gqx812.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/push/test",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3_uqbz4gqx812.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/push/unsubscribe",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3_uqbz4gqx812.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/refresh-telegram",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/reset-settings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/settings",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "0o5uo4k-guwtq.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/spend-history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/stream",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/switch-account",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/telegram-link",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/user/terminate-other-sessions",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/bot-top",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/damage-snapshots",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/filter-preview",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/force-update",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/history",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/search",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/weekly-top/stats",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/wheel/unblock-process",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/whitelist",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 2,
+    "files": [
+      "3u-g3c3-h26yk.js",
+      "_buildManifest.js"
+    ]
+  },
+  {
+    "route": "/api/whitelist/bulk",
+    "methods": [
+      "GET"
+    ],
+    "occurrences": 1,
+    "files": [
+      "_buildManifest.js"
+    ]
+  }
+]

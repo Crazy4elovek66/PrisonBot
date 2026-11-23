@@ -1,0 +1,135 @@
+{
+  "title": "ProPrisonBot — бот для игры «Тюряга»",
+  "url": "https://pro-prison-bot.003220.xyz/?v=2&tab=slots#<REDACTED_TG_DATA>&tgWebAppVersion=9.6&tgWebAppPlatform=web&tgWebAppThemeParams=%7B%22bg_color%22%3A%22%23212121%22%2C%22button_color%22%3A%22%238774e1%22%2C%22button_text_color%22%3A%22%23ffffff%22%2C%22hint_color%22%3A%22%23aaaaaa%22%2C%22link_color%22%3A%22%238774e1%22%2C%22secondary_bg_color%22%3A%22%23181818%22%2C%22text_color%22%3A%22%23ffffff%22%2C%22header_bg_color%22%3A%22%23212121%22%2C%22accent_text_color%22%3A%22%238774e1%22%2C%22section_bg_color%22%3A%22%23212121%22%2C%22section_header_text_color%22%3A%22%238774e1%22%2C%22subtitle_text_color%22%3A%22%23aaaaaa%22%2C%22destructive_text_color%22%3A%22%23ff595a%22%7D",
+  "headings": [
+    "Меню",
+    "7",
+    "1",
+    "5",
+    "Уровень 1",
+    "Прокрутка"
+  ],
+  "buttonsCount": 45,
+  "sampleButtons": [
+    {
+      "text": "873",
+      "disabled": false
+    },
+    {
+      "text": "53 мс",
+      "disabled": false
+    },
+    {
+      "text": "Новости и Рейды7",
+      "disabled": false
+    },
+    {
+      "text": "Главная",
+      "disabled": false
+    },
+    {
+      "text": "Комбо",
+      "disabled": false
+    },
+    {
+      "text": "Актуальное комбо",
+      "disabled": false
+    },
+    {
+      "text": "Автокомбо",
+      "disabled": false
+    },
+    {
+      "text": "Рейтинг",
+      "disabled": false
+    },
+    {
+      "text": "Боссы",
+      "disabled": false
+    },
+    {
+      "text": "Ходки",
+      "disabled": false
+    },
+    {
+      "text": "Зарубы",
+      "disabled": false
+    },
+    {
+      "text": "Делюги1",
+      "disabled": false
+    },
+    {
+      "text": "События",
+      "disabled": false
+    },
+    {
+      "text": "Меняла",
+      "disabled": false
+    },
+    {
+      "text": "Настройка событий",
+      "disabled": false
+    },
+    {
+      "text": "Барыга",
+      "disabled": false
+    },
+    {
+      "text": "Друзья5",
+      "disabled": false
+    },
+    {
+      "text": "Бригада",
+      "disabled": false
+    },
+    {
+      "text": "Состав",
+      "disabled": false
+    },
+    {
+      "text": "Лагеря",
+      "disabled": false
+    },
+    {
+      "text": "Сходняк",
+      "disabled": false
+    },
+    {
+      "text": "Игры",
+      "disabled": false
+    },
+    {
+      "text": "Катала",
+      "disabled": false
+    },
+    {
+      "text": "Покер",
+      "disabled": false
+    },
+    {
+      "text": "Колесо фортуны",
+      "disabled": false
+    }
+  ],
+  "inputs": [
+    {
+      "type": "text",
+      "name": "",
+      "value": "5",
+      "checked": false
+    },
+    {
+      "type": "text",
+      "name": "",
+      "value": "",
+      "checked": false
+    },
+    {
+      "type": "text",
+      "name": "",
+      "value": "1 000",
+      "checked": false
+    }
+  ]
+}

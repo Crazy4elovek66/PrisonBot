@@ -1,0 +1,314 @@
+[
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/giveaways/active-count",
+    "status": 200,
+    "snapshotFile": "_api_giveaways_active-count.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/brigade/fae-members",
+    "status": 404,
+    "snapshotFile": "__next__api_brigade_fae-members.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/donate/invoice",
+    "status": 404,
+    "snapshotFile": "__next__api_donate_invoice.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/doorBreaker/player/chests/open",
+    "status": 404,
+    "snapshotFile": "__next__api_game_doorBreaker_player_chests_open.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/boss/claim",
+    "status": 404,
+    "snapshotFile": "__next__api_game_boss_claim.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/client-metrics",
+    "status": 404,
+    "snapshotFile": "__next__api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/admin/subscriptions",
+    "status": 404,
+    "snapshotFile": "__next__api_admin_subscriptions.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/prison/rewards-map",
+    "status": 404,
+    "snapshotFile": "__next__api_game_prison_rewards-map.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/admin/workers/config",
+    "status": 404,
+    "snapshotFile": "__next__api_admin_workers_config.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/doorBreaker/vip-worker-status",
+    "status": 404,
+    "snapshotFile": "__next__api_doorBreaker_vip-worker-status.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/podogrev/friends",
+    "status": 404,
+    "snapshotFile": "__next__api_game_podogrev_friends.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/shodnyak/cells/buy",
+    "status": 404,
+    "snapshotFile": "__next__api_game_shodnyak_cells_buy.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/game/monthly/claim",
+    "status": 404,
+    "snapshotFile": "__next__api_game_monthly_claim.json"
+  },
+  {
+    "method": "GET",
+    "url": "/_next//api/news-ads/[id]",
+    "status": 404,
+    "snapshotFile": "__next__api_news-ads_[id].json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/giveaways/active-count",
+    "status": 200,
+    "snapshotFile": "_api_giveaways_active-count.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/banners",
+    "status": 200,
+    "snapshotFile": "_api_banners.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/subscription/set-referrer",
+    "status": 200,
+    "snapshotFile": "_api_subscription_set-referrer.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/subscription/history",
+    "status": 200,
+    "snapshotFile": "_api_subscription_history.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/giveaways/active-count",
+    "status": 200,
+    "snapshotFile": "_api_giveaways_active-count.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/banners",
+    "status": 200,
+    "snapshotFile": "_api_banners.json"
+  },
+  {
+    "method": "PATCH",
+    "url": "/api/user/settings",
+    "status": 200,
+    "snapshotFile": "_api_user_settings.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "PATCH",
+    "url": "/api/user/settings",
+    "status": 200,
+    "snapshotFile": "_api_user_settings.json"
+  },
+  {
+    "method": "PATCH",
+    "url": "/api/user/settings",
+    "status": 200,
+    "snapshotFile": "_api_user_settings.json"
+  },
+  {
+    "method": "PATCH",
+    "url": "/api/user/settings",
+    "status": 200,
+    "snapshotFile": "_api_user_settings.json"
+  },
+  {
+    "method": "POST",
+    "url": "/api/client-metrics",
+    "status": 204,
+    "snapshotFile": "_api_client-metrics.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/giveaways/my-prizes",
+    "status": 200,
+    "snapshotFile": "_api_giveaways_my-prizes.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/giveaways",
+    "status": 200,
+    "snapshotFile": "_api_giveaways.json"
+  },
+  {
+    "method": "GET",
+    "url": "/api/subscription/set-referrer",
+    "status": 200,
+    "snapshotFile": "_api_subscription_set-referrer.json"
+  }
+]

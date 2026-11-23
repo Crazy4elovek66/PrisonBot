@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,751818,(t,o,n)=>{let u="/robots.txt";(window.__NEXT_P=window.__NEXT_P||[]).push([u,()=>t.r(962692)]),o.hot&&o.hot.dispose(function(){window.__NEXT_P.push([u])})},962692,t=>{"use strict";t.s(["__N_SSP",0,!0,"default",0,function(){return null}])}]);

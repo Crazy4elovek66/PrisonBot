@@ -1,0 +1,14 @@
+httpx>=0.28.1
+telethon>=1.36.0
+sqlalchemy>=2.0.0
+aiosqlite>=0.20.0
+apscheduler>=3.10.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+jsbeautifier>=2.0.0
+aiogram>=3.13.0
+fastapi>=0.115.0
+uvicorn>=0.32.0

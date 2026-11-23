@@ -1,0 +1,31 @@
+<!DOCTYPE html><html lang="ru"><head><meta charSet="utf-8" data-next-head=""/><meta name="viewport" content="width=device-width" data-next-head=""/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/><script src="https://telegram.org/js/telegram-web-app.js" async=""></script><title data-next-head="">404: This page could not be found</title><link rel="preconnect" href="https://telegram.org" crossorigin="anonymous"/><link rel="dns-prefetch" href="https://telegram.org"/><link rel="icon" href="/favicon.ico"/><link rel="manifest" href="/manifest.webmanifest"/><link rel="apple-touch-icon" href="/icon-192.png"/><meta name="theme-color" content="#0a0a0a"/><meta name="apple-mobile-web-app-capable" content="yes"/><meta name="mobile-web-app-capable" content="yes"/><meta name="yandex-verification" content="6f67ffc342d2dfd5"/><meta name="yandex-verification" content="3804de4770bbf2c9"/><meta name="google-site-verification" content="-7zPXwTgBXmAAUc57B1yc4Mr85vzuMs3FTA-2P7IJf4"/><meta name="google-site-verification" content="DargLIJtSgytjavrFH_ZjDCkHb1jLoJU_giPp5Ko8GE"/><link rel="preload" href="/_next/static/chunks/2xz4eq8hsmei2.css" as="style"/><script>
+          window.addEventListener('error', function (event) {
+            var link = event.target;
+            if (link instanceof HTMLLinkElement && link.rel === 'stylesheet') {
+              link.dataset.cssLoadError = '1';
+            }
+          }, true);
+        </script><script>(function () {
+  if (!CSS.supports('color', 'color-mix(in srgb, black, white)') ||
+      !CSS.supports('translate', '1px') || !CSS.supports('height', '100dvh')) {
+    var select = function () {
+      document.head.querySelectorAll('link[rel="stylesheet"][data-n-g]').forEach(function (link) {
+        var url = new URL(link.href);
+        if (url.origin !== location.origin || !url.pathname.startsWith('/_next/static/') ||
+            !url.pathname.endsWith('.css') || url.pathname.endsWith('.legacy.css')) return;
+        url.pathname = url.pathname.replace(/\.css$/, '.legacy.css');
+        url.searchParams.set('css-version', "88c33297");
+        var legacy = link.cloneNode();
+        legacy.href = url.href;
+        link.replaceWith(legacy);
+      });
+    };
+    var observer = new MutationObserver(select);
+    observer.observe(document.head, { childList: true });
+    document.addEventListener('DOMContentLoaded', function () {
+      select();
+      observer.disconnect();
+    }, { once: true });
+  }
+})();</script><link rel="stylesheet" href="/_next/static/chunks/2xz4eq8hsmei2.css" data-n-g=""/><noscript data-n-css=""></noscript><script>(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push({"otherChunks":["static/chunks/0mc00fh534hl3.js","static/chunks/0lnq9vey819_x.js","static/chunks/0n84enmj5kw90.js","static/chunks/23_5bernwt1pf.js","static/chunks/0zjm91me4ecop.js","static/chunks/2ixs54hrk8vdv.js","static/chunks/0l1sgumx6-0l0.js","static/chunks/22gwjvnxboidu.js","static/chunks/0o5uo4k-guwtq.js","static/chunks/0bk3g_c32xbpz.js","static/chunks/2xz4eq8hsmei2.css"],"runtimeModuleIds":[182794,294757]});
+(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push({"otherChunks":["static/chunks/3x6h8b5j-t_l4.js"],"runtimeModuleIds":[182794,759946]});</script><script src="/_next/static/chunks/0mc00fh534hl3.js" defer=""></script><script src="/_next/static/chunks/0lnq9vey819_x.js" defer=""></script><script src="/_next/static/chunks/0n84enmj5kw90.js" defer=""></script><script src="/_next/static/chunks/23_5bernwt1pf.js" defer=""></script><script src="/_next/static/chunks/0zjm91me4ecop.js" defer=""></script><script src="/_next/static/chunks/2ixs54hrk8vdv.js" defer=""></script><script src="/_next/static/chunks/0l1sgumx6-0l0.js" defer=""></script><script src="/_next/static/chunks/22gwjvnxboidu.js" defer=""></script><script src="/_next/static/chunks/0o5uo4k-guwtq.js" defer=""></script><script src="/_next/static/chunks/0bk3g_c32xbpz.js" defer=""></script><script src="/_next/static/chunks/turbopack-1qu6cwpy8nhc1.js" defer=""></script><script src="/_next/static/chunks/3x6h8b5j-t_l4.js" defer=""></script><script src="/_next/static/FmH16ITs5FViI3gHxEMSK/_buildManifest.js" defer=""></script><script src="/_next/static/FmH16ITs5FViI3gHxEMSK/_ssgManifest.js" defer=""></script><script src="/_next/static/FmH16ITs5FViI3gHxEMSK/_clientMiddlewareManifest.js" defer=""></script></head><body style="margin:0;padding:0;touch-action:pan-y"><div id="__next"><div style="font-family:system-ui,&quot;Segoe UI&quot;,Roboto,Helvetica,Arial,sans-serif,&quot;Apple Color Emoji&quot;,&quot;Segoe UI Emoji&quot;;height:100vh;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center"><div style="line-height:48px"><style>body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}</style><h1 class="next-error-h1" style="display:inline-block;margin:0 20px 0 0;padding-right:23px;font-size:24px;font-weight:500;vertical-align:top">404</h1><div style="display:inline-block"><h2 style="font-size:14px;font-weight:400;line-height:28px">This page could not be found<!-- -->.</h2></div></div></div></div><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"statusCode":404}},"page":"/_error","query":{},"buildId":"FmH16ITs5FViI3gHxEMSK","nextExport":true,"isFallback":false,"gip":true,"scriptLoader":[]}</script></body></html>

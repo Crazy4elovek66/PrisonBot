@@ -1,0 +1,174 @@
+{
+  "title": "ProPrisonBot — бот для игры «Тюряга»",
+  "url": "https://pro-prison-bot.003220.xyz/?v=2&tab=monthly#<REDACTED_TG_DATA>&tgWebAppVersion=9.6&tgWebAppPlatform=web&tgWebAppThemeParams=%7B%22bg_color%22%3A%22%23212121%22%2C%22button_color%22%3A%22%238774e1%22%2C%22button_text_color%22%3A%22%23ffffff%22%2C%22hint_color%22%3A%22%23aaaaaa%22%2C%22link_color%22%3A%22%238774e1%22%2C%22secondary_bg_color%22%3A%22%23181818%22%2C%22text_color%22%3A%22%23ffffff%22%2C%22header_bg_color%22%3A%22%23212121%22%2C%22accent_text_color%22%3A%22%238774e1%22%2C%22section_bg_color%22%3A%22%23212121%22%2C%22section_header_text_color%22%3A%22%238774e1%22%2C%22subtitle_text_color%22%3A%22%23aaaaaa%22%2C%22destructive_text_color%22%3A%22%23ff595a%22%7D",
+  "headings": [
+    "Меню",
+    "7",
+    "1",
+    "5",
+    "День 22",
+    "Выполнено",
+    "7 / 7 (100%)",
+    "Награды",
+    "5/30",
+    "Забрано",
+    "Ноябрь 2026",
+    "2",
+    "3",
+    "4",
+    "6",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30"
+  ],
+  "buttonsCount": 90,
+  "sampleButtons": [
+    {
+      "text": "886",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "49 мс",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "",
+      "aria": "Банк комбо",
+      "disabled": false
+    },
+    {
+      "text": "Новости и Рейды7",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Главная",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Комбо",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Актуальное комбо",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Автокомбо",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Рейтинг",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Боссы",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Ходки",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Зарубы",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Делюги1",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "События",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Барыга",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Друзья5",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Бригада",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Игры",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Катала",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Покер",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Колесо фортуны",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Фартовый",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Кости",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Калькулятор урона",
+      "aria": "",
+      "disabled": false
+    },
+    {
+      "text": "Тату и Шмот",
+      "aria": "",
+      "disabled": false
+    }
+  ],
+  "inputs": [],
+  "badges": []
+}

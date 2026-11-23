@@ -1,0 +1,25 @@
+{
+  "localStorageKeys": [
+    "_isAdmin",
+    "giveawaySeenAt",
+    "miniappToken",
+    "gameEventsActive",
+    "startTabCache",
+    "accessToken",
+    "currentUserId",
+    "gameRefreshToken",
+    "telegramUser",
+    "telegramInitData"
+  ],
+  "sessionStorageKeys": [
+    "__telegram__themeParams",
+    "__telegram__initParams"
+  ],
+  "indexedDB": [
+    {
+      "name": "prison-bot-cache",
+      "version": 1
+    }
+  ],
+  "cacheAPI": []
+}
