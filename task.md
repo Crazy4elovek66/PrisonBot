@@ -153,4 +153,4 @@ PrisonBot/
   ```bash
   python -m pytest -v tests/
   ```
-- [ ] **Шаг 7:** Выполнить обязательную живую визуальную проверку в Chrome (`http://127.0.0.1:8080`) через `chrome-devtools` MCP со скриншотами `#raids` (Радар), `#wardrobe` (Примерочная + `#btn-fitting-rotate`), `#friends` (счетчик друзей, дельта 24ч, аудит), проверкой GZip/SWR и 0 ошибок в Console и Network.
+- [ ] **Шаг 7:** Выполнить обязательную живую визуальную проверку в Chrome (`http://127.0.0.1:8080`) через `chrome-devtools` MCP со скриншотами `#raids` (Радар), `#wardrobe` (Примерочная + `#btn-fitting-rotate`), `#friends` (счетчик друзей, дельта 24ч, аудит), проверкой GZip/SWR и 0 ошибок в Console и Network..
