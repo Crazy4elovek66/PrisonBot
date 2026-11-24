@@ -3374,8 +3374,8 @@ async def get_wardrobe_overview() -> Dict[str, Any]:
                 is_owned = bool(cid in owned_cameras or cam.get("owned", False) or cid == 1)
                 raw_c_img = cam.get("imageUrl") or ""
                 img_url = _proxy_asset_url(raw_c_img)
-                m_folder = re.search(r"RoomCameraUrl/([^/]+)/", str(raw_c_img))
-                folder_id = m_folder.group(1) if m_folder else str(cid)
+                m_folder = re.search(r"RoomCameraUrl/([^/]+)/|room_(\d+)\.(?:webp|png)", str(raw_c_img))
+                folder_id = (m_folder.group(1) or m_folder.group(2)) if m_folder else str(cid)
                 is_equipped = bool(raw_c_img and raw_c_img == room_camera_url) or (not room_camera_url and cid == 1)
                 cameras_list.append({
                     "id": cid,

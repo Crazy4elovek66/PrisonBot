@@ -1455,18 +1455,18 @@ async function loadNotifications(category = "all") {
         dropsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
             ${rawDrops.map((d, idx) => {
-              const isCosmetic = ["tattoo", "clothing", "room", "camera", "item"].includes(String(d.type || d.kind || "").toLowerCase())
-                && (d.itemId || d.setId || d.imageUrl || String(d.kind) === "tattoo" || String(d.kind) === "clothing" || String(d.type) === "room");
-              if (isCosmetic) {
-                clickableDrops.push({ idx, drop: d });
-              }
-              return `
+          const isCosmetic = ["tattoo", "clothing", "room", "camera", "item"].includes(String(d.type || d.kind || "").toLowerCase())
+            && (d.itemId || d.setId || d.imageUrl || String(d.kind) === "tattoo" || String(d.kind) === "clothing" || String(d.type) === "room");
+          if (isCosmetic) {
+            clickableDrops.push({ idx, drop: d });
+          }
+          return `
                 <span class="drop-pill ${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
                   <span>${isCosmetic ? '👕 ' : '🎁 '}${d.title || d.name || 'Дроп'}</span>
                   ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.8;">(${d.subtitle})</span>` : ''}
                 </span>
               `;
-            }).join("")}
+        }).join("")}
           </div>
         `;
       }
@@ -1877,7 +1877,7 @@ function renderFriendRequestsData(data) {
 
       return card;
     },
-    () => {},
+    () => { },
     '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>'
   );
 }
@@ -2095,12 +2095,36 @@ document.getElementById("btn-buffs-tab-brigade")?.addEventListener("click", () =
 });
 
 // --- 4.10 Talents ---
+function renderBossTalentsWidget(state) {
+  const s = state || {};
+  const totalPts = s.totalPoints !== undefined ? s.totalPoints : ((s.spentPoints || 0) + (s.unspentPoints || 0));
+  const unspentPts = Number(s.unspentPoints || 0);
+  const curDmg = Number(s.currentDamage || 0);
+  const reqDmg = Math.max(1, Number(s.requiredDamage || 1));
+  const dmgPct = Math.min(100, Math.round((curDmg / reqDmg) * 100));
+
+  const dmgFill = document.getElementById("boss-talents-dmg-fill");
+  const dmgNum = document.getElementById("boss-talents-dmg-numbers");
+  const totalEl = document.getElementById("boss-talents-total");
+  const newEl = document.getElementById("boss-talents-new");
+  const newBadge = document.getElementById("boss-talents-new-badge");
+
+  if (dmgFill) dmgFill.style.width = `${dmgPct}%`;
+  if (dmgNum) dmgNum.textContent = `${formatNum(curDmg)} / ${formatNum(reqDmg)}`;
+  if (totalEl) totalEl.textContent = formatNum(totalPts);
+  if (newEl) newEl.textContent = formatNum(unspentPts);
+  if (newBadge) {
+    newBadge.classList.toggle("has-new", unspentPts > 0);
+  }
+}
+
 async function loadTalents() {
   const container = document.getElementById("talents-list");
-  if (!container) return;
   try {
     const data = await apiFetch("/talents");
     const state = data.state || {};
+    renderBossTalentsWidget(state);
+    if (!container) return;
     const talentsList = data.talents || [];
 
     const totalPts = state.totalPoints !== undefined ? state.totalPoints : ((state.spentPoints || 0) + (state.unspentPoints || 0));
@@ -2356,6 +2380,7 @@ document.querySelectorAll(".btn-melee-hit").forEach(btn => {
       if (res.success) {
         showToast(`Удар нанесен!`, "success");
         loadBoss();
+        loadTalents();
       }
     } catch (e) {
       showToast(`Ошибка удара: ${e.message}`, "error");
@@ -2380,6 +2405,7 @@ document.querySelectorAll(".btn-weapon-hit").forEach(btn => {
         showToast(`Оружие использовано!`, "success");
         loadBoss();
         loadProfile();
+        loadTalents();
       }
     } catch (e) {
       showToast(`Ошибка: ${e.message}`, "error");
@@ -3990,13 +4016,16 @@ function startFittingRoomLoop() {
     }
 
     const dpr = canvas.width / FITTING_CONFIG.U.w; // 2 (1510 / 755)
+    let curRoomId = null;
     ctx.save();
     try {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
 
       // 1. Фон хаты: официальный Spine / room.bundle ("back") или статический оригинальный фон + эффекты effect_config
-      const curRoomId = fittingRoomRoomData ? fittingRoomRoomData.id : null;
+      curRoomId = fittingRoomRoomData
+        ? (Number(extractRoomFolderId(fittingRoomRoomData.url || fittingRoomRoomData.img?.src, fittingRoomRoomData.id)) || fittingRoomRoomData.id)
+        : null;
       const roomPlayer = window.SpineRoomPlayer;
       let fullBgDrawn = false;
       if (curRoomId && roomPlayer && roomPlayer.hasFullBackground(curRoomId)) {
@@ -4055,7 +4084,7 @@ function startFittingRoomLoop() {
 
     const needAnimLoop =
       (fittingRoomAnimLayers && fittingRoomAnimLayers.length > 0) ||
-      (fittingRoomRoomData && window.SpineRoomPlayer && window.SpineRoomPlayer.isReady(fittingRoomRoomData.id));
+      (curRoomId && window.SpineRoomPlayer && window.SpineRoomPlayer.isReady(curRoomId));
 
     if (needAnimLoop) {
       fittingRoomAnimFrameId = requestAnimationFrame(renderFrame);
@@ -4108,8 +4137,10 @@ async function prepareFittingRoomLayers(currentToken = null) {
       cameraUrl = fittingRoomPreview.camera.imageUrl || cameraUrl;
       cameraId = fittingRoomPreview.camera.id || cameraId;
       roomFolderId = String(
-        fittingRoomPreview.camera.folderId ||
-        extractRoomFolderId(fittingRoomPreview.camera.rawImageUrl || cameraUrl, fittingRoomPreview.camera.id)
+        extractRoomFolderId(
+          fittingRoomPreview.camera.rawImageUrl || cameraUrl,
+          fittingRoomPreview.camera.folderId || fittingRoomPreview.camera.id
+        )
       );
     } else if (fittingRoomPreview.type === "loot" && fittingRoomPreview.item.kind === "camera") {
       cameraUrl = fittingRoomPreview.item.previewUrl || cameraUrl;
@@ -4127,7 +4158,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
     if (currentToken && currentToken !== fittingRenderToken) return;
   }
 
-  fittingRoomRoomData = { id: roomFolderId, cameraId, img: resolvedRoomImg };
+  fittingRoomRoomData = { id: roomFolderId, cameraId, img: resolvedRoomImg, url: cameraUrl };
 
   const layers = [];
 
@@ -4181,7 +4212,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
       layers.push({
         x: 0,
         y: 0,
-        scale: 0.95,
+        scale: 1.192,
         img: backBodyImg,
         origin: [1, 1],
         resolution: FITTING_CONFIG.density.bodyBack || { legacyWidth: 410, density: 880 / 410 },
@@ -4200,7 +4231,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
         layers.push({
           x: 0,
           y: 0,
-          scale: 0.95,
+          scale: 1.192,
           origin: [1, 1],
           img: tImg,
           resolution: { legacyWidth: 410, density: 1 },
@@ -4243,7 +4274,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
         layers.push({
           x: 0,
           y: 0,
-          scale: 0.95,
+          scale: 1.192,
           origin: [1, 1],
           img: cImg,
           resolution: { legacyWidth: 410, density: 1 },
@@ -4264,7 +4295,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
         layers.push({
           x: 0,
           y: 0,
-          scale: 0.95,
+          scale: 1.192,
           origin: [1, 1],
           img: beardImg,
           resolution: FITTING_CONFIG.density.beard,
@@ -4376,8 +4407,8 @@ async function prepareFittingRoomLayers(currentToken = null) {
       clothingZones["6"] = FITTING_CONFIG.defaultKist;
     }
 
-    // Footwear / lower clothing: zones 5 and 7
-    for (const z of ["5", "7"]) {
+    // Footwear / lower clothing: Zone 7 (shoes/socks) first, then Zone 5 (pants) on top
+    for (const z of ["7", "5"]) {
       if (clothingZones[z]) {
         const cVal = clothingZones[z];
         const cUrl = typeof cVal === "object" ? cVal.imageUrl || cVal.url : String(cVal);
@@ -4848,22 +4879,20 @@ async function drawFittingRoomStage(currentToken = null) {
   await prepareFittingRoomLayers(myToken);
   if (myToken !== fittingRenderToken) return;
 
-  if (overlay) overlay.style.display = "none";
-
-  // Immediately start rendering static room + character + foreground (0 ms fallback)
-  startFittingRoomLoop();
-
-  // If animated Spine room, preload Spine assets in background and seamlessly enable once ready
-  const curRoomId = fittingRoomRoomData ? fittingRoomRoomData.id : null;
+  const curRoomId = fittingRoomRoomData
+    ? (Number(extractRoomFolderId(fittingRoomRoomData.url || fittingRoomRoomData.img?.src, fittingRoomRoomData.id)) || fittingRoomRoomData.id)
+    : null;
   if (curRoomId && window.SpineRoomPlayer && window.SpineRoomPlayer.isAnimatedRoom(curRoomId)) {
-    window.SpineRoomPlayer.preload(curRoomId).then(ok => {
-      if (ok && myToken === fittingRenderToken) {
-        startFittingRoomLoop();
-      }
-    });
+    await window.SpineRoomPlayer.preload(curRoomId);
+    if (myToken !== fittingRenderToken) return;
   } else if (window.SpineRoomPlayer) {
     window.SpineRoomPlayer.stop();
   }
+
+  if (overlay) overlay.style.display = "none";
+
+  // Start rendering only after BOTH character layers and room foreground (Spine/bundle) are ready
+  startFittingRoomLoop();
 
   // Background preheat for opposite side
   setTimeout(() => {

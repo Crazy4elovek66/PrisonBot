@@ -207,4 +207,39 @@ def test_wardrobe_headwear_zones_and_cache_busting():
     app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
     assert "styles.css?v=20261125" in index_html
     assert "app.js?v=20261125" in index_html
+    assert "spine_room_player.js?v=20261125" in index_html
     assert 'overEyes: (z === "1" || z === "2")' in app_js
+    assert 'for (const z of ["7", "5"])' in app_js
+    assert "scale: 1.192" in app_js
+
+
+def test_boss_talents_widget_present_between_active_and_melee():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    pos_top_slot = index_html.index('id="boss-attack-slot-top"')
+    pos_talents = index_html.index('id="boss-talents-widget"')
+    pos_melee = index_html.index('id="cfg-boss_auto_melee"')
+    assert pos_top_slot < pos_talents < pos_melee
+    assert "function renderBossTalentsWidget(state)" in app_js
+
+
+def test_room_folder_id_mapping_for_all_boss_rooms():
+    import json, re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    cache = json.loads((root / "storage" / "tattoo_clothing_cache.json").read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in cache.get("cameras", [])}
+
+    def _extract(raw_c_img, cid):
+        m = re.search(r"RoomCameraUrl/([^/]+)/|room_(\d+)\.(?:webp|png)", str(raw_c_img))
+        return (m.group(1) or m.group(2)) if m else str(cid)
+
+    assert _extract(by_id[32]["imageUrl"], 32) == "31"  # Феня
+    assert _extract(by_id[33]["imageUrl"], 33) == "32"  # Воркута
+    assert _extract(by_id[34]["imageUrl"], 34) == "33"  # Север
+    assert _extract(by_id[35]["imageUrl"], 35) == "34"  # Бульдозер
+    assert _extract(by_id[36]["imageUrl"], 36) == "35"  # Змей
+    assert _extract(by_id[37]["imageUrl"], 37) == "36"  # Шнифер
+    assert _extract(by_id[38]["imageUrl"], 38) == "37"  # Взлом (Spine-animated)
