@@ -44,6 +44,13 @@
   --chart-orange: #f05100;
 }
 
+#energy-progress-fill,
+#boss-hp-fill,
+#prison-checkpoint-fill,
+#baul-exp-fill {
+  transition: width 0.35s ease;
+}
+
 /* Base resets & typography */
 * {
   box-sizing: border-box;

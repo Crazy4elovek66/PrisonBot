@@ -396,3 +396,108 @@ async def test_prison_worker_checkpoint_claim(prison_setup, monkeypatch):
         stmt = select(ActionLog).where(ActionLog.action_type == "prison_checkpoint_claim")
         logs = (await session.execute(stmt)).scalars().all()
         assert len(logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_prison_drain_all_energy_across_circle_completion(prison_setup):
+    """
+    drain_all_energy при energy=50 и стоимости 6 НЕ останавливается на runCompleted=True,
+    делает ровно 8 ходок до исчерпания энергии и оставляет remainingEnergy=2.
+    """
+    engine, acc_id = prison_setup
+    energy_state = 50
+    work_count = 0
+
+    def mock_handler(request: httpx.Request):
+        nonlocal energy_state, work_count
+        if request.url.path == "/api/player/init":
+            return httpx.Response(200, json={
+                "success": True,
+                "energy": energy_state,
+                "maxEnergy": 50,
+                "lastEnergyRestoreTime": "2026-11-24T00:00:00Z",
+                "energyRestoreIntervalSeconds": 300,
+            })
+        elif request.url.path == "/api/prisons/all":
+            return httpx.Response(200, json={
+                "success": True,
+                "prisons": [{"id": 4, "name": "Черный Дельфин", "isUnlocked": True}],
+            })
+        elif request.url.path == "/api/player/prison/4":
+            return httpx.Response(200, json={"success": True, "data": {"prisonId": 4, "dayCurrentCheckpoint": 0}})
+        elif request.url.path == "/api/player/prison/4/checkpoints":
+            if request.method == "POST":
+                return httpx.Response(200, json={"success": True})
+            return httpx.Response(200, json={"success": True, "data": [{"energyCost": 6, "clicksRequired": 3}]})
+        elif request.url.path == "/api/player/prison/4/work":
+            work_count += 1
+            energy_state -= 6
+            # Имитируем завершение круга на 3-й ходке — слив обязан продолжиться дальше!
+            run_done = (work_count == 3)
+            return httpx.Response(200, json={
+                "success": True,
+                "energy": energy_state,
+                "rewardCigarettes": 10,
+                "rewardAuthority": 5,
+                "checkpointCompleted": run_done,
+                "runCompleted": run_done,
+            })
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url=settings.API_BASE_URL)
+    auth = AuthProvider(account_id=acc_id)
+    auth._access_token = "mock_tok"
+    auth._access_exp = 9999999999
+    game_http = GameHttpClient(auth_provider=auth)
+    game_http._client = mock_client
+
+    scheduled_waits = []
+    worker = PrisonWorker(
+        account_id=acc_id,
+        prison_api=PrisonAPI(http_client=game_http),
+        player_api=PlayerAPI(http_client=game_http),
+        db_engine=engine,
+        enable_jitter=False,
+        on_reschedule=lambda sec: scheduled_waits.append(sec),
+    )
+
+    res = await worker.drain_all_energy(prison_id=4, mode="day", collect_podogrev=False, source="manual")
+    assert res["status"] == "success"
+    assert res["runsCompleted"] == 8
+    assert res["works_done"] == 8
+    assert res["remainingEnergy"] == 2
+    assert res["remaining_energy"] == 2
+    assert res["circles_completed"] == 1
+    assert res["rewards"]["cigarettes"] == 80
+    assert len(scheduled_waits) == 1
+    assert scheduled_waits[0] <= 300.0
+
+
+def test_compute_next_stage_wait_seconds():
+    """При energy=4, stage_cost=5 и регене 300с расчёт ожидания возвращает ~300с (минус прошедшие секунды тика)."""
+    from datetime import datetime, timezone
+    from workers.prison_worker import compute_next_stage_wait_seconds
+
+    now = datetime(2026, 11, 24, 3, 5, 0, tzinfo=timezone.utc)
+    # 0 секунд прошло с последнего тика -> ровно 300с
+    w_exact = compute_next_stage_wait_seconds(
+        current_energy=4,
+        stage_cost=5,
+        regen_interval_sec=300,
+        last_restore_time="2026-11-24T03:05:00Z",
+        now_utc=now,
+        jitter_sec=4.0,
+    )
+    assert 300.0 <= w_exact <= 306.0
+
+    # 120 секунд прошло с последнего тика -> осталось 180с (+4с буфер)
+    w_partial = compute_next_stage_wait_seconds(
+        current_energy=4,
+        stage_cost=5,
+        regen_interval_sec=300,
+        last_restore_time="2026-11-24T03:03:00Z",
+        now_utc=now,
+        jitter_sec=4.0,
+    )
+    assert abs(w_partial - 184.0) < 0.1
+

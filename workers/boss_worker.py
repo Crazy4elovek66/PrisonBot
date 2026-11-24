@@ -2,12 +2,13 @@ import random
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import httpx
+from sqlalchemy import select
+
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
 from core.models import ActionLog, FriendStats, BossFriendDamageLog, BossPreset
-from sqlalchemy import select
 from client.api.boss import BossAPI, _load_bosses_catalog, FALLBACK_BOSSES
 from workers.routine_worker import parse_iso_utc
 from bot.notifier import TelegramNotifier
@@ -41,12 +42,12 @@ MELEE_CONFIG = {
 
 class BossWorker:
     """
-    Воркер автоматического мониторинга и ведения боя с боссами:
-    1. Проверка наличия и сбор наград за поверженных боссов.
-    2. Проверка активного боя с боссом.
-    3. Определение доступных и готовых бесплатных рукопашных ударов (punchChest, kickBalls, pokeEyes, kneeEar).
-    4. Нанесение серии готовых ударов без расхода платного оружия.
-    5. Запись результатов в ActionLog.
+    Воркер автоматического мониторинга и непрерывного конвейерного ведения боя с боссами:
+    1. Сбор наград за поверженных боссов (state == 'reward', hasReward, unclaimedRewards, currentHp <= 0).
+    2. Ожидание завершения 'reward_processing' и немедленный призыв следующего босса в том же цикле.
+    3. Поддержка пресетов (ручной и по расписанию МСК) и бесконечной очереди config.boss_targets.
+    4. Корректная оценка доступности боссов с учетом prisons_data и режима боя.
+    5. Серия готовых бесплатных рукопашных ударов и немедленный переход к следующему боссу при убийстве.
     """
 
     def __init__(
@@ -56,18 +57,31 @@ class BossWorker:
         notifier: Optional[TelegramNotifier] = None,
         db_engine: Optional[Any] = None,
         enable_jitter: bool = True,
+        prison_api: Optional[Any] = None,
+        player_api: Optional[Any] = None,
+        state_hub: Optional[Any] = None,
+        on_activity_change: Optional[Callable[[bool], Any]] = None,
     ):
         self.account_id = account_id
         self.api = boss_api
         self.notifier = notifier
         self.db_engine = db_engine
         self.enable_jitter = enable_jitter
+        self.prison_api = prison_api
+        self.player_api = player_api
+        self.state_hub = state_hub
+        self.on_activity_change = on_activity_change
         self.is_paused: bool = False
+        self._cycle_lock = asyncio.Lock()
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
             delay = random.uniform(settings.JITTER_MIN_SEC, settings.JITTER_MAX_SEC)
             await asyncio.sleep(delay)
+
+    async def _transition_pause(self) -> None:
+        if self.enable_jitter:
+            await asyncio.sleep(random.uniform(1.0, 2.5))
 
     async def _log_action(
         self,
@@ -91,6 +105,115 @@ class BossWorker:
         except Exception as e:
             logger.error(f"Не удалось записать ActionLog ({action_type}): {e}")
 
+    @staticmethod
+    def _extract_battle(bootstrap: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Нормализует состояние боя из ответа /api/boss/bootstrap (session | currentBattle | activeBoss)."""
+        if not isinstance(bootstrap, dict):
+            return "idle", None
+        state = str(bootstrap.get("state") or "idle").lower()
+        battle = None
+        for key in ("session", "currentBattle", "activeBoss"):
+            cand = bootstrap.get(key)
+            if isinstance(cand, dict) and cand:
+                battle = cand
+                break
+        return state, battle
+
+    @staticmethod
+    def _normalize_boss_target(item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, dict):
+            if not item.get("enabled", True):
+                return None
+            raw_id = item.get("bossId") if item.get("bossId") is not None else (item.get("boss_id") if item.get("boss_id") is not None else item.get("id"))
+            if raw_id is None:
+                return None
+            try:
+                b_id = int(raw_id)
+            except (ValueError, TypeError):
+                return None
+            return {
+                "bossId": b_id,
+                "mode": str(item.get("mode") or "pacansky"),
+                "limit": int(item.get("limit") or 7),
+                "name": item.get("name") or item.get("bossName"),
+                "enabled": True,
+            }
+        if isinstance(item, (int, str)) and str(item).strip().isdigit():
+            return {
+                "bossId": int(item),
+                "mode": "pacansky",
+                "limit": 7,
+                "name": None,
+                "enabled": True,
+            }
+        return None
+
+    async def _fetch_bootstrap_ready(self) -> Dict[str, Any]:
+        """Получает bootstrap; при промежуточном статусе 'reward_processing' ждёт и повторяет запрос."""
+        bootstrap = await self.api.get_bootstrap()
+        for _ in range(3):
+            if not isinstance(bootstrap, dict):
+                break
+            state = str(bootstrap.get("state") or "").lower()
+            if state != "reward_processing":
+                break
+            retry_ms = int(bootstrap.get("retryAfterMs") or 1000)
+            wait_sec = min(2.5, max(0.2, retry_ms / 1000.0)) if self.enable_jitter else 0.01
+            await asyncio.sleep(wait_sec)
+            bootstrap = await self.api.get_bootstrap()
+        return bootstrap if isinstance(bootstrap, dict) else {}
+
+    async def _fetch_prisons_safe(self) -> Optional[Any]:
+        if not self.prison_api:
+            return None
+        try:
+            return await self.prison_api.get_all_prisons()
+        except Exception as e:
+            logger.debug(f"Не удалось загрузить prisons_data для оценки боссов: {e}")
+            return None
+
+    async def _fetch_evaluated_bosses(
+        self,
+        bootstrap: Dict[str, Any],
+        prisons_data: Optional[Any],
+    ) -> Dict[int, Dict[str, Any]]:
+        """
+        Собирает актуальный список боссов (API + каталог), оценивает доступность и сохраняет
+        серверные флаги isLocked / unlockReason, если API явно пометил босса заблокированным.
+        """
+        base_catalog = _load_bosses_catalog() or FALLBACK_BOSSES
+        by_id: Dict[int, Dict[str, Any]] = {int(b["id"]): dict(b) for b in base_catalog}
+
+        try:
+            api_bosses = await self.api.get_all_bosses()
+            if isinstance(api_bosses, list) and api_bosses:
+                for ab in api_bosses:
+                    if not isinstance(ab, dict) or ab.get("id") is None:
+                        continue
+                    bid = int(ab["id"])
+                    merged = dict(by_id.get(bid, {}))
+                    merged.update(ab)
+                    # Сохраняем явную блокировку из ответа API/мока, чтобы evaluate не затёр её
+                    if ab.get("isLocked") is True:
+                        merged["_explicitLocked"] = True
+                        merged["_explicitUnlockReason"] = ab.get("unlockReason")
+                    by_id[bid] = merged
+        except Exception as e:
+            logger.debug(f"Fallback на локальный каталог боссов (get_all_bosses={e})")
+
+        eval_list = list(by_id.values())
+        BossAPI.evaluate_bosses_availability(eval_list, bootstrap=bootstrap, prisons_data=prisons_data)
+
+        for b in eval_list:
+            if b.pop("_explicitLocked", False):
+                b["isLocked"] = True
+                b["canAttack"] = False
+                if b.get("_explicitUnlockReason"):
+                    b["unlockReason"] = b.pop("_explicitUnlockReason")
+                    b["attackBlockReason"] = b["unlockReason"]
+
+        return {int(b["id"]): b for b in eval_list}
+
     async def record_friends_damage(
         self,
         bootstrap: Dict[str, Any],
@@ -100,12 +223,12 @@ class BossWorker:
         """
         Сбор и дедуплицированная запись реального урона друзей по boss_session_id
         в BossFriendDamageLog и обновление FriendStats.
-        Возвращает количество обработанных друзей.
         """
         if not self.db_engine:
             return 0
 
-        session_data = bootstrap.get("session") or {}
+        _, session_data = self._extract_battle(bootstrap)
+        session_data = session_data or {}
         sess_id = (
             boss_session_id
             or session_data.get("sessionId")
@@ -179,8 +302,6 @@ class BossWorker:
         updated_friends = 0
 
         try:
-            from sqlalchemy import select
-
             async with get_session(self.db_engine) as session:
                 for uid_int, data in user_damage_map.items():
                     current_dmg = data["damage"]
@@ -259,14 +380,87 @@ class BossWorker:
 
         return updated_friends
 
+    async def _load_active_preset(self) -> Tuple[Optional[BossPreset], List[Dict[str, Any]]]:
+        """Загружает запущенный BossPreset и разворачивает его шаги."""
+        if not self.db_engine:
+            return None, []
+
+        active_preset: Optional[BossPreset] = None
+        preset_steps: List[Dict[str, Any]] = []
+        try:
+            async with get_session(self.db_engine) as db_sess:
+                stmt_act = select(BossPreset).where(
+                    BossPreset.account_id == self.account_id,
+                    BossPreset.is_running == True,
+                )
+                active_preset = (await db_sess.execute(stmt_act)).scalar_one_or_none()
+                if active_preset and active_preset.items:
+                    b_cat = _load_bosses_catalog() or FALLBACK_BOSSES
+                    names_map = {b["id"]: b.get("name") for b in b_cat}
+                    for itm in active_preset.items:
+                        if not isinstance(itm, dict):
+                            continue
+                        cnt = max(1, int(itm.get("count") or 1))
+                        b_id = itm.get("bossId") if itm.get("bossId") is not None else itm.get("boss_id")
+                        if not b_id:
+                            continue
+                        b_id_int = int(b_id)
+                        b_name = itm.get("bossName") or itm.get("name") or names_map.get(b_id_int) or f"Босс #{b_id}"
+                        b_mode = itm.get("mode") or "pacansky"
+                        for _ in range(cnt):
+                            preset_steps.append({"bossId": b_id_int, "bossName": b_name, "mode": b_mode})
+        except Exception as e:
+            logger.warning(f"Ошибка чтения активного пресета: {e}")
+            return None, []
+
+        if active_preset and (not preset_steps or active_preset.current_step_index >= len(preset_steps)):
+            async with get_session(self.db_engine) as db_sess:
+                p_obj = await db_sess.get(BossPreset, active_preset.id)
+                if p_obj:
+                    p_obj.is_running = False
+                    p_obj.last_status = f"Выполнен ({len(preset_steps)}/{len(preset_steps)})"
+                    db_sess.add(p_obj)
+                    await db_sess.commit()
+            logger.info(f"Пресет '{active_preset.name}' успешно выполнен!")
+            await self._log_action(
+                "boss_preset_completed",
+                "/api/v1/boss/presets",
+                200,
+                True,
+                {"preset_id": active_preset.id, "name": active_preset.name, "total_steps": len(preset_steps)},
+            )
+            return None, []
+
+        return active_preset, preset_steps
+
+    async def _advance_preset_step(
+        self,
+        preset_id: int,
+        preset_steps: List[Dict[str, Any]],
+        status_note: Optional[str] = None,
+    ) -> Optional[BossPreset]:
+        if not self.db_engine:
+            return None
+        async with get_session(self.db_engine) as db_sess:
+            p_obj = await db_sess.get(BossPreset, preset_id)
+            if not p_obj:
+                return None
+            p_obj.current_step_index += 1
+            if p_obj.current_step_index >= len(preset_steps):
+                p_obj.is_running = False
+                p_obj.last_status = f"Выполнен ({len(preset_steps)}/{len(preset_steps)})"
+            elif status_note:
+                p_obj.last_status = status_note
+            else:
+                nxt = preset_steps[p_obj.current_step_index]
+                p_obj.last_status = f"Выполняется: шаг {p_obj.current_step_index + 1}/{len(preset_steps)} ({nxt['bossName']})"
+            db_sess.add(p_obj)
+            await db_sess.commit()
+            return p_obj if p_obj.is_running else None
+
     async def check_scheduled_presets(self, now_utc: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
         """
-        Проверка и запуск сохраненных пресетов боссов по расписанию МСК (UTC+3):
-        - Минутный тикер;
-        - Проверка активности воркера (is_worker_active);
-        - Вычисление времени и даты по МСК;
-        - Защита от повторного запуска в те же сутки (last_run_date_msk != today_msk);
-        - Запуск run_cycle() при срабатывании расписания.
+        Проверка и запуск сохраненных пресетов боссов по расписанию МСК (UTC+3).
         """
         if self.is_paused:
             return None
@@ -284,22 +478,22 @@ class BossWorker:
             return None
 
         async with get_session(self.db_engine) as session:
-            # Проверяем, не выполняется ли уже какой-либо пресет для этого аккаунта
             stmt_running = select(BossPreset).where(
                 BossPreset.account_id == self.account_id,
                 BossPreset.is_running == True,
             )
-            res_running = await session.execute(stmt_running)
-            if res_running.scalar_one_or_none() is not None:
+            if (await session.execute(stmt_running)).scalar_one_or_none() is not None:
                 return None
 
-            # Ищем пресет, готовый к запуску сегодня
-            stmt = select(BossPreset).where(
-                BossPreset.account_id == self.account_id,
-                BossPreset.daily_enabled == True,
-            ).order_by(BossPreset.schedule_time_msk.asc())
-            res = await session.execute(stmt)
-            presets = res.scalars().all()
+            stmt = (
+                select(BossPreset)
+                .where(
+                    BossPreset.account_id == self.account_id,
+                    BossPreset.daily_enabled == True,
+                )
+                .order_by(BossPreset.schedule_time_msk.asc())
+            )
+            presets = (await session.execute(stmt)).scalars().all()
 
             target_preset: Optional[BossPreset] = None
             for p in presets:
@@ -336,133 +530,64 @@ class BossWorker:
             res_cycle["preset_id"] = preset_id
         return res_cycle
 
-    async def run_cycle(self) -> Dict[str, Any]:
-        """Выполняет один цикл проверки и атаки босса."""
-        logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла проверки боссов ===")
-
-        # Проверка живого BotConfig
-        config = await get_or_create_config(self.account_id, self.db_engine)
-        if not is_worker_active(config):
-            logger.info("Планировщик на паузе или активен режим сна. Пропуск боссов.")
-            return {"status": "skipped", "reason": "paused_or_sleep"}
-
-        results: Dict[str, Any] = {
-            "account_id": self.account_id,
-            "rewards_claimed": 0,
-            "hits_performed": [],
-            "boss_active": False,
-            "boss_hp_remaining": None,
-            "errors": [],
-        }
-
-        # 0. Проверяем наличие активного запущенного пресета
-        active_preset: Optional[BossPreset] = None
-        preset_steps: List[Dict[str, Any]] = []
-        if self.db_engine:
-            try:
-                async with get_session(self.db_engine) as db_sess:
-                    stmt_act = select(BossPreset).where(
-                        BossPreset.account_id == self.account_id,
-                        BossPreset.is_running == True,
-                    )
-                    res_act = await db_sess.execute(stmt_act)
-                    active_preset = res_act.scalar_one_or_none()
-                    if active_preset and active_preset.items:
-                        b_cat = _load_bosses_catalog() or FALLBACK_BOSSES
-                        names_map = {b["id"]: b.get("name") for b in b_cat}
-                        for itm in active_preset.items:
-                            if not isinstance(itm, dict):
-                                continue
-                            cnt = max(1, int(itm.get("count") or 1))
-                            b_id = itm.get("bossId") or itm.get("boss_id")
-                            if not b_id:
-                                continue
-                            b_id_int = int(b_id)
-                            b_name = itm.get("bossName") or itm.get("name") or names_map.get(b_id_int) or f"Босс #{b_id}"
-                            b_mode = itm.get("mode") or "pacansky"
-                            for _ in range(cnt):
-                                preset_steps.append({"bossId": b_id_int, "bossName": b_name, "mode": b_mode})
-            except Exception as e:
-                logger.warning(f"Ошибка чтения активного пресета: {e}")
-
-        # Если пресет завершен по шагам
-        if active_preset and (not preset_steps or active_preset.current_step_index >= len(preset_steps)):
-            if self.db_engine:
-                async with get_session(self.db_engine) as db_sess:
-                    p_obj = await db_sess.get(BossPreset, active_preset.id)
-                    if p_obj:
-                        p_obj.is_running = False
-                        p_obj.last_status = f"Выполнен ({len(preset_steps)}/{len(preset_steps)})"
-                        db_sess.add(p_obj)
-                        await db_sess.commit()
-            logger.info(f"Пресет '{active_preset.name}' успешно выполнен!")
-            await self._log_action(
-                "boss_preset_completed",
-                "/api/v1/boss/presets",
-                200,
-                True,
-                {"preset_id": active_preset.id, "name": active_preset.name, "total_steps": len(preset_steps)},
-            )
-            active_preset = None
-
-        # 1. Загрузка состояния боя
-        try:
-            bootstrap = await self.api.get_bootstrap()
-        except Exception as e:
-            logger.error(f"Ошибка при получении bootstrap босса: {e}")
-            results["errors"].append(f"get_bootstrap: {str(e)}")
-            await self._log_action("get_bootstrap", "/api/boss/bootstrap", 500, False, {"error": str(e)})
-            return results
-
-        # 2. Проверка и сбор наград за поверженных боссов
-        has_reward = bool(bootstrap.get("hasReward", False))
+    async def _claim_pending_rewards(
+        self,
+        bootstrap: Dict[str, Any],
+        results: Dict[str, Any],
+        active_preset: Optional[BossPreset],
+        preset_steps: List[Dict[str, Any]],
+        claimed_keys_in_cycle: Set[str],
+    ) -> Tuple[int, Optional[BossPreset]]:
+        """Проверяет и забирает все доступные награды за боссов, возвращая количество собранных наград."""
+        state, battle = self._extract_battle(bootstrap)
+        battle = battle or {}
+        has_reward = bool(
+            bootstrap.get("hasReward")
+            or battle.get("hasReward")
+            or battle.get("rewardAvailable")
+            or state == "reward"
+            or (battle.get("currentHp") is not None and int(battle.get("currentHp", 1)) <= 0 and battle.get("claimId"))
+        )
         unclaimed = bootstrap.get("unclaimedRewards") or []
         claim_ids: List[Optional[str]] = []
 
         if isinstance(unclaimed, list) and len(unclaimed) > 0:
             for item in unclaimed:
-                if item is not None and str(item).strip():
+                if isinstance(item, dict):
+                    raw_cid = item.get("claimId") or item.get("id")
+                    if raw_cid is not None and str(raw_cid).strip():
+                        claim_ids.append(str(raw_cid))
+                elif item is not None and str(item).strip():
                     claim_ids.append(str(item))
         elif has_reward:
-            claim_id = bootstrap.get("claimId")
-            claim_ids.append(str(claim_id) if claim_id else None)
+            cid = bootstrap.get("claimId") or battle.get("claimId") or (bootstrap.get("reward") or {}).get("claimId")
+            claim_ids.append(str(cid) if cid else None)
 
+        claimed_here = 0
         for cid in claim_ids:
+            dedup_key = f"cid:{cid}" if cid else "__latest__"
+            if dedup_key in claimed_keys_in_cycle:
+                continue
             try:
-                # Фиксируем урон друзей перед сбором награды
                 await self.record_friends_damage(bootstrap, boss_session_id=cid)
-
                 logger.info(f"Сбор награды за босса (claimId={cid})...")
                 claim_res = await self.api.claim_reward(cid)
+                claimed_keys_in_cycle.add(dedup_key)
+                claimed_here += 1
                 results["rewards_claimed"] += 1
                 await self._log_action("claim_boss_reward", "/api/boss/claim", 200, True, claim_res)
-                logger.info(f"Награда за босса успешно собрана: {claim_res}")
 
-                # Сохранение уведомления в Notification с дедупликацией
                 parsed = DropParser.parse_boss_claim(
                     claim_res,
-                    boss_name=bootstrap.get("session", {}).get("bossName") or bootstrap.get("title") or "Босс",
-                    mode=bootstrap.get("session", {}).get("mode"),
+                    boss_name=battle.get("bossName") or bootstrap.get("title") or "Босс",
+                    mode=battle.get("mode"),
                 )
-                b_sess_id = bootstrap.get("session", {}).get("sessionId") or cid or "latest"
+                b_sess_id = battle.get("sessionId") or cid or "latest"
                 parsed["event_key"] = f"boss_claim_{b_sess_id}"
                 await DropParser.save_notification(self.account_id, parsed, self.db_engine)
 
-                # Если выполняется пресет, продвигаем шаг после сбора награды
-                if active_preset and self.db_engine:
-                    async with get_session(self.db_engine) as db_sess:
-                        p_obj = await db_sess.get(BossPreset, active_preset.id)
-                        if p_obj:
-                            p_obj.current_step_index += 1
-                            if p_obj.current_step_index >= len(preset_steps):
-                                p_obj.is_running = False
-                                p_obj.last_status = f"Выполнен ({len(preset_steps)}/{len(preset_steps)})"
-                            else:
-                                nxt = preset_steps[p_obj.current_step_index]
-                                p_obj.last_status = f"Выполняется: шаг {p_obj.current_step_index + 1}/{len(preset_steps)} ({nxt['bossName']})"
-                            db_sess.add(p_obj)
-                            await db_sess.commit()
-                            active_preset = p_obj if p_obj.is_running else None
+                if active_preset:
+                    active_preset = await self._advance_preset_step(active_preset.id, preset_steps)
 
                 await self._jitter()
             except Exception as e:
@@ -470,18 +595,26 @@ class BossWorker:
                 results["errors"].append(f"claim_reward: {str(e)}")
                 await self._log_action("claim_boss_reward", "/api/boss/claim", 500, False, {"error": str(e)})
 
-        # 3. Проверка активного боя и авто-призыв босса при необходимости
-        state = bootstrap.get("state")
-        session = bootstrap.get("session") or {}
-        current_hp = session.get("currentHp")
+        return claimed_here, active_preset
 
-        # Приоритет A: Если активен пресет боссов
-        if (state != "active" or not session or current_hp is None or current_hp <= 0) and active_preset:
-            boss_catalog = {b["id"]: dict(b) for b in (_load_bosses_catalog() or FALLBACK_BOSSES)}
-            eval_list = list(boss_catalog.values())
-            BossAPI.evaluate_bosses_availability(eval_list, bootstrap=bootstrap)
-            eval_by_id = {b["id"]: b for b in eval_list}
+    async def _try_summon_next_boss(
+        self,
+        bootstrap: Dict[str, Any],
+        config: Any,
+        prisons_data: Optional[Any],
+        active_preset: Optional[BossPreset],
+        preset_steps: List[Dict[str, Any]],
+        results: Dict[str, Any],
+        is_conveyor_transition: bool = False,
+    ) -> Tuple[bool, Dict[str, Any], Optional[BossPreset]]:
+        """
+        Пытается призвать следующего босса (сначала из active_preset, затем из config.boss_targets).
+        Возвращает (summoned_ok, refreshed_bootstrap, updated_active_preset).
+        """
+        eval_by_id = await self._fetch_evaluated_bosses(bootstrap, prisons_data)
 
+        # Приоритет A: Активный пресет боссов
+        if active_preset:
             while active_preset and active_preset.current_step_index < len(preset_steps):
                 step = preset_steps[active_preset.current_step_index]
                 b_id_int = step["bossId"]
@@ -501,7 +634,7 @@ class BossWorker:
 
                 if block_reason:
                     logger.info(
-                        f"Пресет '{active_preset.name}': пропуск заблокированного шага {active_preset.current_step_index + 1}/{len(preset_steps)} "
+                        f"Пресет '{active_preset.name}': пропуск шага {active_preset.current_step_index + 1}/{len(preset_steps)} "
                         f"(Босс ID={b_id_int} {step['bossName']}, режим {b_mode}): {block_reason}"
                     )
                     await self._log_action(
@@ -519,255 +652,339 @@ class BossWorker:
                             "reason": block_reason,
                         },
                     )
-                    if self.db_engine:
-                        async with get_session(self.db_engine) as db_sess:
-                            p_obj = await db_sess.get(BossPreset, active_preset.id)
-                            if p_obj:
-                                p_obj.current_step_index += 1
-                                if p_obj.current_step_index >= len(preset_steps):
-                                    p_obj.is_running = False
-                                    p_obj.last_status = "Выполнен (шаги завершены или пропущены)"
-                                else:
-                                    p_obj.last_status = f"Шаг {p_obj.current_step_index} пропущен ({block_reason})"
-                                db_sess.add(p_obj)
-                                await db_sess.commit()
-                                active_preset = p_obj if p_obj.is_running else None
-                    if not active_preset:
-                        break
+                    active_preset = await self._advance_preset_step(
+                        active_preset.id,
+                        preset_steps,
+                        status_note=f"Шаг {active_preset.current_step_index + 1} пропущен ({block_reason})",
+                    )
                     continue
-                else:
-                    # Босс доступен -> призываем!
-                    try:
-                        logger.info(f"Пресет '{active_preset.name}': призыв босса ID={b_id_int} {step['bossName']} (режим {b_mode})...")
-                        summon_res = await self.api.start_battle(boss_id=b_id_int, mode=b_mode)
-                        if summon_res.get("success") is not False:
-                            logger.info(f"Бой с боссом ID={b_id_int} успешно запущен!")
-                            await self._log_action(
-                                "boss_preset_step_summon",
-                                "/api/boss/start-attack",
-                                200,
-                                True,
-                                {
-                                    "preset_id": active_preset.id,
-                                    "step_index": active_preset.current_step_index,
-                                    "boss_id": b_id_int,
-                                    "boss_name": step["bossName"],
-                                    "mode": b_mode,
-                                },
-                            )
-                            if self.db_engine:
-                                async with get_session(self.db_engine) as db_sess:
-                                    p_obj = await db_sess.get(BossPreset, active_preset.id)
-                                    if p_obj:
-                                        p_obj.last_status = f"Выполняется: шаг {p_obj.current_step_index + 1}/{len(preset_steps)} ({step['bossName']})"
-                                        db_sess.add(p_obj)
-                                        await db_sess.commit()
-                            bootstrap = await self.api.get_bootstrap()
-                            session = bootstrap.get("session") or {}
-                            state = bootstrap.get("state")
-                            current_hp = session.get("currentHp")
-                            break
-                    except Exception as err:
-                        logger.warning(f"Ошибка призыва босса в пресете: {err}")
+
+                if is_conveyor_transition:
+                    await self._transition_pause()
+
+                try:
+                    logger.info(f"Пресет '{active_preset.name}': призыв босса ID={b_id_int} {step['bossName']} (режим {b_mode})...")
+                    summon_res = await self.api.start_battle(boss_id=b_id_int, mode=b_mode)
+                    if summon_res.get("success") is not False:
+                        results["summoned_bosses"].append({"bossId": b_id_int, "mode": b_mode, "source": "preset"})
+                        await self._log_action(
+                            "boss_preset_step_summon",
+                            "/api/boss/start-attack",
+                            200,
+                            True,
+                            {
+                                "preset_id": active_preset.id,
+                                "step_index": active_preset.current_step_index,
+                                "boss_id": b_id_int,
+                                "boss_name": step["bossName"],
+                                "mode": b_mode,
+                            },
+                        )
                         if self.db_engine:
                             async with get_session(self.db_engine) as db_sess:
                                 p_obj = await db_sess.get(BossPreset, active_preset.id)
                                 if p_obj:
-                                    p_obj.current_step_index += 1
-                                    if p_obj.current_step_index >= len(preset_steps):
-                                        p_obj.is_running = False
-                                        p_obj.last_status = f"Завершен с ошибкой: {err}"
-                                    else:
-                                        p_obj.last_status = f"Ошибка шага {p_obj.current_step_index}: {err}"
+                                    p_obj.last_status = f"Выполняется: шаг {p_obj.current_step_index + 1}/{len(preset_steps)} ({step['bossName']})"
                                     db_sess.add(p_obj)
                                     await db_sess.commit()
-                                    active_preset = p_obj if p_obj.is_running else None
-                        break
+                        refreshed = await self._fetch_bootstrap_ready()
+                        return True, refreshed, active_preset
+                except Exception as err:
+                    logger.warning(f"Ошибка призыва босса в пресете (ID={b_id_int}): {err}")
+                    await self._log_action(
+                        "boss_preset_step_skip",
+                        "/api/boss/start-attack",
+                        400,
+                        False,
+                        {
+                            "preset_id": active_preset.id,
+                            "step_index": active_preset.current_step_index,
+                            "boss_id": b_id_int,
+                            "boss": step["bossName"],
+                            "boss_name": step["bossName"],
+                            "mode": b_mode,
+                            "reason": str(err),
+                        },
+                    )
+                    active_preset = await self._advance_preset_step(
+                        active_preset.id,
+                        preset_steps,
+                        status_note=f"Ошибка шага {active_preset.current_step_index + 1}: {err}",
+                    )
+                    continue
 
-        # Приоритет B: Если пресет не активен, но включена автоатака боссов из очереди config.boss_targets
-        is_summon_enabled = getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_summon", False)
-        if (state != "active" or not session or current_hp is None or current_hp <= 0) and (not active_preset):
-            if is_summon_enabled and config.boss_targets:
-                boss_catalog = {b["id"]: dict(b) for b in (_load_bosses_catalog() or FALLBACK_BOSSES)}
-                eval_list = list(boss_catalog.values())
-                BossAPI.evaluate_bosses_availability(eval_list, bootstrap=bootstrap)
-                eval_by_id = {b["id"]: b for b in eval_list}
+            return False, bootstrap, active_preset
 
-                for target in config.boss_targets:
-                    if not isinstance(target, dict) or not target.get("enabled", True):
-                        continue
-                    b_id = target.get("bossId")
-                    b_mode = target.get("mode", "pacansky")
-                    if not b_id:
-                        continue
-                    b_id_int = int(b_id)
-                    b_meta = eval_by_id.get(b_id_int, {})
+        # Приоритет B: Очередь config.boss_targets при включенном авто-призыве
+        is_summon_enabled = bool(getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_summon", False))
+        raw_targets = getattr(config, "boss_targets", None) or []
+        if is_summon_enabled and raw_targets:
+            for raw_item in raw_targets:
+                target = self._normalize_boss_target(raw_item)
+                if not target:
+                    continue
+                b_id_int = target["bossId"]
+                b_mode = target["mode"]
+                b_meta = eval_by_id.get(b_id_int, {})
 
-                    # 1. Проверка доступности/блокировки босса
-                    if b_meta.get("isLocked"):
-                        logger.info(
-                            f"Пропуск заблокированного босса ID={b_id_int} ({b_meta.get('title', 'Босс')}): "
-                            f"{b_meta.get('unlockReason', 'Босс заблокирован')}."
+                if b_meta.get("isLocked"):
+                    logger.info(
+                        f"Пропуск заблокированного босса ID={b_id_int} ({b_meta.get('title') or b_meta.get('name', 'Босс')}): "
+                        f"{b_meta.get('unlockReason', 'Босс заблокирован')}."
+                    )
+                    continue
+
+                mode_access = (b_meta.get("modesAccess") or {}).get(b_mode, {})
+                if not b_meta.get("canAttack", True) or (mode_access and not mode_access.get("canAttack", True)):
+                    reason = mode_access.get("reason") or b_meta.get("attackBlockReason") or "Недоступен для атаки"
+                    logger.info(f"Пропуск босса ID={b_id_int} ({b_meta.get('title') or b_meta.get('name', 'Босс')}): {reason}.")
+                    continue
+
+                if is_conveyor_transition:
+                    await self._transition_pause()
+
+                try:
+                    logger.info(f"Авто-призыв босса ID={b_id_int} (режим {b_mode})...")
+                    summon_res = await self.api.start_battle(boss_id=b_id_int, mode=b_mode)
+                    if summon_res.get("success") is not False:
+                        results["summoned_bosses"].append({"bossId": b_id_int, "mode": b_mode, "source": "auto_queue"})
+                        await self._log_action(
+                            "boss_auto_summon",
+                            "/api/boss/start-attack",
+                            200,
+                            True,
+                            {"boss_id": b_id_int, "mode": b_mode},
                         )
-                        continue
+                        refreshed = await self._fetch_bootstrap_ready()
+                        return True, refreshed, active_preset
+                except Exception as err:
+                    logger.warning(f"Не удалось призвать босса {b_id_int}, пробуем следующего: {err}")
+                    continue
 
-                    # 2. Проверка возможности атаковать
-                    if not b_meta.get("canAttack", True):
-                        logger.info(
-                            f"Пропуск босса ID={b_id_int} ({b_meta.get('title', 'Босс')}): "
-                            f"{b_meta.get('attackBlockReason', 'Недоступен для атаки')}."
-                        )
-                        continue
+        return False, bootstrap, active_preset
 
-                    try:
-                        logger.info(f"Авто-призыв босса ID={b_id_int} (режим {b_mode})...")
-                        summon_res = await self.api.start_battle(boss_id=b_id_int, mode=b_mode)
-                        if summon_res.get("success") is not False:
-                            logger.info(f"Бой с боссом ID={b_id_int} успешно запущен!")
-                            bootstrap = await self.api.get_bootstrap()
-                            session = bootstrap.get("session") or {}
-                            state = bootstrap.get("state")
-                            current_hp = session.get("currentHp")
-                            break
-                    except Exception as err:
-                        logger.warning(f"Не удалось запустить бой с боссом {b_id_int}: {err}")
+    async def run_cycle(self, force_manual: bool = False) -> Dict[str, Any]:
+        """
+        Выполняет конвейерный цикл проверки, сбора наград, призыва и атаки боссов.
+        При убийстве босса или сборе награды сразу призывает следующего в том же цикле.
+        """
+        async with self._cycle_lock:
+            logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла проверки боссов (force_manual={force_manual}) ===")
 
-        if state != "active" or not session or current_hp is None or current_hp <= 0:
-            logger.info(f"Активный бой с боссом отсутствует (state={state}, HP={current_hp}).")
-            return results
+            config = await get_or_create_config(self.account_id, self.db_engine)
+            if not force_manual and not is_worker_active(config):
+                logger.info("Планировщик на паузе или активен режим сна. Пропуск боссов.")
+                return {"status": "skipped", "reason": "paused_or_sleep"}
 
-        results["boss_active"] = True
-        results["boss_hp_remaining"] = current_hp
-        logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
+            results: Dict[str, Any] = {
+                "status": "success",
+                "account_id": self.account_id,
+                "rewards_claimed": 0,
+                "hits_performed": [],
+                "summoned_bosses": [],
+                "boss_active": False,
+                "boss_hp_remaining": None,
+                "errors": [],
+            }
 
-        # Фиксируем актуальный урон друзей по текущему активному боссу
-        await self.record_friends_damage(bootstrap)
+            active_preset, preset_steps = await self._load_active_preset()
+            prisons_data = await self._fetch_prisons_safe()
+            claimed_keys_in_cycle: Set[str] = set()
 
-        is_hits_enabled = getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_hits", True)
-        if not is_hits_enabled:
-            logger.info("Авто-удары по боссу отключены в конфигурации.")
-            return results
+            max_chain = 10
+            chain_idx = 0
+            boss_active = False
 
-        # 4. Расчет доступных и готовых бесплатных ударов
-        try:
-            weapons_data = await self.api.get_weapons()
-        except Exception as e:
-            logger.error(f"Ошибка при получении оружия: {e}")
-            results["errors"].append(f"get_weapons: {str(e)}")
-            await self._log_action("get_weapons", "/api/boss/weapons", 500, False, {"error": str(e)})
-            return results
-
-        equipped_slots = weapons_data.get("equippedSlots") or []
-        weapon_stats_effective = bootstrap.get("weaponStatsEffective") or {}
-        now_utc = datetime.now(timezone.utc)
-
-        # Выбираем только разблокированные рукопашные атаки
-        available_melee = [w for w in MELEE_CONFIG if w in equipped_slots]
-        ready_hits: List[str] = []
-
-        for w in available_melee:
-            cfg = MELEE_CONFIG[w]
-            last_raw = weapons_data.get(cfg["last_time_key"])
-            last_dt = parse_iso_utc(last_raw)
-            cooldown_sec = weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"])
-
-            if last_dt is None:
-                ready_hits.append(w)
-            elif now_utc >= (last_dt + timedelta(seconds=cooldown_sec)):
-                ready_hits.append(w)
-            else:
-                remaining_sec = (last_dt + timedelta(seconds=cooldown_sec) - now_utc).total_seconds()
-                logger.debug(f"Удар {w} на кулдауне (осталось {remaining_sec:.0f}с).")
-
-        if not ready_hits:
-            logger.info("Нет готовых рукопашных ударов (все на перезарядке).")
-            return results
-
-        logger.info(f"Готовые к применению бесплатные удары: {ready_hits}")
-
-        # 5. Выполнение серии ударов
-        for weapon_name in ready_hits:
-            try:
-                logger.info(f"Нанесение удара {weapon_name} по боссу...")
-                hit_res = await self.api.hit_boss(weapon_name, count=1)
-                new_hp = hit_res.get("currentHp")
-                if new_hp is not None:
-                    results["boss_hp_remaining"] = new_hp
-
-                results["hits_performed"].append({"weapon": weapon_name, "response": hit_res})
-                await self._log_action(
-                    "boss_melee_hit",
-                    "/api/boss/use-weapon",
-                    200,
-                    True,
-                    {"weapon": weapon_name, "response": hit_res},
-                )
-                logger.info(f"Удар {weapon_name} успешно нанесен! Новое HP: {new_hp}")
-
-                # Если босс погиб
-                if new_hp is not None and new_hp <= 0:
-                    logger.info("🎉 Босс повержен в результате серии ударов!")
-                    # Пытаемся сразу забрать награду, если сервер вернул claimId
-                    if hit_res.get("claimId"):
-                        try:
-                            await self.api.claim_reward(str(hit_res["claimId"]))
-                            results["rewards_claimed"] += 1
-                        except Exception:
-                            pass
-                    if active_preset and self.db_engine:
-                        try:
-                            async with get_session(self.db_engine) as db_sess:
-                                p_obj = await db_sess.get(BossPreset, active_preset.id)
-                                if p_obj:
-                                    p_obj.current_step_index += 1
-                                    if p_obj.current_step_index >= len(preset_steps):
-                                        p_obj.is_running = False
-                                        p_obj.last_status = f"Выполнен ({len(preset_steps)}/{len(preset_steps)})"
-                                    else:
-                                        nxt = preset_steps[p_obj.current_step_index]
-                                        p_obj.last_status = f"Выполняется: шаг {p_obj.current_step_index + 1}/{len(preset_steps)} ({nxt['bossName']})"
-                                    db_sess.add(p_obj)
-                                    await db_sess.commit()
-                        except Exception as e:
-                            logger.warning(f"Ошибка обновления пресета при гибели босса: {e}")
+            while chain_idx < max_chain:
+                # 1. Получение состояния боя
+                try:
+                    bootstrap = await self._fetch_bootstrap_ready()
+                except Exception as e:
+                    logger.error(f"Ошибка при получении bootstrap босса: {e}")
+                    results["errors"].append(f"get_bootstrap: {str(e)}")
+                    await self._log_action("get_bootstrap", "/api/boss/bootstrap", 500, False, {"error": str(e)})
                     break
 
-                await self._jitter()
-
-            except httpx.HTTPStatusError as err:
-                err_text = err.response.text
-                status_code = err.response.status_code
-                logger.warning(f"Сервер отклонил удар {weapon_name} (HTTP {status_code}): {err_text}")
-                results["errors"].append(f"hit_{weapon_name} (HTTP {status_code}): {err_text}")
-                await self._log_action(
-                    "boss_melee_hit",
-                    "/api/boss/use-weapon",
-                    status_code,
-                    False,
-                    {"weapon": weapon_name, "error": err_text},
+                # 2. Сбор всех несобранных наград
+                claimed_now, active_preset = await self._claim_pending_rewards(
+                    bootstrap=bootstrap,
+                    results=results,
+                    active_preset=active_preset,
+                    preset_steps=preset_steps,
+                    claimed_keys_in_cycle=claimed_keys_in_cycle,
                 )
-            except Exception as e:
-                logger.error(f"Ошибка при нанесении удара {weapon_name}: {e}")
-                results["errors"].append(f"hit_{weapon_name}: {str(e)}")
-                await self._log_action(
-                    "boss_melee_hit",
-                    "/api/boss/use-weapon",
-                    500,
-                    False,
-                    {"weapon": weapon_name, "error": str(e)},
+                if claimed_now > 0:
+                    try:
+                        bootstrap = await self._fetch_bootstrap_ready()
+                    except Exception as e:
+                        results["errors"].append(f"get_bootstrap_after_claim: {str(e)}")
+                        break
+
+                state, battle = self._extract_battle(bootstrap)
+                current_hp = battle.get("currentHp") if battle else None
+
+                # Если статический мок в тестах продолжает отдавать уже заклейменную награду — считаем слот свободным
+                if claimed_keys_in_cycle and state == "reward" and claimed_now == 0:
+                    state = "idle"
+                    battle = None
+                    current_hp = None
+
+                # 3. Призыв следующего босса при отсутствии активного боя
+                is_battle_alive = (
+                    state in ("active", "in_progress")
+                    and battle is not None
+                    and current_hp is not None
+                    and int(current_hp) > 0
                 )
+                if not is_battle_alive:
+                    summoned, bootstrap, active_preset = await self._try_summon_next_boss(
+                        bootstrap=bootstrap,
+                        config=config,
+                        prisons_data=prisons_data,
+                        active_preset=active_preset,
+                        preset_steps=preset_steps,
+                        results=results,
+                        is_conveyor_transition=(chain_idx > 0 or claimed_now > 0),
+                    )
+                    if not summoned:
+                        boss_active = False
+                        break
+                    state, battle = self._extract_battle(bootstrap)
+                    current_hp = battle.get("currentHp") if battle else None
+                    is_battle_alive = (
+                        state in ("active", "in_progress")
+                        and battle is not None
+                        and current_hp is not None
+                        and int(current_hp) > 0
+                    )
+                    if not is_battle_alive:
+                        boss_active = False
+                        break
 
-        # 6. Уведомление владельца при значимых событиях боя
-        if self.notifier is not None:
-            if results["rewards_claimed"] > 0 or len(results["hits_performed"]) > 0:
-                lines = ["👊 <b>Битва с боссом:</b>"]
-                if len(results["hits_performed"]) > 0:
-                    lines.append(f"⚔️ Нанесено рукопашных ударов: <b>{len(results['hits_performed'])}</b>")
-                    if results["boss_hp_remaining"] is not None:
-                        lines.append(f"❤️ Оставшееся HP босса: <b>{results['boss_hp_remaining']}</b>")
-                if results["rewards_claimed"] > 0:
-                    lines.append(f"🏆 Собрано наград: <b>{results['rewards_claimed']}</b>")
-                await self.notifier.notify("\n".join(lines))
+                boss_active = True
+                results["boss_active"] = True
+                results["boss_hp_remaining"] = current_hp
+                logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
 
-        logger.info(f"=== [Аккаунт {self.account_id}] Цикл проверки боссов завершен ===")
-        return results
+                await self.record_friends_damage(bootstrap)
+
+                is_hits_enabled = bool(getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_hits", True))
+                if not is_hits_enabled:
+                    logger.info("Авто-удары по боссу отключены в конфигурации.")
+                    break
+
+                # 4. Расчет готовых бесплатных рукопашных ударов
+                try:
+                    weapons_data = await self.api.get_weapons()
+                except Exception as e:
+                    logger.error(f"Ошибка при получении оружия: {e}")
+                    results["errors"].append(f"get_weapons: {str(e)}")
+                    await self._log_action("get_weapons", "/api/boss/weapons", 500, False, {"error": str(e)})
+                    break
+
+                equipped_slots = weapons_data.get("equippedSlots") or []
+                weapon_stats_effective = bootstrap.get("weaponStatsEffective") or {}
+                now_utc = datetime.now(timezone.utc)
+
+                available_melee = [w for w in MELEE_CONFIG if w in equipped_slots]
+                ready_hits: List[str] = []
+
+                for w in available_melee:
+                    cfg = MELEE_CONFIG[w]
+                    last_raw = weapons_data.get(cfg["last_time_key"])
+                    last_dt = parse_iso_utc(last_raw)
+                    cooldown_sec = weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"])
+
+                    if last_dt is None or now_utc >= (last_dt + timedelta(seconds=cooldown_sec)):
+                        ready_hits.append(w)
+
+                if not ready_hits:
+                    logger.info("Нет готовых рукопашных ударов (все на перезарядке).")
+                    break
+
+                # 5. Нанесение ударов
+                killed_in_combat = False
+                for weapon_name in ready_hits:
+                    try:
+                        logger.info(f"Нанесение удара {weapon_name} по боссу...")
+                        hit_res = await self.api.hit_boss(weapon_name, count=1)
+                        new_hp = hit_res.get("currentHp")
+                        if new_hp is not None:
+                            results["boss_hp_remaining"] = new_hp
+
+                        results["hits_performed"].append({"weapon": weapon_name, "response": hit_res})
+                        await self._log_action(
+                            "boss_melee_hit",
+                            "/api/boss/use-weapon",
+                            200,
+                            True,
+                            {"weapon": weapon_name, "response": hit_res},
+                        )
+
+                        hit_state = str(hit_res.get("state") or "").lower()
+                        if (new_hp is not None and int(new_hp) <= 0) or hit_res.get("bossDefeated") or hit_state in ("reward", "reward_processing"):
+                            logger.info("🎉 Босс повержен в результате удара!")
+                            if hit_res.get("claimId"):
+                                try:
+                                    await self.api.claim_reward(str(hit_res["claimId"]))
+                                    claimed_keys_in_cycle.add(f"cid:{hit_res['claimId']}")
+                                    results["rewards_claimed"] += 1
+                                    if active_preset:
+                                        active_preset = await self._advance_preset_step(active_preset.id, preset_steps)
+                                except Exception:
+                                    pass
+                            killed_in_combat = True
+                            break
+
+                        await self._jitter()
+                    except httpx.HTTPStatusError as err:
+                        err_text = err.response.text
+                        status_code = err.response.status_code
+                        logger.warning(f"Сервер отклонил удар {weapon_name} (HTTP {status_code}): {err_text}")
+                        results["errors"].append(f"hit_{weapon_name} (HTTP {status_code}): {err_text}")
+                        await self._log_action(
+                            "boss_melee_hit",
+                            "/api/boss/use-weapon",
+                            status_code,
+                            False,
+                            {"weapon": weapon_name, "error": err_text},
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка при нанесении удара {weapon_name}: {e}")
+                        results["errors"].append(f"hit_{weapon_name}: {str(e)}")
+                        await self._log_action(
+                            "boss_melee_hit",
+                            "/api/boss/use-weapon",
+                            500,
+                            False,
+                            {"weapon": weapon_name, "error": str(e)},
+                        )
+
+                if killed_in_combat:
+                    chain_idx += 1
+                    continue
+                break
+
+            # Уведомление об активности для адаптивного планировщика (12с vs 60с)
+            if self.on_activity_change is not None:
+                try:
+                    self.on_activity_change(bool(boss_active or active_preset is not None))
+                except Exception as e:
+                    logger.debug(f"Ошибка callback on_activity_change: {e}")
+
+            # Telegram уведомление только по итогам значимых событий
+            if self.notifier is not None:
+                if results["rewards_claimed"] > 0 or len(results["hits_performed"]) > 0 or len(results["summoned_bosses"]) > 0:
+                    lines = ["👊 <b>Битва с боссом:</b>"]
+                    if len(results["summoned_bosses"]) > 0:
+                        lines.append(f"🔥 Призвано боссов: <b>{len(results['summoned_bosses'])}</b>")
+                    if len(results["hits_performed"]) > 0:
+                        lines.append(f"⚔️ Нанесено рукопашных ударов: <b>{len(results['hits_performed'])}</b>")
+                        if results["boss_hp_remaining"] is not None:
+                            lines.append(f"❤️ Оставшееся HP босса: <b>{results['boss_hp_remaining']}</b>")
+                    if results["rewards_claimed"] > 0:
+                        lines.append(f"🏆 Собрано наград: <b>{results['rewards_claimed']}</b>")
+                    await self.notifier.notify("\n".join(lines))
+
+            logger.info(f"=== [Аккаунт {self.account_id}] Цикл проверки боссов завершен ===")
+            return results

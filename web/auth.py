@@ -3,7 +3,7 @@ import hashlib
 import json
 import urllib.parse
 from typing import Optional
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Query, status
 from core.config import settings
 
 
@@ -52,26 +52,31 @@ def validate_telegram_init_data(init_data: str, bot_token: str, admin_id: int) -
 async def verify_admin(
     x_telegram_init_data: Optional[str] = Header(None, alias="X-Telegram-Init-Data"),
     x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token"),
+    query_init_data: Optional[str] = Query(None, alias="init_data"),
+    query_admin_token: Optional[str] = Query(None, alias="token"),
 ) -> bool:
     """
     FastAPI зависимость авторизации:
-    - Проверяет заголовок X-Admin-Token (для прямого открытия в браузере или DevTools)
-    - ИЛИ проверяет заголовок X-Telegram-Init-Data (для Telegram Mini App)
+    - Проверяет заголовок X-Admin-Token или query ?token= (для SSE EventSource)
+    - ИЛИ проверяет заголовок X-Telegram-Init-Data / query ?init_data= (для Telegram Mini App)
     """
+    effective_admin_token = x_admin_token or query_admin_token
+    effective_init_data = x_telegram_init_data or query_init_data
+
     # 1. Проверка токена браузера (если совпадает с WEB_ADMIN_TOKEN)
-    if x_admin_token and settings.WEB_ADMIN_TOKEN and x_admin_token == settings.WEB_ADMIN_TOKEN:
+    if effective_admin_token and settings.WEB_ADMIN_TOKEN and hmac.compare_digest(effective_admin_token, settings.WEB_ADMIN_TOKEN):
         return True
 
     # 2. Проверка Telegram WebApp initData
-    if x_telegram_init_data:
-        if validate_telegram_init_data(x_telegram_init_data, settings.TG_BOT_TOKEN, settings.ADMIN_TG_ID):
+    if effective_init_data:
+        if validate_telegram_init_data(effective_init_data, settings.TG_BOT_TOKEN, settings.ADMIN_TG_ID):
             return True
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: Invalid Telegram WebApp signature or unauthorized user",
         )
 
-    if x_admin_token:
+    if effective_admin_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized: Invalid admin token",

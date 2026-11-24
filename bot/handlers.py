@@ -12,6 +12,7 @@ from core.config import settings
 
 from core.database import get_session
 from core.models import PlayerSnapshot, ActionLog
+from core.state_hub import state_hub
 from bot.filters import AdminOnlyFilter
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ class BotContext:
         self._social_api = None
         self._is_paused: bool = False
         self._is_running_manual: bool = False
+        self.state_hub = state_hub
+        self.scheduler_controller = None
 
     @property
     def player_api(self):

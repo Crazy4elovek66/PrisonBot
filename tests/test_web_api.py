@@ -2719,5 +2719,111 @@ async def test_room_render_authentic_assets_and_no_fake_crop(web_setup):
     assert r42["effectConfigUrl"] is not None
 
 
+@pytest.mark.asyncio
+async def test_forwarded_prefix_proxy_rewriting(web_setup):
+    """Проверка работы за HTTPS reverse-proxy под префиксом /prison (X-Forwarded-Prefix)."""
+    client, _ = web_setup
+    proxy_headers = {"X-Admin-Token": "test_admin_token", "X-Forwarded-Prefix": "/prison"}
+
+    res_html = await client.get("/", headers=proxy_headers)
+    assert res_html.status_code == 200
+    assert '"/prison/static/assets/' in res_html.text
+
+    res_js = await client.get("/app.js", headers=proxy_headers)
+    assert res_js.status_code == 200
+    assert 'const API_BASE = "/prison/api/v1"' in res_js.text
+
+    res_room = await client.get("/api/v1/wardrobe/room-render/54", headers=proxy_headers)
+    assert res_room.status_code == 200
+    d54 = res_room.json()
+    assert d54["bundleUrl"].startswith("/prison/api/v1/assets/proxy")
+    assert d54["previewUrl"].startswith("/prison/static/assets/rooms/")
+
+    # Без X-Forwarded-Prefix все пути остаются от корня /
+    res_plain = (await client.get("/api/v1/wardrobe/room-render/54", headers={"X-Admin-Token": "test_admin_token"})).json()
+    assert res_plain["bundleUrl"].startswith("/api/v1/assets/proxy")
+
+
+@pytest.mark.asyncio
+async def test_prisons_drain_endpoint(web_setup):
+    """POST /api/v1/prisons/drain сливает всю доступную энергию и возвращает runsCompleted / remainingEnergy."""
+    from unittest.mock import AsyncMock
+    from client.api.prison import PrisonAPI
+    from client.api.player import PlayerAPI
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    energy_state = 25
+
+    def mock_handler(request: httpx.Request):
+        nonlocal energy_state
+        if request.url.path == "/api/player/init":
+            return httpx.Response(200, json={"success": True, "energy": energy_state, "maxEnergy": 50})
+        elif request.url.path == "/api/prisons/all":
+            return httpx.Response(200, json={"success": True, "prisons": [{"id": 1, "name": "Бутырка", "isUnlocked": True}]})
+        elif request.url.path == "/api/player/prison/1":
+            return httpx.Response(200, json={"success": True, "data": {"prisonId": 1, "dayCurrentCheckpoint": 0}})
+        elif request.url.path == "/api/player/prison/1/checkpoints":
+            return httpx.Response(200, json={"success": True, "data": [{"energyCost": 6, "clicksRequired": 2}]})
+        elif request.url.path == "/api/player/prison/1/work":
+            energy_state -= 6
+            return httpx.Response(200, json={"success": True, "energy": energy_state, "rewardCigarettes": 5})
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url=settings.API_BASE_URL)
+    mock_auth = AsyncMock()
+    mock_auth.get_valid_token.return_value = "tok"
+    from client.http_client import GameHttpClient
+    game_http = GameHttpClient(auth_provider=mock_auth, custom_client=mock_client)
+
+    bot_context.player_api = PlayerAPI(http_client=game_http)
+    bot_context.prison_api = PrisonAPI(http_client=game_http)
+
+    res = await client.post("/api/v1/prisons/drain", json={"prisonId": 1, "isDay": True}, headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert data["runsCompleted"] == 4
+    assert data["remainingEnergy"] == 1
+    assert data["stageCost"] == 6
+
+
+@pytest.mark.asyncio
+async def test_live_delta_and_sse_stream_with_query_token(web_setup):
+    """GET /api/v1/live/delta и SSE GET /api/v1/live/stream?token=...&once=true отдают валидный snapshot."""
+    client, _ = web_setup
+    from web.routes import _get_hub
+    hub = _get_hub()
+    hub.clear()
+    hub.update_slice(1, "profile", {"profile": {"nickname": "StreamHero", "energy": 33}})
+
+    # Delta check
+    res_delta = await client.get('/api/v1/live/delta?versions={"profile":0}', headers={"X-Admin-Token": "test_admin_token"})
+    assert res_delta.status_code == 200
+    d = res_delta.json()
+    assert d["versions"]["profile"] >= 1
+    assert "profile" in d["changed"]
+
+    # SSE stream check (query-string token auth)
+    res_sse = await client.get("/api/v1/live/stream?token=test_admin_token&once=true")
+    assert res_sse.status_code == 200
+    assert "text/event-stream" in res_sse.headers.get("content-type", "")
+    assert "event: snapshot" in res_sse.text
+    assert "StreamHero" in res_sse.text
+
+
+def test_normalize_db_url_resolves_to_storage():
+    """normalize_db_url приводит относительный путь SQLite к <PROJECT_ROOT>/storage/prison_bot.db."""
+    from core.database import normalize_db_url, PROJECT_ROOT
+
+    expected_path = (PROJECT_ROOT / "storage" / "prison_bot.db").as_posix()
+    assert normalize_db_url("sqlite+aiosqlite:///storage/prison_bot.db") == f"sqlite+aiosqlite:///{expected_path}"
+    assert normalize_db_url("sqlite+aiosqlite:///prison_bot.db") == f"sqlite+aiosqlite:///{expected_path}"
+    assert normalize_db_url("sqlite+aiosqlite:///:memory:") == "sqlite+aiosqlite:///:memory:"
+
+
+
+
 
 

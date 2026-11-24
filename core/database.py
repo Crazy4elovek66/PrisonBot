@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
+import re
 from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -10,8 +12,37 @@ from sqlalchemy import text, event
 from core.config import settings
 from core.models import Base
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+
+
+def normalize_db_url(db_url: str) -> str:
+    """
+    Приводит относительный путь SQLite БД к единому абсолютному пути внутри <PROJECT_ROOT>/storage/prison_bot.db.
+    In-memory и уже абсолютные пути оставляет без изменений.
+    """
+    if not db_url or ":memory:" in db_url:
+        return db_url
+
+    match = re.match(r"^(sqlite(?:\+[a-z0-9_]+)?):///(.+)$", db_url)
+    if not match:
+        return db_url
+
+    scheme, raw_path = match.group(1), match.group(2)
+    # Уже абсолютный путь (Unix /... или Windows C:/... или C:\...)
+    if raw_path.startswith("/") or re.match(r"^[A-Za-z]:[/\\]", raw_path):
+        resolved = Path(raw_path)
+    else:
+        clean_rel = raw_path.lstrip("./\\")
+        if clean_rel == "prison_bot.db":
+            resolved = PROJECT_ROOT / "storage" / "prison_bot.db"
+        else:
+            resolved = (PROJECT_ROOT / clean_rel).resolve()
+
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return f"{scheme}:///{resolved.as_posix()}"
 
 
 def _set_sqlite_pragmas(dbapi_connection, connection_record):
@@ -29,7 +60,7 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record):
 def get_engine(db_url: Optional[str] = None) -> AsyncEngine:
     global _engine
     if _engine is None or db_url is not None:
-        url = db_url or settings.DB_URL
+        url = normalize_db_url(db_url or settings.DB_URL)
         # In-memory SQLite can't use pool_pre_ping or WAL mode
         is_memory = ":memory:" in url
         engine = create_async_engine(

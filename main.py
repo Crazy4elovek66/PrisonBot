@@ -12,6 +12,7 @@ from core.config import settings
 from core.database import init_db, get_session, get_engine
 from core.models import Account, SessionData
 from core.scheduler import create_scheduler
+from core.state_hub import state_hub
 from telegram.session_manager import interactive_login
 from client.auth_provider import AuthProvider
 from client.http_client import GameHttpClient
@@ -94,12 +95,16 @@ async def run_bot(once_mode: bool = False) -> None:
         account_id=account.id,
         boss_api=boss_api,
         notifier=notifier,
+        prison_api=prison_api,
+        player_api=player_api,
+        state_hub=state_hub,
     )
     prison_worker = PrisonWorker(
         account_id=account.id,
         prison_api=prison_api,
         player_api=player_api,
         notifier=notifier,
+        state_hub=state_hub,
     )
     social_worker = SocialWorker(
         account_id=account.id,
@@ -135,6 +140,12 @@ async def run_bot(once_mode: bool = False) -> None:
     # Обновление глобального контекста для Telegram-бота и WebApp
     bot_context.db_engine = get_engine()
     bot_context.scheduler = scheduler
+    bot_context.scheduler_controller = getattr(scheduler, "controller", None)
+    bot_context.state_hub = state_hub
+    bot_context.player_api = player_api
+    bot_context.boss_api = boss_api
+    bot_context.prison_api = prison_api
+    bot_context.social_api = social_api
     bot_context.routine_worker = routine_worker
     bot_context.boss_worker = boss_worker
     bot_context.prison_worker = prison_worker
@@ -148,6 +159,8 @@ async def run_bot(once_mode: bool = False) -> None:
     await social_worker.run_cycle()
 
     scheduler.start()
+    if bot_context.scheduler_controller is not None:
+        asyncio.create_task(bot_context.scheduler_controller.warmup_all())
     logger.info(
         f"Воркеры успешно запущены (Рутина: {settings.ROUTINE_INTERVAL_MINUTES} мин, "
         f"Боссы: {settings.BOSS_INTERVAL_MINUTES} мин, Тюрьмы: {settings.PRISON_INTERVAL_MINUTES} мин, "

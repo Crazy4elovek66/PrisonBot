@@ -1,16 +1,19 @@
 import logging
 import random
 import asyncio
+import json
 import time
 import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Body, HTTPException, status
+from fastapi import APIRouter, Depends, Query, Body, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update, delete, func
 
 from core.database import get_session, get_or_create_config, get_engine
+from core.state_hub import state_hub as global_state_hub
 from core.models import (
     Account,
     PlayerSnapshot,
@@ -44,6 +47,26 @@ from collections import OrderedDict
 from pydantic import BaseModel
 
 _last_ping_cache = {"ts": 0.0, "ping_ms": 45}
+
+
+def _get_hub():
+    return getattr(bot_context, "state_hub", None) or global_state_hub
+
+
+def _hub_source_tag() -> str:
+    return (
+        f"{id(bot_context.player_api)}:{id(bot_context.boss_api)}:"
+        f"{id(bot_context.prison_api)}:{id(bot_context.social_api)}:{id(bot_context.db_engine)}"
+    )
+
+
+def _schedule_hub_refresh(account_id: int, *slice_names: str) -> None:
+    """Асинхронно обновляет указанные срезы LiveStateHub в фоне без блокировки HTTP-ответа."""
+    for s_name in slice_names:
+        try:
+            asyncio.create_task(refresh_hub_slice(account_id=account_id, slice_name=s_name, force=True))
+        except RuntimeError:
+            pass
 
 
 class _SingleFlightCache:
@@ -80,12 +103,21 @@ class _SingleFlightCache:
             return val
 
     def invalidate(self, *prefixes: str):
+        hub = _get_hub()
         if not prefixes:
             self._cache.clear()
+            hub.clear()
             return
         keys_to_del = [k for k in self._cache if any(k.startswith(p) for p in prefixes)]
         for k in keys_to_del:
             self._cache.pop(k, None)
+        # Синхронно очищаем соответствующие срезы LiveStateHub, чтобы ручная инвалидация в тестах и коде срабатывала сразу
+        for p in prefixes:
+            for acc_id in list(hub._slices.keys()):
+                acc_map = hub._slices.get(acc_id, {})
+                for s_name in list(acc_map.keys()):
+                    if s_name.startswith(p) or p.startswith(s_name):
+                        acc_map.pop(s_name, None)
 
 
 _flight_cache = _SingleFlightCache()
@@ -404,8 +436,15 @@ async def get_system_ping() -> Dict[str, Any]:
 
 
 @api_router.get("/state")
-async def get_state(account_id: int = 1) -> Dict[str, Any]:
+async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Возвращает текущее состояние персонажа, конфиг, статус планировщика и счетчики уведомлений."""
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "state", max_age_seconds=30.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
+
     engine = bot_context.db_engine
 
     async with get_session(engine) as session:
@@ -463,7 +502,7 @@ async def get_state(account_id: int = 1) -> Dict[str, Any]:
 
     scheduler_status = "paused" if bot_context.is_paused() else "active"
 
-    return {
+    payload = {
         "success": True,
         "snapshot": snap_data,
         "config": cfg_data,
@@ -473,6 +512,8 @@ async def get_state(account_id: int = 1) -> Dict[str, Any]:
         },
         "counts": counts,
     }
+    hub.update_slice(account_id, "state", payload, source_tag=tag)
+    return payload
 
 
 @api_router.get("/config")
@@ -596,7 +637,26 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         else:
             bot_context.resume()
 
-    _flight_cache.invalidate()
+    _flight_cache.invalidate("state", "config")
+
+    hub = _get_hub()
+    hub.update_slice(account_id, "config", cfg_dict, source_tag=_hub_source_tag())
+
+    # Мгновенное пробуждение воркеров при активации авто-боссов или тюрем
+    if not getattr(cfg, "is_paused", False):
+        ctrl = getattr(bot_context, "scheduler_controller", None)
+        should_wake_boss = bool(updates.get("auto_boss_enabled") or updates.get("auto_boss_summon") or ("boss_targets" in updates and cfg.auto_boss_enabled))
+        should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
+        if should_wake_boss:
+            if ctrl is not None:
+                ctrl.trigger_boss_now(force_manual=False)
+            elif bot_context.boss_worker is not None:
+                asyncio.create_task(bot_context.boss_worker.run_cycle())
+        if should_wake_prison:
+            if ctrl is not None:
+                ctrl.trigger_prison_now()
+            elif bot_context.prison_worker is not None:
+                asyncio.create_task(bot_context.prison_worker.run_cycle())
 
     return {
         "success": True,
@@ -956,11 +1016,18 @@ _last_live_biz_data: Dict[int, Dict[str, Any]] = {}
 
 
 @api_router.get("/live/profile")
-async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
+async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Получение живого профиля, статов, валют, инвентаря оружия и бизнесов."""
     player_api = bot_context.player_api
     if not player_api:
         raise HTTPException(status_code=503, detail="PlayerAPI not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "profile", max_age_seconds=90.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     # Параллельные вызовы init_player и get_businesses
     async def _safe_init():
@@ -1087,7 +1154,7 @@ async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
     from workers.routine_worker import get_toilet_paper_reset_info
     tp_info = get_toilet_paper_reset_info(can_claim_paper)
 
-    return {
+    payload = {
         "success": True,
         "profile": {
             "id": player_data.get("id"),
@@ -1101,7 +1168,7 @@ async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
             "talents": t_pts,
             "talentPointsTotal": t_pts,
             "lastEnergyRestoreTime": last_energy_restore,
-            "energyRestoreIntervalSeconds": 300,
+            "energyRestoreIntervalSeconds": int(player_data.get("energyRestoreIntervalSeconds") or 300),
             "beardDays": player_data.get("beardDays", 0),
             "canClaimToiletPaper": can_claim_paper,
             "toiletPaper": tp_info,
@@ -1125,17 +1192,26 @@ async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
         "lastBusinessCollectTime": last_collect,
         "characterLayers": _build_character_layers(player_data),
     }
+    hub.update_slice(account_id, "profile", payload, source_tag=tag)
+    return payload
 
 
 TIME_MSK_REGEX = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 @api_router.get("/live/boss")
-async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
+async def get_live_boss(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Получение состояния боя с боссом, сессии, эффективного урона оружия, откатов и статуса доступности всех 58 боссов."""
     boss_api = bot_context.boss_api
     if not boss_api:
         raise HTTPException(status_code=503, detail="BossAPI not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "boss", max_age_seconds=90.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     async def _safe_bootstrap():
         return await boss_api.get_bootstrap()
@@ -1182,7 +1258,7 @@ async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
     from client.api.boss import BossAPI
     bosses = BossAPI.evaluate_bosses_availability(raw_bosses, bootstrap=bootstrap, prisons_data=prisons_data)
 
-    session_data = bootstrap.get("session") or bootstrap.get("activeBoss")
+    session_data = bootstrap.get("session") or bootstrap.get("currentBattle") or bootstrap.get("activeBoss")
     has_reward = bool(bootstrap.get("hasReward", False))
     state = bootstrap.get("state") or ("active" if session_data else "none")
 
@@ -1242,7 +1318,7 @@ async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
         except Exception:
             pass
 
-    return {
+    payload = {
         "success": True,
         "state": state,
         "hasReward": has_reward,
@@ -1255,6 +1331,8 @@ async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
         "bosses": bosses,
         "activePreset": active_preset_info,
     }
+    hub.update_slice(account_id, "boss", payload, source_tag=tag)
+    return payload
 
 
 # ============================================================================
@@ -1488,8 +1566,14 @@ async def run_boss_preset(preset_id: int, account_id: int = 1) -> Dict[str, Any]
         await session.commit()
         await session.refresh(preset)
 
-    if bot_context.boss_worker:
-        asyncio.create_task(bot_context.boss_worker.run_cycle())
+    ctrl = getattr(bot_context, "scheduler_controller", None)
+    if ctrl is not None:
+        ctrl.trigger_boss_now(force_manual=True)
+    elif bot_context.boss_worker:
+        asyncio.create_task(bot_context.boss_worker.run_cycle(force_manual=True))
+
+    _flight_cache.invalidate(f"boss:{account_id}")
+    _schedule_hub_refresh(account_id, "boss")
 
     return {
         "success": True,
@@ -1538,11 +1622,18 @@ async def stop_boss_preset(preset_id: int, account_id: int = 1) -> Dict[str, Any
 
 
 @api_router.get("/live/prisons")
-async def get_live_prisons(account_id: int = 1) -> Dict[str, Any]:
+async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Получение каталога тюрем, состояния выбранной тюрьмы, чекпоинтов и мастеров."""
     prison_api = bot_context.prison_api
     if not prison_api:
         raise HTTPException(status_code=503, detail="PrisonAPI not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "prisons", max_age_seconds=120.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     engine = bot_context.db_engine
     cfg = await get_or_create_config(account_id, engine) if engine else None
@@ -1594,7 +1685,62 @@ async def get_live_prisons(account_id: int = 1) -> Dict[str, Any]:
         }
 
     target_cfg = getattr(cfg, "prison_target_id", None)
-    return await _flight_cache.get_or_set(f"prisons:{account_id}:{target_cfg}:{is_day}", 5.0, _fetch_prisons_payload)
+    payload = await _flight_cache.get_or_set(f"prisons:{account_id}:{target_cfg}:{is_day}", 5.0, _fetch_prisons_payload)
+    hub.update_slice(account_id, "prisons", payload, source_tag=tag)
+    return payload
+
+
+class PrisonDrainRequest(BaseModel):
+    prisonId: Optional[int] = None
+    isDay: Optional[bool] = None
+    mode: Optional[str] = None
+    collectPodogrev: bool = False
+
+
+@api_router.post("/prisons/drain")
+async def drain_prison_energy_endpoint(
+    payload: PrisonDrainRequest = Body(default_factory=PrisonDrainRequest),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Непрерывный слив всей доступной энергии игрока в выбранной тюрьме."""
+    prison_worker = bot_context.prison_worker
+    prison_api = bot_context.prison_api
+    if not prison_worker and not prison_api:
+        raise HTTPException(status_code=503, detail="PrisonAPI / PrisonWorker not available")
+
+    hub = _get_hub()
+    if prison_worker is None:
+        from workers.prison_worker import PrisonWorker
+        prison_worker = PrisonWorker(
+            account_id=account_id,
+            prison_api=prison_api,
+            player_api=bot_context.player_api,
+            db_engine=bot_context.db_engine,
+            state_hub=hub,
+            enable_jitter=False,
+        )
+    elif prison_worker.state_hub is None:
+        prison_worker.state_hub = hub
+
+    resolved_mode = payload.mode
+    if resolved_mode is None and payload.isDay is not None:
+        resolved_mode = "day" if payload.isDay else "night"
+
+    result = await prison_worker.drain_all_energy(
+        prison_id=payload.prisonId,
+        mode=resolved_mode,
+        collect_podogrev=payload.collectPodogrev,
+        source="manual",
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=502, detail=result.get("error", "Drain error"))
+
+    _flight_cache.invalidate()
+    _schedule_hub_refresh(account_id, "prisons")
+    if bot_context.player_api is not None:
+        _schedule_hub_refresh(account_id, "profile")
+
+    return {"success": True, **result}
 
 
 # ============================================================================
@@ -1627,6 +1773,9 @@ async def action_boss_hit(payload: Dict[str, Any] = Body(...), account_id: int =
             "weapon": weapon, "count": count, "error": str(e)
         })
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _flight_cache.invalidate(f"boss:{account_id}")
+        _schedule_hub_refresh(account_id, "boss", "profile")
 
 
 @api_router.post("/actions/boss/start")
@@ -1660,6 +1809,9 @@ async def action_boss_start(payload: Dict[str, Any] = Body(...), account_id: int
             "bossId": boss_id, "mode": mode, "error": str(e)
         })
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _flight_cache.invalidate(f"boss:{account_id}")
+        _schedule_hub_refresh(account_id, "boss", "profile")
 
 
 @api_router.post("/actions/boss/claim")
@@ -1683,6 +1835,9 @@ async def action_boss_claim(payload: Optional[Dict[str, Any]] = Body(None), acco
     except Exception as e:
         await _log_action(account_id, "manual_boss_claim", "/api/boss/claim", 500, False, {"error": str(e)})
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _flight_cache.invalidate(f"boss:{account_id}")
+        _schedule_hub_refresh(account_id, "boss", "profile")
 
 
 @api_router.get("/boss/friend-damage")
@@ -1710,6 +1865,10 @@ async def action_prison_work(payload: Dict[str, Any] = Body(...), account_id: in
         raise HTTPException(status_code=400, detail="prisonId обязателен")
 
     is_day = bool(payload.get("isDay", True))
+    if payload.get("drainAll"):
+        drain_req = PrisonDrainRequest(prisonId=int(prison_id), isDay=is_day, collectPodogrev=bool(payload.get("collectPodogrev", False)))
+        return await drain_prison_energy_endpoint(payload=drain_req, account_id=account_id)
+
     raw_count = int(payload.get("count", 1))
     count = max(1, min(15, raw_count))
 
@@ -1789,6 +1948,11 @@ async def action_prison_work(payload: Dict[str, Any] = Body(...), account_id: in
     await _log_action(account_id, "manual_prison_work", f"/api/player/prison/{prison_id}/work", 200, True, {
         "prisonId": prison_id, "isDay": is_day, "completed": completed, "rewards": rewards_list, "drops": drops_list
     })
+
+    if isinstance(last_res, dict) and last_res.get("energy") is not None:
+        _get_hub().patch_profile_resources(account_id, energy=last_res.get("energy"), lastEnergyRestoreTime=last_res.get("lastEnergyRestoreTime"))
+    _flight_cache.invalidate()
+    _schedule_hub_refresh(account_id, "prisons", "profile")
 
     return {
         "success": True,
@@ -2028,12 +2192,24 @@ async def action_upgrade_business(payload: Dict[str, Any] = Body(...), account_i
 
 
 @api_router.get("/friendship/requests")
-async def get_friendship_requests(page: int = Query(0, ge=0), page_size: int = Query(50, ge=1, le=100)) -> Dict[str, Any]:
+async def get_friendship_requests(
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=100),
+    account_id: int = 1,
+    force: bool = Query(False),
+) -> Dict[str, Any]:
     """Получение списка входящих заявок в друзья с обогащенными статами кандидатов."""
     social_api = bot_context.social_api
     player_api = bot_context.player_api
     if not social_api:
         raise HTTPException(status_code=503, detail="SocialAPI not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force and page == 0:
+        warm = hub.get_slice(account_id, "friend_requests", max_age_seconds=120.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     try:
         candidates = await social_api.get_enriched_friend_requests(
@@ -2041,22 +2217,34 @@ async def get_friendship_requests(page: int = Query(0, ge=0), page_size: int = Q
             page_size=page_size,
             player_api=player_api,
         )
-        return {"success": True, "requests": candidates, "total": len(candidates)}
+        payload = {"success": True, "requests": candidates, "total": len(candidates)}
+        if page == 0:
+            hub.update_slice(account_id, "friend_requests", payload, source_tag=tag)
+        return payload
     except Exception as e:
         logger.error("Error fetching friend requests: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.get("/monthly/state")
-async def get_monthly_state() -> Dict[str, Any]:
+async def get_monthly_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Получение актуального состояния Месячных делюг."""
     social_api = bot_context.social_api
     if not social_api:
         raise HTTPException(status_code=503, detail="SocialAPI not available")
 
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "monthly", max_age_seconds=180.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
+
     try:
         st = await social_api.get_monthly_state()
-        return {"success": True, "state": st}
+        payload = {"success": True, "state": st}
+        hub.update_slice(account_id, "monthly", payload, source_tag=tag)
+        return payload
     except Exception as e:
         logger.error("Error fetching monthly state: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -3271,9 +3459,22 @@ async def get_collections(user_id: Optional[int] = Query(None)) -> Dict[str, Any
 
 
 @api_router.get("/live/collections")
-async def get_live_collections(user_id: Optional[int] = Query(None)) -> Dict[str, Any]:
+async def get_live_collections(
+    user_id: Optional[int] = Query(None),
+    account_id: int = 1,
+    force: bool = Query(False),
+) -> Dict[str, Any]:
     """Алиас для получения коллекций игрока (с приоритетом готовых к обмену)."""
-    return await get_collections(user_id=user_id)
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if user_id is None and not force:
+        warm = hub.get_slice(account_id, "collections", max_age_seconds=180.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
+    res = await get_collections(user_id=user_id)
+    if user_id is None and isinstance(res, dict):
+        hub.update_slice(account_id, "collections", res, source_tag=tag)
+    return res
 
 
 @api_router.post("/daily/toilet-paper")
@@ -3436,11 +3637,17 @@ async def action_exchange_collection(payload: Dict[str, Any] = Body(...), accoun
 
 
 @api_router.get("/bauls")
-async def get_bauls() -> Dict[str, Any]:
+async def get_bauls(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """Получение статистики баулов с обогащенными иконками и подписями наград."""
     player_api = bot_context.player_api
     if not player_api:
         raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "bauls", max_age_seconds=180.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
     try:
         res = await player_api.get_bauls_stat()
         data = res.get("data") if isinstance(res.get("data"), dict) and "stats" in res.get("data", {}) else res
@@ -3520,7 +3727,7 @@ async def get_bauls() -> Dict[str, Any]:
                 "imageUrl": img_url,
             })
 
-        return {
+        payload = {
             "success": True,
             "stats": {
                 "active": is_active,
@@ -3533,6 +3740,8 @@ async def get_bauls() -> Dict[str, Any]:
             },
             "raw": res,
         }
+        hub.update_slice(account_id, "bauls", payload, source_tag=tag)
+        return payload
     except Exception as e:
         logger.error("Error fetching bauls: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -3614,12 +3823,21 @@ async def get_active_players(
     limit: int = Query(50),
     excludeFriends: bool = Query(False),
     account_id: int = 1,
+    force: bool = Query(False),
 ) -> Dict[str, Any]:
     """Получение активных дамагеров из локальной БД и официального топа с детектором активности за 24ч."""
     social_api = bot_context.social_api
     player_api = bot_context.player_api
     if not social_api:
         raise HTTPException(status_code=503, detail="SocialAPI not available")
+
+    is_default_radar = (source == "all" and minDamage == 0 and maxDamage == 0 and not excludeFriends and limit == 50)
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if is_default_radar and not force:
+        warm = hub.get_slice(account_id, "radar", max_age_seconds=180.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     async def _fetch_my_uid():
         if not player_api:
@@ -3684,12 +3902,15 @@ async def get_active_players(
         db_engine=bot_context.db_engine,
     )
 
-    return {
+    payload = {
         "success": True,
         "total": len(players),
         "players": players,
         "safety": safety,
     }
+    if is_default_radar:
+        hub.update_slice(account_id, "radar", payload, source_tag=tag)
+    return payload
 
 
 @api_router.post("/raids/scan-guilds")
@@ -4004,14 +4225,21 @@ async def action_send_friend_batch(
 
 
 @api_router.get("/friends/summary")
-async def get_friends_summary(account_id: int = 1) -> Dict[str, Any]:
+async def get_friends_summary(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
     """
     Возвращает сводку по друзьям: актуальное число друзей, суточную дельту (за 24ч) и конверсию по источникам.
-    Кэшируется через _SingleFlightCache на 15 секунд.
+    Кэшируется в LiveStateHub и _SingleFlightCache.
     """
     engine = bot_context.db_engine
     if not engine:
         raise HTTPException(status_code=503, detail="Database engine not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force:
+        warm = hub.get_slice(account_id, "friends", max_age_seconds=120.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     async def _compute_summary() -> Dict[str, Any]:
         now = datetime.utcnow()
@@ -4151,7 +4379,9 @@ async def get_friends_summary(account_id: int = 1) -> Dict[str, Any]:
                 "conversionBySource": conversion_by_source,
             }
 
-    return await _flight_cache.get_or_set(f"friends_summary:{account_id}", 15.0, _compute_summary)
+    summary_payload = await _flight_cache.get_or_set(f"friends_summary:{account_id}", 15.0, _compute_summary)
+    hub.update_slice(account_id, "friends", summary_payload, source_tag=tag)
+    return summary_payload
 
 
 @api_router.get("/friends/stats")
@@ -4159,6 +4389,7 @@ async def get_friends_stats(
     sort: str = Query("damage_7d"),
     limit: int = Query(100, ge=1, le=500),
     account_id: int = 1,
+    force: bool = Query(False),
 ) -> Dict[str, Any]:
     """
     Выгрузка списка друзей с боевой статистикой, уроном за 7 дней и статусом неактивности.
@@ -4167,6 +4398,13 @@ async def get_friends_stats(
     engine = bot_context.db_engine
     if not engine:
         raise HTTPException(status_code=503, detail="Database engine not available")
+
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    if not force and sort == "damage_7d" and limit == 100:
+        warm = hub.get_slice(account_id, "friends_stats", max_age_seconds=120.0, source_tag=tag)
+        if warm is not None:
+            return warm.data
 
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
@@ -4224,11 +4462,14 @@ async def get_friends_stats(
         elif sort == "inactive":
             results.sort(key=lambda x: x["daysInactive"], reverse=True)
 
-        return {
+        payload = {
             "success": True,
             "total": len(results),
             "friends": results[:limit],
         }
+        if sort == "damage_7d" and limit == 100:
+            hub.update_slice(account_id, "friends_stats", payload, source_tag=tag)
+        return payload
 
 
 @api_router.post("/friends/whitelist")
@@ -4480,6 +4721,169 @@ async def sync_top_endpoint(
         force=force,
     )
     return res
+
+
+# ============================================================================
+# LIVESTATEHUB SSE STREAM & DELTA SYNC (24/7 БЕСШОВНАЯ СИНХРОНИЗАЦИЯ)
+# ============================================================================
+
+async def refresh_hub_slice(account_id: int = 1, slice_name: str = "profile", force: bool = True) -> Any:
+    """
+    Обновляет срез в LiveStateHub под single-flight защитой.
+    Вызывается фоновым SchedulerController и мутациями без дублирования запросов к игре.
+    """
+    hub = _get_hub()
+    tag = _hub_source_tag()
+
+    async def _do_refresh():
+        if slice_name == "profile":
+            return await get_live_profile(account_id=account_id, force=force)
+        elif slice_name == "state":
+            return await get_state(account_id=account_id, force=force)
+        elif slice_name == "boss":
+            return await get_live_boss(account_id=account_id, force=force)
+        elif slice_name == "prisons":
+            return await get_live_prisons(account_id=account_id, force=force)
+        elif slice_name == "friends":
+            return await get_friends_summary(account_id=account_id, force=force)
+        elif slice_name == "friend_requests":
+            return await get_friendship_requests(page=0, page_size=50, account_id=account_id, force=force)
+        elif slice_name == "friends_stats":
+            return await get_friends_stats(sort="damage_7d", limit=100, account_id=account_id, force=force)
+        elif slice_name == "radar":
+            return await get_active_players(
+                source="all",
+                minDamage=0,
+                maxDamage=0,
+                limit=50,
+                excludeFriends=False,
+                account_id=account_id,
+                force=force,
+            )
+        elif slice_name == "collections":
+            return await get_live_collections(user_id=None, account_id=account_id, force=force)
+        elif slice_name == "monthly":
+            return await get_monthly_state(account_id=account_id, force=force)
+        elif slice_name == "bauls":
+            return await get_bauls(account_id=account_id, force=force)
+        elif slice_name == "routine":
+            m_res = None
+            b_res = None
+            if bot_context.social_api:
+                try:
+                    m_res = await get_monthly_state(account_id=account_id, force=force)
+                except Exception:
+                    pass
+            if bot_context.player_api:
+                try:
+                    b_res = await get_bauls(account_id=account_id, force=force)
+                except Exception:
+                    pass
+            bundle = {"monthly": m_res, "bauls": b_res}
+            hub.update_slice(account_id, "routine", bundle, source_tag=tag)
+            return bundle
+        return None
+
+    try:
+        return await hub.run_single_flight(f"refresh:{account_id}:{slice_name}", _do_refresh)
+    except HTTPException:
+        return None
+    except Exception as e:
+        logger.debug("refresh_hub_slice('%s') error: %s", slice_name, e)
+        return None
+
+
+def _parse_client_versions(versions_raw: Optional[str]) -> Dict[str, int]:
+    if not versions_raw:
+        return {}
+    raw = versions_raw.strip()
+    if raw.startswith("{"):
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return {str(k): int(v or 0) for k, v in obj.items()}
+        except Exception:
+            return {}
+    parsed: Dict[str, int] = {}
+    for pair in raw.split(","):
+        if ":" in pair:
+            k, v = pair.split(":", 1)
+            k = k.strip()
+            if k:
+                try:
+                    parsed[k] = int(v.strip() or 0)
+                except ValueError:
+                    pass
+    return parsed
+
+
+@api_router.get("/live/delta")
+async def get_live_delta(
+    versions: Optional[str] = Query(None, description="JSON map or comma-separated slice:version"),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Fallback-эндпоинт: возвращает только срезы, чья version новее версии клиента."""
+    hub = _get_hub()
+    parsed_versions = _parse_client_versions(versions)
+    delta = hub.get_delta(account_id, parsed_versions)
+    return {"success": True, **delta}
+
+
+@api_router.get("/live/stream")
+async def stream_live_state(
+    request: Request,
+    account_id: int = 1,
+    once: bool = Query(False),
+) -> StreamingResponse:
+    """
+    Поток Server-Sent Events (SSE) для мгновенной синхронизации всех вкладок UI без мерцаний:
+    - Немедленно отправляет event: snapshot со всеми прогретыми срезами.
+    - Пушит event: slice_update при реальном изменении содержимого любого среза.
+    - Шлет `: ping` каждые 25 секунд для удержания соединения за reverse-proxy.
+    """
+    hub = _get_hub()
+
+    # Если хаб ещё пустой, запускаем неблокирующий фоновый прогрев
+    if not hub.get_versions(account_id):
+        ctrl = getattr(bot_context, "scheduler_controller", None)
+        if ctrl is not None:
+            try:
+                asyncio.create_task(ctrl.warmup_all())
+            except RuntimeError:
+                pass
+
+    async def event_generator():
+        q = hub.subscribe(account_id)
+        try:
+            snap = hub.get_snapshot(account_id)
+            yield f"event: snapshot\ndata: {json.dumps(snap, ensure_ascii=False, default=str)}\n\n"
+            if once:
+                return
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    evt = await asyncio.wait_for(q.get(), timeout=25.0)
+                    evt_type = evt.get("type", "slice_update")
+                    yield f"event: {evt_type}\ndata: {json.dumps(evt, ensure_ascii=False, default=str)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            return
+        finally:
+            hub.unsubscribe(account_id, q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 
 

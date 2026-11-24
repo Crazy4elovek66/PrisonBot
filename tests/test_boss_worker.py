@@ -677,3 +677,217 @@ async def test_boss_preset_pause_and_sleep(boss_setup):
     res = await worker.check_scheduled_presets(now_utc=datetime(2026, 11, 23, 6, 0, tzinfo=timezone.utc))
     assert res is None
 
+
+@pytest.mark.asyncio
+async def test_boss_worker_conveyor_claim_and_next_summon(boss_setup):
+    """
+    Конвейер: при сборе награды (state='reward') или убийстве босса ударом
+    BossWorker немедленно призывает следующего босса в том же цикле run_cycle().
+    """
+    from core.models import BossPreset
+
+    engine, acc_id = boss_setup
+    summoned_ids = []
+    claimed_ids = []
+
+    async with get_session(engine) as session:
+        preset = BossPreset(
+            account_id=acc_id,
+            name="Конвейер",
+            schedule_time_msk="09:00",
+            daily_enabled=False,
+            items=[
+                {"boss_id": 1, "mode": "odin", "count": 1},
+                {"boss_id": 1, "mode": "pacansky", "count": 1},
+                {"boss_id": 1, "mode": "blotnoy", "count": 1},
+            ],
+            is_running=True,
+            current_step_index=0,
+        )
+        session.add(preset)
+        await session.commit()
+
+    # Начинаем со старого state="reward" -> claim_reward -> сразу призыв #1 ->
+    # смертельный удар -> claim_reward -> сразу призыв #2 в том же цикле!
+    phase = "reward1"
+
+    def mock_handler(request: httpx.Request):
+        nonlocal phase
+        import json as _json
+        if request.url.path == "/api/boss/bootstrap":
+            if phase == "reward1":
+                return httpx.Response(200, json={
+                    "success": True,
+                    "state": "reward",
+                    "hasReward": True,
+                    "claimId": "claim_prev",
+                    "currentBattle": {"sessionId": "s0", "bossId": 1, "currentHp": 0, "maxHp": 1000},
+                })
+            elif phase == "idle_for_1":
+                return httpx.Response(200, json={"success": True, "state": "idle", "session": None})
+            elif phase == "battle_1":
+                return httpx.Response(200, json={
+                    "success": True,
+                    "state": "active",
+                    "currentBattle": {"sessionId": "s1", "bossId": 1, "currentHp": 500, "maxHp": 1000},
+                })
+            elif phase == "idle_for_2":
+                return httpx.Response(200, json={"success": True, "state": "idle", "session": None})
+            else:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "state": "active",
+                    "currentBattle": {"sessionId": "s2", "bossId": 1, "mode": "blotnoy", "currentHp": 3000, "maxHp": 3000},
+                })
+        elif request.url.path == "/api/boss/claim":
+            body = _json.loads(request.content) if request.content else {}
+            claimed_ids.append(body.get("claimId"))
+            if phase == "reward1":
+                phase = "idle_for_1"
+            return httpx.Response(200, json={"success": True, "rewards": {"cigarettes": 50}})
+        elif request.url.path == "/api/boss/start-attack":
+            body = _json.loads(request.content)
+            summoned_ids.append((body.get("bossId"), body.get("mode")))
+            if phase == "idle_for_1":
+                phase = "battle_1"
+            elif phase == "idle_for_2":
+                phase = "battle_2"
+            return httpx.Response(200, json={"success": True, "state": "active"})
+        elif request.url.path == "/api/boss/weapons":
+            return httpx.Response(200, json={"equippedSlots": ["punchChest"], "lastPunchChestTime": None})
+        elif request.url.path == "/api/boss/use-weapon":
+            if phase == "battle_1":
+                phase = "idle_for_2"
+                return httpx.Response(200, json={"success": True, "currentHp": 0, "bossDefeated": True, "claimId": "claim_b1"})
+            return httpx.Response(200, json={"success": True, "currentHp": 2500})
+        elif request.url.path.startswith("/api/boss/list"):
+            return httpx.Response(200, json={"bosses": [{"id": 1, "name": "Кирпич", "isLocked": False}]})
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    boss_api = BossAPI(http_client=http_client)
+
+    worker = BossWorker(account_id=acc_id, boss_api=boss_api, db_engine=engine, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 2
+    assert claimed_ids == ["claim_prev", "claim_b1"]
+    assert summoned_ids == [(1, "pacansky"), (1, "blotnoy")]
+    assert res["boss_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_manual_force_ignores_pause(boss_setup):
+    """Ручной запуск run_cycle(force_manual=True) работает даже при is_paused=True в BotConfig."""
+    engine, acc_id = boss_setup
+    summoned = []
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == acc_id))).scalar_one()
+        cfg.is_paused = True
+        cfg.auto_boss_enabled = True
+        cfg.boss_targets = [1]  # Проверяем также нормализацию raw int ID
+        await session.commit()
+
+    def mock_handler(request: httpx.Request):
+        import json as _json
+        if request.url.path == "/api/boss/bootstrap":
+            if not summoned:
+                return httpx.Response(200, json={"success": True, "state": "idle", "session": None})
+            return httpx.Response(200, json={
+                "success": True,
+                "state": "active",
+                "currentBattle": {"sessionId": "s_man", "bossId": 1, "currentHp": 1000, "maxHp": 1000},
+            })
+        elif request.url.path == "/api/boss/start-attack":
+            summoned.append(_json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+        elif request.url.path == "/api/boss/weapons":
+            return httpx.Response(200, json={"equippedSlots": []})
+        elif request.url.path.startswith("/api/boss/list"):
+            return httpx.Response(200, json={"bosses": [{"id": 1, "name": "Кирпич"}]})
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    worker = BossWorker(account_id=acc_id, boss_api=BossAPI(http_client=http_client), db_engine=engine, enable_jitter=False)
+
+    # Авто-тик на паузе пропускает
+    res_auto = await worker.run_cycle(force_manual=False)
+    assert res_auto["status"] == "skipped"
+    assert len(summoned) == 0
+
+    # Ручной запуск с force_manual=True призывает босса даже на паузе
+    res_manual = await worker.run_cycle(force_manual=True)
+    assert res_manual["boss_active"] is True
+    assert len(summoned) == 1 and summoned[0]["bossId"] == 1
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_prisons_data_unlocks_boss(boss_setup):
+    """Передача prison_api разблокирует боссов с requiredPrisonId (не маркирует их ложно isLocked=True)."""
+    from client.api.prison import PrisonAPI
+
+    engine, acc_id = boss_setup
+    summoned = []
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == acc_id))).scalar_one()
+        cfg.auto_boss_enabled = True
+        # Сизый (id=2): требует прохождения Бутырки (id=1) и/или ключей
+        # Лютый (id=4): требует ходки в Крестах (prison_id=2)
+        cfg.boss_targets = [{"bossId": 4, "mode": "pacansky", "enabled": True}]
+        await session.commit()
+
+    def mock_handler(request: httpx.Request):
+        import json as _json
+        if request.url.path == "/api/prisons/all":
+            return httpx.Response(200, json={
+                "success": True,
+                "prisons": [
+                    {"id": 1, "name": "Бутырка", "dayRuns": 20, "nightRuns": 20, "isUnlocked": True},
+                    {"id": 4, "name": "Кресты", "dayRuns": 5, "nightRuns": 0, "isUnlocked": True},
+                ],
+            })
+        elif request.url.path == "/api/boss/bootstrap":
+            if not summoned:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "state": "idle",
+                    "session": None,
+                    "playerStats": {"keys": {"1": 10, "2": 10, "3": 10}, "wins": {"1": 5, "2": 5, "3": 5}, "dailyWins": {}},
+                })
+            return httpx.Response(200, json={
+                "success": True,
+                "state": "active",
+                "session": {"sessionId": "s4", "bossId": 4, "currentHp": 100000, "maxHp": 100000},
+            })
+        elif request.url.path == "/api/boss/start-attack":
+            summoned.append(_json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+        elif request.url.path == "/api/boss/weapons":
+            return httpx.Response(200, json={"equippedSlots": []})
+        elif request.url.path.startswith("/api/boss/list"):
+            return httpx.Response(200, json={"bosses": []})
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    worker = BossWorker(
+        account_id=acc_id,
+        boss_api=BossAPI(http_client=http_client),
+        prison_api=PrisonAPI(http_client=http_client),
+        db_engine=engine,
+        enable_jitter=False,
+    )
+
+    res = await worker.run_cycle()
+    assert len(summoned) == 1
+    assert summoned[0]["bossId"] == 4
+    assert res["boss_active"] is True
+
+

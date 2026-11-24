@@ -231,6 +231,87 @@ const sectionTitles = {
   settings: "Настройки (Мозг)",
 };
 
+function setTextIfChanged(el, nextText) {
+  if (!el) return;
+  const s = String(nextText ?? "");
+  if (el.textContent !== s) el.textContent = s;
+}
+
+function setWidthIfChanged(el, pctStr) {
+  if (!el) return;
+  if (el.style.width !== pctStr) el.style.width = pctStr;
+}
+
+/**
+ * Ключевой патчер DOM-списков: обновляет только изменившиеся элементы,
+ * сохраняя существующие узлы DOM, фокус, hover и позицию скролла без мерцания.
+ */
+function reconcileKeyedList(container, items, getKey, getFp, createEl, updateEl, emptyHtml = "") {
+  if (!container) return;
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) {
+    if (container.dataset.emptySig !== "empty" || container.children.length !== 1) {
+      container.innerHTML = emptyHtml;
+      container.dataset.emptySig = "empty";
+    }
+    return;
+  }
+
+  if (container.dataset.emptySig === "empty") {
+    container.innerHTML = "";
+  }
+  container.dataset.emptySig = "";
+
+  const existingMap = new Map();
+  Array.from(container.children).forEach(child => {
+    const k = child.getAttribute("data-item-key");
+    if (k) {
+      existingMap.set(k, child);
+    } else {
+      child.remove();
+    }
+  });
+
+  const keepKeys = new Set();
+  list.forEach((item, idx) => {
+    keepKeys.add(String(getKey(item, idx)));
+  });
+
+  existingMap.forEach((el, k) => {
+    if (!keepKeys.has(k)) {
+      el.remove();
+      existingMap.delete(k);
+    }
+  });
+
+  list.forEach((item, idx) => {
+    const key = String(getKey(item, idx));
+    const fp = String(getFp(item, idx));
+    let el = existingMap.get(key);
+    if (el) {
+      if (el.dataset.fp !== fp) {
+        updateEl(el, item, idx);
+        el.dataset.fp = fp;
+      }
+    } else {
+      el = createEl(item, idx);
+      el.setAttribute("data-item-key", key);
+      el.dataset.fp = fp;
+    }
+    const curAtIdx = container.children[idx] || null;
+    if (curAtIdx !== el) {
+      container.insertBefore(el, curAtIdx);
+    }
+  });
+}
+
+// Global LiveStateHub cache (warm slices & versions)
+const liveSlices = {
+  versions: {},
+  data: {},
+};
+
+// Switch section with instant 0 ms synchronous hydration from warm LiveStateHub slices
 function switchSection(secName) {
   if (!sectionTitles[secName]) secName = "main";
   activeSection = secName;
@@ -241,7 +322,6 @@ function switchSection(secName) {
     window.location.hash = secName;
   } catch (e) { }
 
-  // Update Drawer active items
   document.querySelectorAll(".drawer-item").forEach(item => {
     if (item.getAttribute("data-sec") === secName) {
       item.classList.add("active");
@@ -250,7 +330,6 @@ function switchSection(secName) {
     }
   });
 
-  // Update Section Panes
   document.querySelectorAll(".section-pane").forEach(pane => {
     if (pane.id === `sec-${secName}`) {
       pane.classList.add("active");
@@ -259,21 +338,54 @@ function switchSection(secName) {
     }
   });
 
-  // Update Title
   if (hudSectionTitle) {
     hudSectionTitle.textContent = sectionTitles[secName] || "PrisonBot";
   }
 
   closeDrawer();
 
-  // Trigger targeted refresh
-  if (secName === "main") { loadProfile(); loadTalents(); loadCollections(); }
-  if (secName === "bosses") { loadBoss(); loadBossBuffs(); }
-  if (secName === "prisons") loadPrisons();
+  // Instant 0 ms synchronous render from warm LiveStateHub cache (if already warmed)
+  if (secName === "main") {
+    if (liveSlices.data.profile) renderProfileData(liveSlices.data.profile);
+    else loadProfile();
+    loadTalents();
+    if (liveSlices.data.collections) {
+      if (typeof renderCollectionsData === "function") renderCollectionsData(liveSlices.data.collections);
+    } else {
+      loadCollections();
+    }
+  }
+  if (secName === "bosses") {
+    if (liveSlices.data.boss) renderBossData(liveSlices.data.boss);
+    else loadBoss();
+    loadBossBuffs();
+  }
+  if (secName === "prisons") {
+    if (liveSlices.data.prisons) renderPrisonsData(liveSlices.data.prisons);
+    else loadPrisons();
+  }
   if (secName === "wardrobe") loadWardrobe();
-  if (secName === "routine") { loadRoutine(); loadBauls(); }
-  if (secName === "friends") { loadFriendsSummary(); loadFriendRequests(); loadFriendsAudit(); }
-  if (secName === "raids") loadRaidsSection();
+  if (secName === "routine") {
+    renderBusinesses();
+    if (liveSlices.data.monthly) renderMonthlyStateData(liveSlices.data.monthly);
+    else loadMonthlyState();
+    if (liveSlices.data.bauls) renderBaulsData(liveSlices.data.bauls);
+    else loadBauls();
+  }
+  if (secName === "friends") {
+    if (liveSlices.data.friends) renderFriendsSummaryData(liveSlices.data.friends);
+    else loadFriendsSummary();
+    if (liveSlices.data.friend_requests) renderFriendRequestsData(liveSlices.data.friend_requests);
+    else loadFriendRequests();
+    if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
+    else loadFriendsAudit();
+  }
+  if (secName === "raids") {
+    if (liveSlices.data.radar && typeof renderActivePlayersRadarFromData === "function") {
+      renderActivePlayersRadarFromData(liveSlices.data.radar);
+    }
+    loadRaidsSection({ silent: Boolean(liveSlices.data.radar) });
+  }
   if (secName === "notifications") loadNotifications(currentCatFilter);
 }
 
@@ -310,33 +422,34 @@ function formatCountdown(sec) {
 // ============================================================================
 
 // --- 4.1 Base State & Config ---
+function applyStateData(data) {
+  if (!data || !data.success) return;
+  liveSlices.data.state = data;
+
+  botConfig = data.config || {};
+  updateConfigUI(botConfig);
+
+  const isPaused = data.scheduler?.is_paused;
+  const badge = document.getElementById("hud-status-badge");
+  const drawerState = document.getElementById("drawer-scheduler-state");
+  if (badge) {
+    setTextIfChanged(badge, isPaused ? "⏸ Пауза" : "🟢 Активен");
+    badge.classList.toggle("paused", Boolean(isPaused));
+  }
+  if (drawerState) {
+    setTextIfChanged(drawerState, isPaused ? "Планировщик: На паузе" : "Планировщик: Активен");
+  }
+
+  updateNotificationCounts(data.counts || {});
+}
+
 async function refreshState() {
   try {
     const data = await apiFetch("/state");
-    if (!data.success) return;
-
-    botConfig = data.config || {};
-    updateConfigUI(botConfig);
-
-    // Update Status Badge
-    const isPaused = data.scheduler?.is_paused;
-    const badge = document.getElementById("hud-status-badge");
-    const drawerState = document.getElementById("drawer-scheduler-state");
-    if (badge) {
-      badge.textContent = isPaused ? "⏸ Пауза" : "🟢 Активен";
-      if (isPaused) {
-        badge.classList.add("paused");
-      } else {
-        badge.classList.remove("paused");
-      }
+    applyStateData(data);
+    if (!liveSlices.data.monthly) {
+      loadMonthlyState();
     }
-    if (drawerState) {
-      drawerState.textContent = isPaused ? "Планировщик: На паузе" : "Планировщик: Активен";
-    }
-
-    // Update Notifications Badge Counters
-    updateNotificationCounts(data.counts || {});
-    loadMonthlyState();
   } catch (err) {
     console.warn("refreshState error:", err);
   }
@@ -449,65 +562,61 @@ function updateConfigUI(cfg) {
 }
 
 // --- 4.2 Live Profile (Главная) ---
+function renderProfileData(data) {
+  if (!data || !data.success) return;
+  liveSlices.data.profile = data;
+  playerProfile = data;
+  if (data.characterLayers) {
+    window.characterLayers = data.characterLayers;
+  }
+  const prof = data.profile || {};
+  const cur = data.currencies || {};
+  const wep = data.weapons || {};
+
+  setTextIfChanged(document.getElementById("player-nickname"), prof.nickname || "Арестант");
+  setTextIfChanged(document.getElementById("player-level-badge"), `Ур. ${prof.level || 1}`);
+  setTextIfChanged(document.getElementById("player-avatar-badge"), (prof.nickname || "П")[0].toUpperCase());
+
+  setTextIfChanged(document.getElementById("stat-authority"), formatNum(prof.authority));
+  setTextIfChanged(document.getElementById("stat-biceps"), formatNum(prof.biceps));
+  const totalTalents = window.totalTalentsCached || prof.talentPointsTotal || prof.talents || 0;
+  setTextIfChanged(document.getElementById("stat-talents"), formatNum(totalTalents));
+
+  const curEnergy = prof.energy || 0;
+  const maxEnergy = prof.maxEnergy || 50;
+  setTextIfChanged(document.getElementById("stat-energy"), `${curEnergy}/${maxEnergy}`);
+  const energyPct = Math.min(100, Math.round((curEnergy / maxEnergy) * 100));
+  setWidthIfChanged(document.getElementById("energy-progress-fill"), `${energyPct}%`);
+  updateEnergyTimer();
+
+  setTextIfChanged(document.getElementById("cur-cigs"), formatNum(cur.cigarettes));
+  setTextIfChanged(document.getElementById("cur-sugar"), formatNum(cur.sugar));
+  setTextIfChanged(document.getElementById("cur-rubles"), formatNum(cur.rubles));
+  setTextIfChanged(document.getElementById("cur-paper"), formatNum(cur.paper));
+  setTextIfChanged(document.getElementById("cur-soap"), formatNum(cur.soap));
+  setTextIfChanged(document.getElementById("cur-keys"), formatNum(cur.keys));
+
+  setTextIfChanged(document.getElementById("inv-poison-count"), `${wep.poisonCount || 0} шт.`);
+  setTextIfChanged(document.getElementById("inv-gunshot-count"), `${wep.gunshotCount || 0} шт.`);
+  setTextIfChanged(document.getElementById("inv-knife-count"), `${wep.knifeCount || 0} шт.`);
+
+  setTextIfChanged(document.getElementById("boss-poison-count"), `${wep.poisonCount || 0} шт.`);
+  setTextIfChanged(document.getElementById("boss-gunshot-count"), `${wep.gunshotCount || 0} шт.`);
+  setTextIfChanged(document.getElementById("boss-knife-count"), `${wep.knifeCount || 0} шт.`);
+
+  renderBusinesses();
+
+  if (data.toiletPaper || prof.toiletPaper) {
+    updateToiletPaperState(data.toiletPaper || prof.toiletPaper);
+  } else {
+    updateToiletPaperState({ canClaim: Boolean(prof.canClaimToiletPaper), resetMode: "midnight_msk" });
+  }
+}
+
 async function loadProfile() {
   try {
     const data = await apiFetch("/live/profile");
-    if (!data.success) return;
-
-    playerProfile = data;
-    if (data.characterLayers) {
-      window.characterLayers = data.characterLayers;
-    }
-    const prof = data.profile || {};
-    const cur = data.currencies || {};
-    const wep = data.weapons || {};
-
-    // Header info
-    document.getElementById("player-nickname").textContent = prof.nickname || "Арестант";
-    document.getElementById("player-level-badge").textContent = `Ур. ${prof.level || 1}`;
-    document.getElementById("player-avatar-badge").textContent = (prof.nickname || "П")[0].toUpperCase();
-
-    // Stats
-    document.getElementById("stat-authority").textContent = formatNum(prof.authority);
-    document.getElementById("stat-biceps").textContent = formatNum(prof.biceps);
-    const totalTalents = window.totalTalentsCached || prof.talentPointsTotal || prof.talents || 0;
-    document.getElementById("stat-talents").textContent = formatNum(totalTalents);
-
-    // Energy
-    const curEnergy = prof.energy || 0;
-    const maxEnergy = prof.maxEnergy || 50;
-    document.getElementById("stat-energy").textContent = `${curEnergy}/${maxEnergy}`;
-    const energyPct = Math.min(100, Math.round((curEnergy / maxEnergy) * 100));
-    document.getElementById("energy-progress-fill").style.width = `${energyPct}%`;
-    updateEnergyTimer();
-
-    // Currencies
-    document.getElementById("cur-cigs").textContent = formatNum(cur.cigarettes);
-    document.getElementById("cur-sugar").textContent = formatNum(cur.sugar);
-    document.getElementById("cur-rubles").textContent = formatNum(cur.rubles);
-    document.getElementById("cur-paper").textContent = formatNum(cur.paper);
-    document.getElementById("cur-soap").textContent = formatNum(cur.soap);
-    document.getElementById("cur-keys").textContent = formatNum(cur.keys);
-
-    // Weapons Inventory
-    document.getElementById("inv-poison-count").textContent = `${wep.poisonCount || 0} шт.`;
-    document.getElementById("inv-gunshot-count").textContent = `${wep.gunshotCount || 0} шт.`;
-    document.getElementById("inv-knife-count").textContent = `${wep.knifeCount || 0} шт.`;
-
-    // Also sync weapon numbers on Bosses tab
-    document.getElementById("boss-poison-count").textContent = `${wep.poisonCount || 0} шт.`;
-    document.getElementById("boss-gunshot-count").textContent = `${wep.gunshotCount || 0} шт.`;
-    document.getElementById("boss-knife-count").textContent = `${wep.knifeCount || 0} шт.`;
-
-    // Render businesses with real levels and pending rewards
-    renderBusinesses();
-
-    // Update Toilet Paper live reset timer state
-    if (data.toiletPaper || prof.toiletPaper) {
-      updateToiletPaperState(data.toiletPaper || prof.toiletPaper);
-    } else {
-      updateToiletPaperState({ canClaim: Boolean(prof.canClaimToiletPaper), resetMode: "midnight_msk" });
-    }
+    renderProfileData(data);
   } catch (err) {
     console.warn("loadProfile error:", err);
   }
@@ -579,117 +688,125 @@ function updateToiletPaperTimer() {
 
 function updateEnergyTimer() {
   const el = document.getElementById("energy-restore-timer");
-  if (!el || !playerProfile || !playerProfile.profile) return;
+  if (!playerProfile || !playerProfile.profile) return;
   const prof = playerProfile.profile;
-  const curEnergy = prof.energy || 0;
-  const maxEnergy = prof.maxEnergy || 50;
-
-  if (curEnergy >= maxEnergy) {
-    el.textContent = "восстановление: Максимум";
-    return;
-  }
+  const rawEnergy = Number(prof.energy || 0);
+  const maxEnergy = Number(prof.maxEnergy || 50);
 
   const lastTimeStr = prof.lastEnergyRestoreTime;
-  if (!lastTimeStr) {
-    el.textContent = "восстановление: --:--";
-    return;
+  const interval = Number(prof.energyRestoreIntervalSeconds || 300);
+
+  let effectiveEnergy = rawEnergy;
+  let remaining = interval;
+  if (lastTimeStr && rawEnergy < maxEnergy) {
+    const lastSec = new Date(lastTimeStr).getTime() / 1000;
+    const nowSec = Date.now() / 1000;
+    if (!isNaN(lastSec) && lastSec > 0 && nowSec >= lastSec) {
+      const diff = nowSec - lastSec;
+      const regenTicks = Math.floor(diff / interval);
+      if (regenTicks > 0) {
+        effectiveEnergy = Math.min(maxEnergy, rawEnergy + regenTicks);
+      }
+      const elapsed = diff % interval;
+      remaining = Math.max(0, Math.floor(interval - elapsed));
+    }
   }
 
-  const lastSec = new Date(lastTimeStr).getTime() / 1000;
-  const nowSec = Date.now() / 1000;
-  const interval = prof.energyRestoreIntervalSeconds || 300;
-  if (isNaN(lastSec) || lastSec <= 0) {
-    el.textContent = "восстановление: --:--";
+  // Плавная локальная интерполяция энергии в заголовке между пушами сервера
+  const statEnergyEl = document.getElementById("stat-energy");
+  const fillEnergyEl = document.getElementById("energy-progress-fill");
+  if (statEnergyEl) {
+    setTextIfChanged(statEnergyEl, `${effectiveEnergy}/${maxEnergy}`);
+  }
+  if (fillEnergyEl && maxEnergy > 0) {
+    const pct = Math.min(100, Math.round((effectiveEnergy / maxEnergy) * 100));
+    setWidthIfChanged(fillEnergyEl, `${pct}%`);
+  }
+
+  if (!el) return;
+  if (effectiveEnergy >= maxEnergy) {
+    setTextIfChanged(el, "восстановление: Максимум");
     return;
   }
-  const diff = nowSec - lastSec;
-  const elapsed = diff >= 0 ? (diff % interval) : 0;
-  const remaining = Math.max(0, Math.floor(interval - elapsed));
+  if (!lastTimeStr || isNaN(new Date(lastTimeStr).getTime())) {
+    setTextIfChanged(el, "восстановление: --:--");
+    return;
+  }
 
   const m = Math.floor(remaining / 60);
   const s = Math.floor(remaining % 60);
-  el.textContent = `восстановление: ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  setTextIfChanged(el, `восстановление: ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
 }
 
 // --- 4.3 Live Boss (Боссы) ---
+function renderBossData(data) {
+  if (!data || !data.success) return;
+  liveSlices.data.boss = data;
+  bossData = data;
+  if (data.bosses && Array.isArray(data.bosses)) {
+    bossCatalog = data.bosses;
+    bossCatalogMap = new Map(bossCatalog.map(b => [String(b.id), b.name]));
+  }
+  const session = data.session;
+  const activeCard = document.getElementById("boss-active-card");
+  const claimBtn = document.getElementById("btn-boss-claim");
+  const manualAttackCard = document.getElementById("boss-manual-attack-card") || document.getElementById("boss-single-attack-card");
+  const slotTop = document.getElementById("boss-attack-slot-top");
+  const slotBottom = document.getElementById("boss-attack-slot-bottom");
+
+  if (session && session.currentHp > 0) {
+    if (activeCard) activeCard.style.display = "block";
+    if (manualAttackCard && slotBottom && manualAttackCard.parentElement !== slotBottom) {
+      slotBottom.appendChild(manualAttackCard);
+    }
+    if (manualAttackCard) manualAttackCard.style.display = "block";
+
+    setTextIfChanged(document.getElementById("boss-title"), `⚔️ ${session.title || session.bossName || 'Босс #' + session.bossId}`);
+    const bossModes = {
+      pacansky: "Пацанский",
+      blotnoy: "Блатной",
+      avtoritetny: "Авторитетный",
+      vorovskoy: "Воровской",
+      odin: "В одного",
+      brigade: "Бригадный",
+    };
+    const modeLabel = bossModes[session.mode] || session.mode || "Пацанский";
+    setTextIfChanged(document.getElementById("boss-mode-badge"), `Режим: ${modeLabel}`);
+
+    const curHp = session.currentHp || 0;
+    const maxHp = session.maxHp || 1;
+    const hpPct = Math.max(0, Math.min(100, Math.round((curHp / maxHp) * 100)));
+
+    setTextIfChanged(document.getElementById("boss-hp-numbers"), `${formatNum(curHp)} / ${formatNum(maxHp)}`);
+    setTextIfChanged(document.getElementById("boss-hp-percent"), `${hpPct}%`);
+    setWidthIfChanged(document.getElementById("boss-hp-fill"), `${hpPct}%`);
+    setTextIfChanged(document.getElementById("boss-personal-damage"), formatNum(session.personalDamage || 0));
+
+    if (claimBtn) {
+      claimBtn.style.display = data.hasReward ? "inline-flex" : "none";
+    }
+  } else {
+    if (activeCard) activeCard.style.display = "none";
+    if (manualAttackCard && slotTop && manualAttackCard.parentElement !== slotTop) {
+      slotTop.appendChild(manualAttackCard);
+    }
+    if (manualAttackCard) manualAttackCard.style.display = "block";
+  }
+
+  const wepDmgs = data.weaponDamages || {};
+  setTextIfChanged(document.getElementById("boss-poison-damage"), `⚔️ ${wepDmgs.poison || 250}`);
+  setTextIfChanged(document.getElementById("boss-gunshot-damage"), `⚔️ ${wepDmgs.gunshot || 60}`);
+  setTextIfChanged(document.getElementById("boss-knife-damage"), `⚔️ ${wepDmgs.knife || 30}`);
+
+  updateMeleeTimers();
+  if (botConfig) updateBossQueueUI(botConfig.boss_targets || []);
+  loadBossPresets();
+}
+
 async function loadBoss() {
   try {
     const data = await apiFetch("/live/boss");
-    if (!data.success) return;
-
-    bossData = data;
-    if (data.bosses && Array.isArray(data.bosses)) {
-      bossCatalog = data.bosses;
-      bossCatalogMap = new Map(bossCatalog.map(b => [String(b.id), b.name]));
-    }
-    const session = data.session;
-    const activeCard = document.getElementById("boss-active-card");
-    const claimBtn = document.getElementById("btn-boss-claim");
-    const manualAttackCard = document.getElementById("boss-manual-attack-card") || document.getElementById("boss-single-attack-card");
-    const slotTop = document.getElementById("boss-attack-slot-top");
-    const slotBottom = document.getElementById("boss-attack-slot-bottom");
-
-    if (session && session.currentHp > 0) {
-      if (activeCard) activeCard.style.display = "block";
-      if (manualAttackCard && slotBottom && manualAttackCard.parentElement !== slotBottom) {
-        slotBottom.appendChild(manualAttackCard);
-      }
-      if (manualAttackCard) manualAttackCard.style.display = "block";
-
-      const bTitle = document.getElementById("boss-title");
-      if (bTitle) bTitle.textContent = `⚔️ ${session.title || 'Босс #' + session.bossId}`;
-      const bossModes = {
-        pacansky: "Пацанский",
-        blotnoy: "Блатной",
-        avtoritetny: "Авторитетный",
-        vorovskoy: "Воровской",
-        odin: "В одного",
-        brigade: "Бригадный",
-      };
-      const modeLabel = bossModes[session.mode] || session.mode || "Пацанский";
-      const bBadge = document.getElementById("boss-mode-badge");
-      if (bBadge) bBadge.textContent = `Режим: ${modeLabel}`;
-
-      const curHp = session.currentHp || 0;
-      const maxHp = session.maxHp || 1;
-      const hpPct = Math.max(0, Math.min(100, Math.round((curHp / maxHp) * 100)));
-
-      const numEl = document.getElementById("boss-hp-numbers");
-      if (numEl) numEl.textContent = `${formatNum(curHp)} / ${formatNum(maxHp)}`;
-      const pctEl = document.getElementById("boss-hp-percent");
-      if (pctEl) pctEl.textContent = `${hpPct}%`;
-      const fillEl = document.getElementById("boss-hp-fill");
-      if (fillEl) fillEl.style.width = `${hpPct}%`;
-
-      const dmgEl = document.getElementById("boss-personal-damage");
-      if (dmgEl) dmgEl.textContent = formatNum(session.personalDamage || 0);
-
-      if (claimBtn) {
-        claimBtn.style.display = data.hasReward ? "inline-flex" : "none";
-      }
-    } else {
-      if (activeCard) activeCard.style.display = "none";
-      if (manualAttackCard && slotTop && manualAttackCard.parentElement !== slotTop) {
-        slotTop.appendChild(manualAttackCard);
-      }
-      if (manualAttackCard) manualAttackCard.style.display = "block";
-    }
-
-    // Update actual weapon damages badges (Яд, Самопал, Финка)
-    const wepDmgs = data.weaponDamages || {};
-    const poiDmg = wepDmgs.poison || 250;
-    const gunDmg = wepDmgs.gunshot || 60;
-    const kniDmg = wepDmgs.knife || 30;
-    const elPoi = document.getElementById("boss-poison-damage");
-    if (elPoi) elPoi.textContent = `⚔️ ${poiDmg}`;
-    const elGun = document.getElementById("boss-gunshot-damage");
-    if (elGun) elGun.textContent = `⚔️ ${gunDmg}`;
-    const elKni = document.getElementById("boss-knife-damage");
-    if (elKni) elKni.textContent = `⚔️ ${kniDmg}`;
-
-    updateMeleeTimers();
-    if (botConfig) updateBossQueueUI(botConfig.boss_targets || []);
-    loadBossPresets();
+    renderBossData(data);
   } catch (err) {
     console.warn("loadBoss error:", err);
   }
@@ -745,50 +862,46 @@ function updateMeleeTimers() {
 }
 
 // --- 4.4 Live Prisons (Ходки и Мастера) ---
-async function loadPrisons() {
+function renderPrisonsData(data) {
+  if (!data || !data.success) return;
+  liveSlices.data.prisons = data;
+  prisonsData = data;
+  currentPrisonId = data.targetId || 1;
+  currentIsDay = Boolean(data.isDay);
+
+  const btnDay = document.getElementById("btn-shift-day");
+  const btnNight = document.getElementById("btn-shift-night");
+  if (btnDay && btnNight) {
+    btnDay.className = currentIsDay ? "btn btn-sm btn-primary" : "btn btn-sm btn-secondary";
+    btnNight.className = currentIsDay ? "btn btn-sm btn-secondary" : "btn btn-sm btn-primary";
+  }
+
+  const currentPrison = (data.prisons || []).find(p => p.id === currentPrisonId);
+  const pName = currentPrison?.name || `Тюрьма #${currentPrisonId}`;
+  setTextIfChanged(document.getElementById("current-prison-name"), `⛓️ ${pName}`);
+
+  const cps = data.checkpoints || [];
+  const totalCps = cps.length;
+  let completedCps = 0;
+  cps.forEach(c => {
+    if (c.isClaimed || c.isPassed) completedCps++;
+  });
+
+  const cpText = totalCps > 0 ? `${completedCps} / ${totalCps}` : "1 / 1";
+  const cpPct = totalCps > 0 ? Math.round((completedCps / totalCps) * 100) : 100;
+  setTextIfChanged(document.getElementById("prison-checkpoint-text"), cpText);
+  setTextIfChanged(document.getElementById("prison-checkpoint-percent"), `${cpPct}%`);
+  setWidthIfChanged(document.getElementById("prison-checkpoint-fill"), `${cpPct}%`);
+
+  renderPrisonsGrid(data.prisons || []);
+  renderMastersSelect(data.masters || []);
+}
+
+async function loadPrisons(opts = {}) {
   try {
-    const data = await apiFetch("/live/prisons");
-    if (!data.success) return;
-
-    prisonsData = data;
-    currentPrisonId = data.targetId || 1;
-    currentIsDay = Boolean(data.isDay);
-
-    // Update shift buttons
-    const btnDay = document.getElementById("btn-shift-day");
-    const btnNight = document.getElementById("btn-shift-night");
-    if (currentIsDay) {
-      btnDay.className = "btn btn-sm btn-primary";
-      btnNight.className = "btn btn-sm btn-secondary";
-    } else {
-      btnDay.className = "btn btn-sm btn-secondary";
-      btnNight.className = "btn btn-sm btn-primary";
-    }
-
-    // Update current prison title & checkpoint
-    const currentPrison = (data.prisons || []).find(p => p.id === currentPrisonId);
-    const pName = currentPrison?.name || `Тюрьма #${currentPrisonId}`;
-    document.getElementById("current-prison-name").textContent = `⛓️ ${pName}`;
-
-    // Checkpoint progress
-    const cps = data.checkpoints || [];
-    const totalCps = cps.length;
-    let completedCps = 0;
-    cps.forEach(c => {
-      if (c.isClaimed || c.isPassed) completedCps++;
-    });
-
-    const cpText = totalCps > 0 ? `${completedCps} / ${totalCps}` : "1 / 1";
-    const cpPct = totalCps > 0 ? Math.round((completedCps / totalCps) * 100) : 100;
-    document.getElementById("prison-checkpoint-text").textContent = cpText;
-    document.getElementById("prison-checkpoint-percent").textContent = `${cpPct}%`;
-    document.getElementById("prison-checkpoint-fill").style.width = `${cpPct}%`;
-
-    // Render prisons grid
-    renderPrisonsGrid(data.prisons || []);
-
-    // Render masters selector
-    renderMastersSelect(data.masters || []);
+    const q = opts.force ? "?force=1" : "";
+    const data = await apiFetch(`/live/prisons${q}`);
+    renderPrisonsData(data);
   } catch (err) {
     console.warn("loadPrisons error:", err);
   }
@@ -797,36 +910,50 @@ async function loadPrisons() {
 function renderPrisonsGrid(prisons) {
   const container = document.getElementById("prisons-catalog-grid");
   if (!container) return;
-  container.innerHTML = "";
 
-  prisons.forEach(p => {
-    const isSelected = p.id === currentPrisonId;
+  const patchTile = (tile, p) => {
+    const isSelected = Number(p.id) === Number(currentPrisonId);
     const isUnlocked = p.isUnlocked !== false;
-
-    const tile = document.createElement("div");
     tile.className = `prison-tile ${isSelected ? 'selected' : ''} ${!isUnlocked ? 'locked' : ''}`;
-    tile.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-weight: 700; font-size: 12px; color: #fff;">${p.name || 'Тюрьма #' + p.id}</span>
-        <span>${isUnlocked ? '🔓' : '🔒'}</span>
-      </div>
-      <div style="font-size: 10px; color: var(--muted-foreground);">Ур. ${p.requiredLevel || 1}</div>
-    `;
+    tile.setAttribute("data-prison-id", String(p.id));
+    setTextIfChanged(tile.querySelector(".prison-tile-name"), p.name || `Тюрьма #${p.id}`);
+    setTextIfChanged(tile.querySelector(".prison-tile-lock"), isUnlocked ? "🔓" : "🔒");
+    const runsInfo = p.dayRuns !== undefined ? `Дн: ${p.dayRuns || 0} · Ночь: ${p.nightRuns || 0}` : `Ур. ${p.requiredLevel || 1}`;
+    setTextIfChanged(tile.querySelector(".prison-tile-meta"), runsInfo);
+  };
 
-    if (isUnlocked) {
+  reconcileKeyedList(
+    container,
+    prisons || [],
+    p => p.id,
+    p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.requiredLevel || 1}|${p.dayRuns || 0}|${p.nightRuns || 0}`,
+    p => {
+      const tile = document.createElement("div");
+      tile.setAttribute("data-prison-id", String(p.id));
+      tile.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span class="prison-tile-name" style="font-weight: 700; font-size: 12px; color: #fff;"></span>
+          <span class="prison-tile-lock"></span>
+        </div>
+        <div class="prison-tile-meta" style="font-size: 10px; color: var(--muted-foreground);"></div>
+      `;
       tile.addEventListener("click", async () => {
+        if (tile.classList.contains("locked")) return;
         currentPrisonId = p.id;
-        // Save target in BotConfig
+        renderPrisonsGrid(prisonsData.prisons || prisons);
         await apiFetch("/config", {
           method: "PATCH",
           body: JSON.stringify({ prison_target_id: p.id }),
         });
         showToast(`Выбрана тюрьма: ${p.name}`, "info");
-        loadPrisons();
+        loadPrisons({ force: true });
       });
-    }
-    container.appendChild(tile);
-  });
+      patchTile(tile, p);
+      return tile;
+    },
+    (tile, p) => patchTile(tile, p),
+    '<div style="color: var(--muted-foreground); font-size: 11px;">Нет доступных тюрем</div>'
+  );
 }
 
 function renderMastersSelect(masters) {
@@ -864,37 +991,69 @@ async function loadCatalogs() {
 function renderBossQueueChecklist(bosses) {
   const container = document.getElementById("boss-queue-checklist");
   if (!container) return;
-  container.innerHTML = "";
 
-  const currentTargets = Array.isArray(botConfig.boss_targets) ? botConfig.boss_targets : [];
+  const normalizeTarget = item => {
+    if (typeof item === "object" && item !== null) {
+      return {
+        bossId: Number(item.bossId ?? item.boss_id ?? item.id),
+        name: item.name || item.bossName,
+        mode: item.mode || "pacansky",
+        limit: Number(item.limit || 7),
+        enabled: item.enabled !== false,
+      };
+    }
+    return { bossId: Number(item), mode: "pacansky", limit: 7, enabled: true };
+  };
 
-  bosses.forEach(b => {
-    const isChecked = currentTargets.includes(b.id);
-    const row = document.createElement("label");
-    row.style.cssText = "display: flex; align-items: center; justify-content: space-between; background: var(--secondary); padding: 6px 10px; border-radius: 6px; cursor: pointer;";
-    row.innerHTML = `
-      <span style="font-size: 12px; font-weight: 600;">${b.name} (${formatNum(b.hp)} HP)</span>
-      <input type="checkbox" value="${b.id}" ${isChecked ? 'checked' : ''} style="width: 16px; height: 16px;">
-    `;
-
+  const currentTargets = (Array.isArray(botConfig.boss_targets) ? botConfig.boss_targets : []).map(normalizeTarget);
+  const patchRow = (row, b) => {
+    const isChecked = currentTargets.some(t => t.bossId === Number(b.id) && t.enabled !== false);
     const chk = row.querySelector("input");
-    chk.addEventListener("change", async () => {
-      let targets = [...(botConfig.boss_targets || [])];
-      if (chk.checked) {
-        if (!targets.includes(b.id)) targets.push(b.id);
-      } else {
-        targets = targets.filter(id => id !== b.id);
-      }
-      botConfig.boss_targets = targets;
-      await apiFetch("/config", {
-        method: "PATCH",
-        body: JSON.stringify({ boss_targets: targets }),
-      });
-      showToast(`Очередь боссов обновлена`, "info");
-    });
+    const lbl = row.querySelector(".boss-q-label");
+    setTextIfChanged(lbl, `${b.name} (${formatNum(b.hp)} HP)`);
+    if (chk && chk.checked !== isChecked) chk.checked = isChecked;
+  };
 
-    container.appendChild(row);
-  });
+  reconcileKeyedList(
+    container,
+    bosses || [],
+    b => b.id,
+    b => `${b.id}|${b.name}|${b.hp}|${currentTargets.some(t => t.bossId === Number(b.id) && t.enabled !== false)}`,
+    b => {
+      const isChecked = currentTargets.some(t => t.bossId === Number(b.id) && t.enabled !== false);
+      const row = document.createElement("label");
+      row.setAttribute("data-boss-id", String(b.id));
+      row.style.cssText = "display: flex; align-items: center; justify-content: space-between; background: var(--secondary); padding: 6px 10px; border-radius: 6px; cursor: pointer;";
+      row.innerHTML = `
+        <span class="boss-q-label" style="font-size: 12px; font-weight: 600;">${b.name} (${formatNum(b.hp)} HP)</span>
+        <input type="checkbox" value="${b.id}" ${isChecked ? 'checked' : ''} style="width: 16px; height: 16px;">
+      `;
+      const chk = row.querySelector("input");
+      chk.addEventListener("change", async () => {
+        let targets = (Array.isArray(botConfig.boss_targets) ? botConfig.boss_targets : []).map(normalizeTarget);
+        if (chk.checked) {
+          const idx = targets.findIndex(t => t.bossId === Number(b.id));
+          if (idx >= 0) {
+            targets[idx].enabled = true;
+          } else {
+            targets.push({ bossId: Number(b.id), name: b.name, mode: "pacansky", limit: 7, enabled: true });
+          }
+        } else {
+          targets = targets.filter(t => t.bossId !== Number(b.id));
+        }
+        botConfig.boss_targets = targets;
+        updateBossQueueUI(targets);
+        await apiFetch("/config", {
+          method: "PATCH",
+          body: JSON.stringify({ boss_targets: targets }),
+        });
+        showToast("Очередь боссов обновлена", "info");
+      });
+      return row;
+    },
+    (row, b) => patchRow(row, b),
+    '<div style="color: var(--muted-foreground); font-size: 11px;">Каталог боссов пуст</div>'
+  );
 }
 
 // --- 4.6 Routine & Businesses ---
@@ -927,62 +1086,78 @@ function renderBusinesses() {
     pillsContainer.innerHTML = pills.join("");
   }
 
-  // 2. Compact accordion button label
   const btnToggleText = document.getElementById("btn-toggle-biz-text");
   const btnToggleIcon = document.getElementById("btn-toggle-biz-icon");
-  if (btnToggleText) {
-    btnToggleText.textContent = `(${bizList.length})`;
-  }
-  if (btnToggleIcon) {
-    btnToggleIcon.textContent = isBusinessesExpanded ? "▴" : "▾";
-  }
+  setTextIfChanged(btnToggleText, `(${bizList.length})`);
+  setTextIfChanged(btnToggleIcon, isBusinessesExpanded ? "▴" : "▾");
 
-  // 3. Render collapsed/expanded list
   if (!container) return;
-  container.innerHTML = "";
-
-  if (bizList.length === 0) {
-    container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 11px; padding: 6px;">Нет приобретенных бизнесов</div>';
-    return;
-  }
-
-  bizList.forEach(b => {
-    const item = document.createElement("div");
-    item.style.cssText = "display: flex; justify-content: space-between; align-items: center; background: var(--secondary); padding: 8px 10px; border-radius: 6px;";
-
+  const patchBiz = (item, b) => {
     const rewardInfo = b.rewardPerLevel ? `+${b.rewardPerLevel * (b.level || 1)} / 8ч` : "";
-    item.innerHTML = `
-      <div>
-        <div style="font-weight: 700; color: #fff;">${b.title || b.name || 'Бизнес #' + (b.businessId || '')}</div>
-        <div style="font-size: 10px; color: var(--muted-foreground);">
-          ${b.rewardType ? b.rewardType.toUpperCase() : 'ДОХОД'}: ${rewardInfo}
+    setTextIfChanged(item.querySelector(".biz-title"), b.title || b.name || `Бизнес #${b.businessId || ''}`);
+    setTextIfChanged(item.querySelector(".biz-sub"), `${b.rewardType ? b.rewardType.toUpperCase() : 'ДОХОД'}: ${rewardInfo}`);
+    setTextIfChanged(item.querySelector(".biz-lvl"), `Ур. ${b.level || 0}/${b.maxLevel || 8}`);
+  };
+
+  reconcileKeyedList(
+    container,
+    bizList,
+    b => `${b.businessId}-${b.prisonId || 1}`,
+    b => `${b.businessId}|${b.prisonId}|${b.title}|${b.level}|${b.rewardPerLevel}`,
+    b => {
+      const item = document.createElement("div");
+      item.setAttribute("data-biz-id", String(b.businessId));
+      item.style.cssText = "display: flex; justify-content: space-between; align-items: center; background: var(--secondary); padding: 8px 10px; border-radius: 6px;";
+      item.innerHTML = `
+        <div>
+          <div class="biz-title" style="font-weight: 700; color: #fff;"></div>
+          <div class="biz-sub" style="font-size: 10px; color: var(--muted-foreground);"></div>
         </div>
-      </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="color: #34d399; font-weight: 700; font-size: 12px;">Ур. ${b.level || 0}/${b.maxLevel || 8}</span>
-        <button class="btn btn-secondary btn-sm btn-upgrade-biz" data-biz-id="${b.businessId}" data-prison-id="${b.prisonId}" style="padding: 3px 8px; font-size: 11px;">
-          Улучшить
-        </button>
-      </div>
-    `;
-
-    item.querySelector(".btn-upgrade-biz").addEventListener("click", async () => {
-      try {
-        const res = await apiFetch("/actions/business/upgrade", {
-          method: "POST",
-          body: JSON.stringify({ businessId: b.businessId, prisonId: b.prisonId }),
-        });
-        if (res.success) {
-          showToast(`Бизнес ${b.title || ''} успешно улучшен!`, "success");
-          loadProfile();
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="biz-lvl" style="color: #34d399; font-weight: 700; font-size: 12px;"></span>
+          <button class="btn btn-secondary btn-sm btn-upgrade-biz" data-biz-id="${b.businessId}" data-prison-id="${b.prisonId}" style="padding: 3px 8px; font-size: 11px;">
+            Улучшить
+          </button>
+        </div>
+      `;
+      item.querySelector(".btn-upgrade-biz").addEventListener("click", async () => {
+        try {
+          const res = await apiFetch("/actions/business/upgrade", {
+            method: "POST",
+            body: JSON.stringify({ businessId: b.businessId, prisonId: b.prisonId }),
+          });
+          if (res.success) {
+            showToast(`Бизнес ${b.title || ''} успешно улучшен!`, "success");
+            loadProfile();
+          }
+        } catch (e) {
+          showToast(`Ошибка улучшения: ${e.message}`, "error");
         }
-      } catch (e) {
-        showToast(`Ошибка улучшения: ${e.message}`, "error");
-      }
-    });
+      });
+      patchBiz(item, b);
+      return item;
+    },
+    (item, b) => patchBiz(item, b),
+    '<div style="color: var(--muted-foreground); font-size: 11px; padding: 6px;">Нет приобретенных бизнесов</div>'
+  );
+}
 
-    container.appendChild(item);
-  });
+function renderMonthlyStateData(data) {
+  const el = document.getElementById("monthly-progress-text");
+  if (!el) return;
+  if (data) liveSlices.data.monthly = data;
+  if (data && data.success && data.state) {
+    const st = data.state;
+    const completed = st.summary?.completedDisplay || (st.user?.claimedTiers ? `${st.user.claimedTiers.length}/30` : "-");
+    const claimable = Array.isArray(st.user?.claimableTiers) ? st.user.claimableTiers.length : 0;
+    let text = `Выполнено этапов: <b>${completed}</b> • Готово к сбору наград: <b>${claimable}</b>`;
+    if (st.today?.title) {
+      text += ` • Сегодня: <i>${st.today.title}</i>`;
+    }
+    if (el.innerHTML !== text) el.innerHTML = text;
+  } else {
+    setTextIfChanged(el, "Ежемесячные задания и награды активны");
+  }
 }
 
 async function loadMonthlyState() {
@@ -990,20 +1165,9 @@ async function loadMonthlyState() {
   if (!el) return;
   try {
     const data = await apiFetch("/monthly/state");
-    if (data.success && data.state) {
-      const st = data.state;
-      const completed = st.summary?.completedDisplay || (st.user?.claimedTiers ? `${st.user.claimedTiers.length}/30` : "-");
-      const claimable = Array.isArray(st.user?.claimableTiers) ? st.user.claimableTiers.length : 0;
-      let text = `Выполнено этапов: <b>${completed}</b> • Готово к сбору наград: <b>${claimable}</b>`;
-      if (st.today?.title) {
-        text += ` • Сегодня: <i>${st.today.title}</i>`;
-      }
-      el.innerHTML = text;
-    } else {
-      el.textContent = "Ежемесячные задания и награды активны";
-    }
+    renderMonthlyStateData(data);
   } catch (e) {
-    el.textContent = "Месячные делюги активны";
+    setTextIfChanged(el, "Месячные делюги активны");
   }
 }
 
@@ -1168,71 +1332,81 @@ document.getElementById("btn-clear-notifs")?.addEventListener("click", async () 
 });
 
 // --- 4.8.1 Friends Summary (Счетчик, Дельта 24ч, Конверсия) ---
-async function loadFriendsSummary() {
+function renderFriendsSummaryData(data) {
   const countEl = document.getElementById("friends-total-count");
   const deltaBadge = document.getElementById("friends-delta-badge");
   const baseInfo = document.getElementById("friends-baseline-info");
   const tbody = document.getElementById("friends-conversion-table-body");
+  if (!countEl || !data) return;
+
+  liveSlices.data.friends = data;
+  const total = (data.totalFriends !== undefined ? data.totalFriends : data.friendsCount) || 0;
+  const delta = data.delta24h || 0;
+  const base = data.baselineCount !== undefined ? data.baselineCount : total;
+
+  setTextIfChanged(countEl, formatNum(total));
+
+  if (deltaBadge) {
+    if (delta > 0) {
+      deltaBadge.className = "friends-delta-pos";
+      setTextIfChanged(deltaBadge, `(+${delta})`);
+    } else if (delta < 0) {
+      deltaBadge.className = "friends-delta-neg";
+      setTextIfChanged(deltaBadge, `(${delta})`);
+    } else {
+      deltaBadge.className = "friends-delta-zero";
+      setTextIfChanged(deltaBadge, "(0)");
+    }
+    const timeStr = data.baselineAt ? new Date(data.baselineAt).toLocaleString() : "";
+    deltaBadge.title = `Изменение за 24ч (база: ${base} корешей, замер: ${timeStr})`;
+  }
+
+  if (baseInfo) {
+    setTextIfChanged(baseInfo, data.has24hHistory ? `База 24ч: ${formatNum(base)}` : `База: ${formatNum(base)} (история <24ч)`);
+  }
+
+  if (tbody) {
+    const sources = data.conversionBySource || [];
+    reconcileKeyedList(
+      tbody,
+      sources,
+      s => s.source,
+      s => `${s.source}|${s.sent}|${s.accepted}|${s.conversionRate}|${s.avgDamage}`,
+      s => {
+        let srcName = s.source;
+        if (s.source === "tg_channel") srcName = "📡 TG-каналы";
+        else if (s.source === "news_ad") srcName = "📰 Новости";
+        else if (s.source === "guild") srcName = "🏰 Бригады";
+        else if (s.source === "weekly_top") srcName = "🏆 Топ недели";
+        else if (s.source === "achievements") srcName = "🎖️ Достижения";
+        else if (s.source === "auto_outreach") srcName = "🤖 Авто-набор";
+        else if (s.source === "import") srcName = "📋 Импорт";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="col-src" style="text-align: left; font-weight: 600;">${srcName}</td>
+          <td class="col-sent" style="text-align: right;">${s.sent}</td>
+          <td class="col-acc" style="text-align: right; color: #22c55e;">${s.accepted}</td>
+          <td class="col-rate" style="text-align: right; font-weight: 700;">${s.conversionRate}%</td>
+          <td class="col-dmg" style="text-align: right; color: #fbbf24;">${s.avgDamage > 0 ? formatNum(s.avgDamage) : '-'}</td>
+        `;
+        return tr;
+      },
+      (tr, s) => {
+        setTextIfChanged(tr.querySelector(".col-sent"), s.sent);
+        setTextIfChanged(tr.querySelector(".col-acc"), s.accepted);
+        setTextIfChanged(tr.querySelector(".col-rate"), `${s.conversionRate}%`);
+        setTextIfChanged(tr.querySelector(".col-dmg"), s.avgDamage > 0 ? formatNum(s.avgDamage) : '-');
+      },
+      '<tr><td colspan="5" style="text-align: center; color: var(--muted-foreground); padding: 8px;">Нет данных по отправленным заявкам</td></tr>'
+    );
+  }
+}
+
+async function loadFriendsSummary() {
+  const countEl = document.getElementById("friends-total-count");
   if (!countEl) return;
-
   try {
-    await fetchWithSWR("friends_summary", () => apiFetch("/friends/summary"), (data) => {
-      const total = (data.totalFriends !== undefined ? data.totalFriends : data.friendsCount) || 0;
-      const delta = data.delta24h || 0;
-      const base = data.baselineCount !== undefined ? data.baselineCount : total;
-
-      countEl.textContent = formatNum(total);
-
-      if (deltaBadge) {
-        if (delta > 0) {
-          deltaBadge.className = "friends-delta-pos";
-          deltaBadge.textContent = `(+${delta})`;
-        } else if (delta < 0) {
-          deltaBadge.className = "friends-delta-neg";
-          deltaBadge.textContent = `(${delta})`;
-        } else {
-          deltaBadge.className = "friends-delta-zero";
-          deltaBadge.textContent = "(0)";
-        }
-        const timeStr = data.baselineAt ? new Date(data.baselineAt).toLocaleString() : "";
-        deltaBadge.title = `Изменение за 24ч (база: ${base} корешей, замер: ${timeStr})`;
-      }
-
-      if (baseInfo) {
-        baseInfo.textContent = data.has24hHistory
-          ? `База 24ч: ${formatNum(base)}`
-          : `База: ${formatNum(base)} (история <24ч)`;
-      }
-
-      if (tbody) {
-        const sources = data.conversionBySource || [];
-        if (sources.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted-foreground); padding: 8px;">Нет данных по отправленным заявкам</td></tr>';
-        } else {
-          tbody.innerHTML = "";
-          sources.forEach(s => {
-            let srcName = s.source;
-            if (s.source === "tg_channel") srcName = "📡 TG-каналы";
-            else if (s.source === "news_ad") srcName = "📰 Новости";
-            else if (s.source === "guild") srcName = "🏰 Бригады";
-            else if (s.source === "weekly_top") srcName = "🏆 Топ недели";
-            else if (s.source === "achievements") srcName = "🎖️ Достижения";
-            else if (s.source === "auto_outreach") srcName = "🤖 Авто-набор";
-            else if (s.source === "import") srcName = "📋 Импорт";
-
-            const tr = document.createElement("tr");
-            tr.innerHTML = `
-              <td style="text-align: left; font-weight: 600;">${srcName}</td>
-              <td style="text-align: right;">${s.sent}</td>
-              <td style="text-align: right; color: #22c55e;">${s.accepted}</td>
-              <td style="text-align: right; font-weight: 700;">${s.conversionRate}%</td>
-              <td style="text-align: right; color: #fbbf24;">${s.avgDamage > 0 ? formatNum(s.avgDamage) : '-'}</td>
-            `;
-            tbody.appendChild(tr);
-          });
-        }
-      }
-    });
+    await fetchWithSWR("friends_summary", () => apiFetch("/friends/summary"), data => renderFriendsSummaryData(data));
   } catch (err) {
     console.warn("Failed to load friends summary:", err);
   }
@@ -1241,69 +1415,78 @@ async function loadFriendsSummary() {
 // --- 4.8.2 Friends Audit & Cleanup ---
 let currentAuditSort = "damage_7d";
 
-async function loadFriendsAudit() {
+function renderFriendsAuditData(data) {
   const container = document.getElementById("friends-audit-list");
-  if (!container) return;
+  if (!container || !data) return;
+  liveSlices.data.friends_stats = data;
+  const friends = data.friends || [];
 
-  try {
-    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=100`);
-    const friends = data.friends || [];
-
-    if (friends.length === 0) {
-      container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 16px; font-size: 12px;">Список друзей пуст. Запустите цикл или обновите профили.</div>';
-      return;
+  const patchCard = (card, f) => {
+    const isWl = Boolean(f.isWhitelisted);
+    card.setAttribute("data-user-id", String(f.userId));
+    card.style.border = isWl ? "1px solid rgba(234, 179, 8, 0.4)" : "1px solid var(--border-color, #383838)";
+    const cb = card.querySelector(".audit-friend-cb");
+    if (cb) cb.disabled = isWl;
+    setTextIfChanged(card.querySelector(".fa-nick"), f.nickname);
+    setTextIfChanged(card.querySelector(".fa-meta"), `ID: ${f.userId} · Ур. ${f.level} · 👑 ${formatNum(f.authority)}`);
+    const btnWl = card.querySelector(".btn-toggle-whitelist");
+    if (btnWl) {
+      btnWl.className = `btn btn-xs ${isWl ? "btn-warning btn-whitelist-active" : "btn-secondary"} btn-toggle-whitelist`;
+      btnWl.setAttribute("data-whitelisted", String(isWl));
+      btnWl.disabled = false;
+      setTextIfChanged(btnWl, isWl ? "🛡️ Защищен" : "⭐ Защитить");
     }
+    setTextIfChanged(card.querySelector(".fa-dmg7"), f.damage7d > 0 ? formatNum(f.damage7d) : "-");
+    setTextIfChanged(card.querySelector(".fa-dmgtot"), f.totalDamageToMyBosses > 0 ? formatNum(f.totalDamageToMyBosses) : "-");
+    const inactEl = card.querySelector(".fa-inact");
+    if (inactEl) {
+      setTextIfChanged(inactEl, `${f.daysInactive} дн.`);
+      inactEl.style.color = f.daysInactive >= 14 ? "#e62e1e" : "var(--muted-foreground)";
+    }
+  };
 
-    container.innerHTML = "";
-    friends.forEach(f => {
+  reconcileKeyedList(
+    container,
+    friends,
+    f => f.userId,
+    f => `${f.userId}|${f.nickname}|${f.level}|${f.authority}|${f.damage7d}|${f.totalDamageToMyBosses}|${f.daysInactive}|${Boolean(f.isWhitelisted)}`,
+    f => {
       const initial = (f.nickname || "К")[0].toUpperCase();
       const avatarHtml = f.photoUrl
         ? `<img src="${f.photoUrl}" alt="" style="width: 28px; height: 28px; border-radius: 50%; object-fit: cover;" onerror="this.onerror=null;this.parentElement.textContent='${initial}'">`
         : `<span style="background: var(--primary); color: #000; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800;">${initial}</span>`;
-
       const isWl = Boolean(f.isWhitelisted);
-      const wlBtnClass = isWl ? "btn-warning btn-whitelist-active" : "btn-secondary";
-      const wlBtnText = isWl ? "🛡️ Защищен" : "⭐ Защитить";
-
       const card = document.createElement("div");
       card.className = "friend-card";
-      card.style.display = "flex";
-      card.style.flexDirection = "column";
-      card.style.gap = "6px";
-      card.style.padding = "10px";
-      card.style.border = isWl ? "1px solid rgba(234, 179, 8, 0.4)" : "1px solid var(--border-color, #383838)";
-
+      card.setAttribute("data-user-id", String(f.userId));
+      card.style.cssText = "display: flex; flex-direction: column; gap: 6px; padding: 10px;";
       card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <input type="checkbox" class="audit-friend-cb" data-user-id="${f.userId}" ${isWl ? 'disabled' : ''}>
             ${avatarHtml}
             <div>
-              <div style="font-weight: 700; font-size: 13px; color: #fff;">${f.nickname}</div>
-              <div style="font-size: 10px; color: var(--muted-foreground);">ID: ${f.userId} · Ур. ${f.level} · 👑 ${formatNum(f.authority)}</div>
+              <div class="fa-nick" style="font-weight: 700; font-size: 13px; color: #fff;"></div>
+              <div class="fa-meta" style="font-size: 10px; color: var(--muted-foreground);"></div>
             </div>
           </div>
-          <button class="btn btn-xs ${wlBtnClass} btn-toggle-whitelist" data-user-id="${f.userId}" data-whitelisted="${isWl}">
-            ${wlBtnText}
-          </button>
+          <button class="btn btn-xs btn-toggle-whitelist" data-user-id="${f.userId}"></button>
         </div>
-
         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 4px;">
           <div class="stat-chip" style="padding: 4px;">
             <div class="stat-chip-lbl" style="font-size: 9px;">Урон 7д</div>
-            <div class="stat-chip-val" style="color: #22c55e; font-size: 12px;">${f.damage7d > 0 ? formatNum(f.damage7d) : '-'}</div>
+            <div class="stat-chip-val fa-dmg7" style="color: #22c55e; font-size: 12px;"></div>
           </div>
           <div class="stat-chip" style="padding: 4px;">
             <div class="stat-chip-lbl" style="font-size: 9px;">Всего в боссов</div>
-            <div class="stat-chip-val" style="color: #fbbf24; font-size: 12px;">${f.totalDamageToMyBosses > 0 ? formatNum(f.totalDamageToMyBosses) : '-'}</div>
+            <div class="stat-chip-val fa-dmgtot" style="color: #fbbf24; font-size: 12px;"></div>
           </div>
           <div class="stat-chip" style="padding: 4px;">
             <div class="stat-chip-lbl" style="font-size: 9px;">Неактивен</div>
-            <div class="stat-chip-val" style="color: ${f.daysInactive >= 14 ? '#e62e1e' : 'var(--muted-foreground)'}; font-size: 12px;">${f.daysInactive} дн.</div>
+            <div class="stat-chip-val fa-inact" style="font-size: 12px;"></div>
           </div>
         </div>
       `;
-
       const btnWl = card.querySelector(".btn-toggle-whitelist");
       btnWl?.addEventListener("click", async () => {
         btnWl.disabled = true;
@@ -1320,45 +1503,47 @@ async function loadFriendsAudit() {
           btnWl.disabled = false;
         }
       });
+      patchCard(card, f);
+      return card;
+    },
+    (card, f) => patchCard(card, f),
+    '<div style="color: var(--muted-foreground); text-align: center; padding: 16px; font-size: 12px;">Список друзей пуст. Запустите цикл или обновите профили.</div>'
+  );
+}
 
-      container.appendChild(card);
-    });
+async function loadFriendsAudit() {
+  const container = document.getElementById("friends-audit-list");
+  if (!container) return;
+  try {
+    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=100`);
+    renderFriendsAuditData(data);
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 16px; font-size: 12px;">Ошибка загрузки аудита: ${err.message}</div>`;
+    if (!container.querySelector(".friend-card")) {
+      container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 16px; font-size: 12px;">Ошибка загрузки аудита: ${err.message}</div>`;
+    }
   }
 }
 
 // --- 4.8 Friend Requests (Кореша) ---
-let _lastFriendReqHash = "";
-
-async function loadFriendRequests() {
+function renderFriendRequestsData(data) {
   const container = document.getElementById("friend-requests-list");
-  if (!container) return;
-  try {
-    const data = await apiFetch("/friendship/requests");
-    const reqs = data.requests || data.items || [];
-    const countEl = document.getElementById("friend-requests-count");
-    const badgeEl = document.getElementById("drawer-friends-badge");
-    if (countEl) countEl.textContent = reqs.length;
-    if (badgeEl) {
-      badgeEl.textContent = reqs.length;
-      badgeEl.style.display = reqs.length > 0 ? "inline-block" : "none";
-    }
+  if (!container || !data) return;
+  liveSlices.data.friend_requests = data;
+  const reqs = data.requests || data.items || [];
+  const countEl = document.getElementById("friend-requests-count");
+  const badgeEl = document.getElementById("drawer-friends-badge");
+  setTextIfChanged(countEl, reqs.length);
+  if (badgeEl) {
+    setTextIfChanged(badgeEl, reqs.length);
+    badgeEl.style.display = reqs.length > 0 ? "inline-block" : "none";
+  }
 
-    if (reqs.length === 0) {
-      _lastFriendReqHash = "empty";
-      container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>';
-      return;
-    }
-
-    const reqHash = JSON.stringify(reqs.map(r => [r.userId || r.fromUserId || r.id, r.authority, r.talentsCount || r.talents]));
-    if (reqHash === _lastFriendReqHash && container.querySelectorAll(".friend-card").length === reqs.length) {
-      return;
-    }
-    _lastFriendReqHash = reqHash;
-
-    const frag = document.createDocumentFragment();
-    reqs.forEach(r => {
+  reconcileKeyedList(
+    container,
+    reqs,
+    r => r.userId || r.fromUserId || r.id,
+    r => `${r.userId || r.fromUserId || r.id}|${r.authority}|${r.level || r.lvl}|${r.talentsCount || r.talents}`,
+    r => {
       const uId = r.userId || r.fromUserId || r.id;
       const nick = r.nickname || `Игрок #${uId}`;
       const talents = r.talents !== undefined ? r.talents : (r.talentsCount || r.TalentsCount || 0);
@@ -1366,7 +1551,6 @@ async function loadFriendRequests() {
       const poison = r.poisonDamage !== undefined ? r.poisonDamage : (wDmg.poison || wDmg.Poison || 0);
       const gunshot = r.gunshotDamage !== undefined ? r.gunshotDamage : (wDmg.gunshot || wDmg.Gunshot || 0);
       const knife = r.knifeDamage !== undefined ? r.knifeDamage : (wDmg.knife || wDmg.Knife || 0);
-      const totalDmg = r.totalDamage !== undefined ? r.totalDamage : (poison + gunshot + knife);
       const lvl = r.level !== undefined ? r.level : (r.lvl || 0);
       const auth = r.authority !== undefined ? r.authority : 0;
       const biceps = (r.biceps !== null && r.biceps !== undefined && r.biceps > 0) ? r.biceps : null;
@@ -1376,6 +1560,7 @@ async function loadFriendRequests() {
 
       const card = document.createElement("div");
       card.className = "friend-card";
+      card.setAttribute("data-user-id", String(uId));
       card.innerHTML = `
         <div class="friend-header">
           <div class="friend-name">
@@ -1404,8 +1589,6 @@ async function loadFriendRequests() {
       const btnDecline = card.querySelector(".btn-decline-friend");
 
       const updateFriendBadgeAndCount = () => {
-        const countEl = document.getElementById("friend-requests-count");
-        const badgeEl = document.getElementById("drawer-friends-badge");
         const currentCount = parseInt(countEl?.textContent || "0", 10);
         const newCount = Math.max(0, currentCount - 1);
         if (countEl) countEl.textContent = newCount;
@@ -1415,6 +1598,7 @@ async function loadFriendRequests() {
         }
         if (newCount === 0) {
           container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>';
+          container.dataset.emptySig = "empty";
         }
       };
 
@@ -1482,9 +1666,19 @@ async function loadFriendRequests() {
         }
       });
 
-      frag.appendChild(card);
-    });
-    container.replaceChildren(frag);
+      return card;
+    },
+    () => {},
+    '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>'
+  );
+}
+
+async function loadFriendRequests() {
+  const container = document.getElementById("friend-requests-list");
+  if (!container) return;
+  try {
+    const data = await apiFetch("/friendship/requests");
+    renderFriendRequestsData(data);
   } catch (err) {
     console.warn("loadFriendRequests error:", err);
   }
@@ -1878,35 +2072,36 @@ async function loadCollections() {
 }
 
 // --- 4.12 Bauls ---
-async function loadBauls() {
+function renderBaulsData(data) {
   const card = document.getElementById("bauls-card");
-  if (!card) return;
-  try {
-    const data = await apiFetch("/bauls");
-    const stats = data.stats || {};
+  if (!card || !data) return;
+  liveSlices.data.bauls = data;
+  const stats = data.stats || {};
 
-    const lvl = stats.level || 0;
-    const maxLvl = stats.maxLevel || 30;
-    const curExp = stats.currentExp || 0;
-    const nextExp = stats.expToNext || 1;
-    const pct = Math.min(100, Math.round((curExp / nextExp) * 100));
+  const lvl = stats.level || 0;
+  const maxLvl = stats.maxLevel || 30;
+  const curExp = stats.currentExp || 0;
+  const nextExp = stats.expToNext || 1;
+  const pct = Math.min(100, Math.round((curExp / nextExp) * 100));
 
-    const lvlEl = document.getElementById("baul-level-text");
-    const expTextEl = document.getElementById("baul-exp-text");
-    const expPctEl = document.getElementById("baul-exp-percent");
-    const expFillEl = document.getElementById("baul-exp-fill");
-    const pendingRewardsEl = document.getElementById("baul-pending-rewards");
+  setTextIfChanged(document.getElementById("baul-level-text"), `Ур. ${lvl}/${maxLvl}`);
+  setTextIfChanged(document.getElementById("baul-exp-text"), `${formatNum(curExp)} / ${formatNum(nextExp)}`);
+  setTextIfChanged(document.getElementById("baul-exp-percent"), `${pct}%`);
+  setWidthIfChanged(document.getElementById("baul-exp-fill"), `${pct}%`);
 
-    if (lvlEl) lvlEl.textContent = `Ур. ${lvl}/${maxLvl}`;
-    if (expTextEl) expTextEl.textContent = `${formatNum(curExp)} / ${formatNum(nextExp)}`;
-    if (expPctEl) expPctEl.textContent = `${pct}%`;
-    if (expFillEl) expFillEl.style.width = `${pct}%`;
-
-    if (pendingRewardsEl) {
-      const rewards = stats.pendingRewards || [];
-      if (rewards.length === 0) {
+  const pendingRewardsEl = document.getElementById("baul-pending-rewards");
+  if (pendingRewardsEl) {
+    const rewards = stats.pendingRewards || [];
+    if (rewards.length === 0) {
+      if (pendingRewardsEl.dataset.emptySig !== "empty") {
         pendingRewardsEl.innerHTML = '<span style="font-size: 11px; color: var(--muted-foreground);">Нет накопленных наград</span>';
-      } else {
+        pendingRewardsEl.dataset.emptySig = "empty";
+      }
+    } else {
+      const nextSig = JSON.stringify(rewards.map(r => [r.type, r.id, r.amount || r.count]));
+      if (pendingRewardsEl.dataset.sig !== nextSig) {
+        pendingRewardsEl.dataset.emptySig = "";
+        pendingRewardsEl.dataset.sig = nextSig;
         pendingRewardsEl.innerHTML = rewards.map(r => {
           const iconSrc = r.imageUrl || (r.iconKey ? `/static/assets/icons/${r.iconKey}.webp` : '/static/assets/icons/rubles.webp');
           const lbl = r.label || r.title || r.type || 'Награда';
@@ -1921,6 +2116,15 @@ async function loadBauls() {
         }).join("");
       }
     }
+  }
+}
+
+async function loadBauls() {
+  const card = document.getElementById("bauls-card");
+  if (!card) return;
+  try {
+    const data = await apiFetch("/bauls");
+    renderBaulsData(data);
   } catch (e) {
     console.warn("loadBauls error:", e);
   }
@@ -2009,23 +2213,51 @@ document.getElementById("btn-prison-work-one")?.addEventListener("click", async 
   }
 });
 
-// --- 5.6 Prison Work (All Energy) ---
+// --- 5.6 Prison Work (All Energy Drain) ---
 document.getElementById("btn-prison-work-all")?.addEventListener("click", async () => {
-  const energy = playerProfile.profile?.energy || 0;
-  const count = Math.max(1, Math.min(15, Math.floor(energy / 2))); // estimate ~2 energy per walk
+  const btnAll = document.getElementById("btn-prison-work-all");
+  const btnOne = document.getElementById("btn-prison-work-one");
+  const origHtml = btnAll ? btnAll.innerHTML : "";
+  if (btnAll) {
+    btnAll.disabled = true;
+    btnAll.textContent = "⏳ Сливаем энергию...";
+  }
+  if (btnOne) btnOne.disabled = true;
+
   try {
-    const res = await apiFetch("/actions/prison/work", {
+    const res = await apiFetch("/prisons/drain", {
       method: "POST",
-      body: JSON.stringify({ prisonId: currentPrisonId, isDay: currentIsDay, count }),
+      body: JSON.stringify({ prisonId: currentPrisonId, isDay: currentIsDay, collectPodogrev: false }),
     });
     if (res.success) {
-      showToast(`Выполнено ${res.completed} ходок!`, "success");
-      loadPrisons();
+      const runs = res.runsCompleted !== undefined ? res.runsCompleted : (res.works_done || 0);
+      const remEn = res.remainingEnergy !== undefined ? res.remainingEnergy : (res.remaining_energy ?? 0);
+      const stCost = res.stageCost || 0;
+
+      if (playerProfile && playerProfile.profile) {
+        playerProfile.profile.energy = remEn;
+        updateEnergyTimer();
+      }
+
+      if (runs > 0) {
+        showToast(`⚡ Выполнено ходок: ${runs} • Остаток энергии: ${remEn}`, "success");
+      } else {
+        showToast(`Недостаточно энергии: ${remEn}/${stCost} ⚡`, "info");
+      }
+      loadPrisons({ force: true });
       loadProfile();
       refreshState();
+    } else {
+      showToast(res.error || res.detail || "Не удалось слить энергию", "error");
     }
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
+  } finally {
+    if (btnAll) {
+      btnAll.disabled = false;
+      btnAll.innerHTML = origHtml || "⚡ Слить всю энергию";
+    }
+    if (btnOne) btnOne.disabled = false;
   }
 });
 
@@ -4474,10 +4706,177 @@ document.getElementById("btn-refresh-bauls")?.addEventListener("click", () => {
 });
 
 // ============================================================================
-// 6. INTERVALS & INIT
+// 6. LIVESTATEHUB SSE CLIENT & LOCAL TIMERS
 // ============================================================================
 
-// 1-second timer for countdowns
+const liveSyncClient = (() => {
+  let evtSource = null;
+  let deltaTimer = null;
+  let reconnectTimer = null;
+  let retryDelayMs = 2000;
+  let started = false;
+  const pendingUpdates = new Map();
+
+  function applyLiveSlice(slice, data, version) {
+    if (!slice || data === undefined) return;
+    if (version && Number(liveSlices.versions[slice] || 0) >= Number(version)) {
+      return;
+    }
+    if (version) {
+      liveSlices.versions[slice] = Number(version);
+    }
+    liveSlices.data[slice] = data;
+
+    if (slice === "profile") renderProfileData(data);
+    else if (slice === "state") applyStateData(data);
+    else if (slice === "config" && data) {
+      botConfig = data;
+      updateConfigUI(botConfig);
+    } else if (slice === "boss") renderBossData(data);
+    else if (slice === "prisons") renderPrisonsData(data);
+    else if (slice === "friends") renderFriendsSummaryData(data);
+    else if (slice === "friend_requests") renderFriendRequestsData(data);
+    else if (slice === "friends_stats") renderFriendsAuditData(data);
+    else if (slice === "monthly") renderMonthlyStateData(data);
+    else if (slice === "bauls") renderBaulsData(data);
+    else if (slice === "radar" && typeof renderActivePlayersRadarFromData === "function") {
+      renderActivePlayersRadarFromData(data);
+    } else if (slice === "routine" && data) {
+      if (data.monthly) renderMonthlyStateData(data.monthly);
+      if (data.bauls) renderBaulsData(data.bauls);
+    }
+  }
+
+  function flushPending() {
+    if (pendingUpdates.size === 0) return;
+    const entries = Array.from(pendingUpdates.entries());
+    pendingUpdates.clear();
+    requestAnimationFrame(() => {
+      entries.forEach(([slice, payload]) => applyLiveSlice(slice, payload.data, payload.version));
+    });
+  }
+
+  function handleIncomingSlice(slice, data, version) {
+    if (document.hidden) {
+      pendingUpdates.set(slice, { data, version });
+      return;
+    }
+    applyLiveSlice(slice, data, version);
+  }
+
+  async function pollDeltaFallback() {
+    if (document.hidden) return;
+    try {
+      const vParam = encodeURIComponent(JSON.stringify(liveSlices.versions || {}));
+      const res = await apiFetch(`/live/delta?versions=${vParam}`);
+      if (!res || !res.success) return;
+      const changed = res.changed || {};
+      const vers = res.versions || {};
+      Object.entries(changed).forEach(([slice, data]) => {
+        handleIncomingSlice(slice, data, vers[slice]);
+      });
+    } catch (e) {
+      console.debug("Delta fallback error:", e);
+    }
+  }
+
+  function startDeltaFallback() {
+    if (deltaTimer) return;
+    deltaTimer = setInterval(pollDeltaFallback, 10000);
+  }
+
+  function stopDeltaFallback() {
+    if (deltaTimer) {
+      clearInterval(deltaTimer);
+      deltaTimer = null;
+    }
+  }
+
+  function buildStreamUrl() {
+    const adminToken = localStorage.getItem("prison_admin_token") || localStorage.getItem("admin_token") || "1488";
+    const tgInitData = tg?.initData;
+    const params = new URLSearchParams();
+    if (adminToken) params.set("token", adminToken);
+    else if (tgInitData) params.set("init_data", tgInitData);
+    return `${API_BASE}/live/stream?${params.toString()}`;
+  }
+
+  function connect() {
+    if (evtSource) {
+      try { evtSource.close(); } catch (e) { }
+      evtSource = null;
+    }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    try {
+      evtSource = new EventSource(buildStreamUrl());
+
+      evtSource.addEventListener("snapshot", e => {
+        retryDelayMs = 2000;
+        stopDeltaFallback();
+        try {
+          const payload = JSON.parse(e.data);
+          const vers = payload.versions || {};
+          const slices = payload.slices || {};
+          Object.entries(slices).forEach(([slice, data]) => {
+            handleIncomingSlice(slice, data, vers[slice]);
+          });
+        } catch (err) {
+          console.debug("SSE snapshot parse error:", err);
+        }
+      });
+
+      evtSource.addEventListener("slice_update", e => {
+        try {
+          const payload = JSON.parse(e.data);
+          handleIncomingSlice(payload.slice, payload.data, payload.version);
+        } catch (err) {
+          console.debug("SSE slice_update parse error:", err);
+        }
+      });
+
+      evtSource.onerror = () => {
+        try { evtSource.close(); } catch (e) { }
+        evtSource = null;
+        startDeltaFallback();
+        if (!document.hidden && !reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connect();
+          }, retryDelayMs);
+          retryDelayMs = Math.min(30000, Math.round(retryDelayMs * 1.7));
+        }
+      };
+    } catch (err) {
+      console.warn("EventSource init failed, falling back to delta polling:", err);
+      startDeltaFallback();
+    }
+  }
+
+  return {
+    start() {
+      if (started) return;
+      started = true;
+      connect();
+    },
+    onVisibilityChange() {
+      if (!document.hidden) {
+        flushPending();
+        if (!evtSource || evtSource.readyState === 2) {
+          retryDelayMs = 2000;
+          connect();
+        }
+        pollDeltaFallback();
+      }
+    },
+    applyLiveSlice,
+  };
+})();
+
+// 1-second local countdown & energy interpolation tick (0 network calls)
 setInterval(() => {
   if (document.hidden) return;
   updateMeleeTimers();
@@ -4486,35 +4885,17 @@ setInterval(() => {
   updateToiletPaperTimer();
 }, 1000);
 
-// 5-second periodic ping measurement
+// 15-second lightweight ping measurement
 setInterval(() => {
   if (document.hidden) return;
   measurePing();
-}, 5000);
-
-// 30-second periodic data refresher
-setInterval(() => {
-  if (document.hidden) return;
-  refreshState();
-  if (activeSection === "main") loadProfile();
-  if (activeSection === "bosses") loadBoss();
-  if (activeSection === "prisons") loadPrisons();
-  if (activeSection === "routine") loadRoutine();
-  if (activeSection === "friends") { loadFriendsSummary(); loadFriendRequests(); loadFriendsAudit(); }
-  if (activeSection === "raids") { loadRaidsSection({ silent: true }); }
-}, 30000);
+}, 15000);
 
 // Пауза / возобновление при сворачивании и возврате на вкладку браузера
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     measurePing();
-    refreshState();
-    if (activeSection === "main") loadProfile();
-    else if (activeSection === "bosses") loadBoss();
-    else if (activeSection === "prisons") loadPrisons();
-    else if (activeSection === "routine") loadRoutine();
-    else if (activeSection === "friends") { loadFriendsSummary(); loadFriendRequests(); loadFriendsAudit(); }
-    else if (activeSection === "raids") { loadRaidsSection(); }
+    liveSyncClient.onVisibilityChange();
   }
 });
 
@@ -4568,6 +4949,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Switch to restored section immediately so drawer and HUD title are updated at 0 ms
   switchSection(savedSec);
+
+  // Start real-time LiveStateHub SSE sync
+  liveSyncClient.start();
 
   // Quick health check
   measurePing();
@@ -5289,15 +5673,6 @@ function renderBossPresets() {
   const container = document.getElementById("boss-presets-list");
   if (!container) return;
 
-  if (!bossPresets || bossPresets.length === 0) {
-    container.innerHTML = `
-      <div style="font-size: 11px; color: var(--muted-foreground); text-align: center; padding: 14px; background: rgba(0,0,0,0.1); border-radius: 6px; border: 1px dashed var(--border);">
-        Нет созданных пресетов. Нажмите «+ Создать пресет», чтобы настроить цепочку атак боссов с ежедневным расписанием.
-      </div>
-    `;
-    return;
-  }
-
   const modeLabels = {
     pacansky: "Пацанский",
     blotnoy: "Блатной",
@@ -5307,17 +5682,10 @@ function renderBossPresets() {
     brigade: "Бригадный"
   };
 
-  container.innerHTML = "";
-
-  bossPresets.forEach(preset => {
-    const card = document.createElement("div");
-    card.className = `preset-card ${preset.is_running ? 'preset-running' : ''}`;
-    card.dataset.presetId = preset.id;
-
+  const buildInnerHtml = preset => {
     const items = Array.isArray(preset.items) ? preset.items : [];
     const isRunning = Boolean(preset.is_running);
     const curIdx = preset.current_step_index || 0;
-
     const stepsChipsHtml = items.map((step, idx) => {
       const bId = step.bossId !== undefined ? step.bossId : step.boss_id;
       const bName = bossCatalogMap?.get(String(bId)) || (bossCatalog || []).find(b => String(b.id) === String(bId))?.name || `Босс #${bId}`;
@@ -5327,7 +5695,7 @@ function renderBossPresets() {
       return `<span class="preset-step-chip ${isCurrentStep ? 'active' : ''}">${idx + 1}. ${bName} (${mLabel}) × ${count}</span>`;
     }).join("");
 
-    card.innerHTML = `
+    return `
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <span style="font-weight: 700; font-size: 13px; color: #fff;">${preset.name || 'Без названия'}</span>
@@ -5350,14 +5718,33 @@ function renderBossPresets() {
         ${stepsChipsHtml || '<span style="font-size: 11px; color: var(--muted-foreground);">Нет шагов</span>'}
       </div>
     `;
+  };
 
+  const bindPresetCard = (card, preset) => {
+    card.className = `preset-card ${preset.is_running ? 'preset-running' : ''}`;
+    card.dataset.presetId = String(preset.id);
+    card.innerHTML = buildInnerHtml(preset);
     card.querySelector(".btn-run-preset")?.addEventListener("click", () => runPreset(preset.id));
     card.querySelector(".btn-stop-preset")?.addEventListener("click", () => stopPreset(preset.id));
     card.querySelector(".btn-edit-preset")?.addEventListener("click", () => openPresetModal(preset));
     card.querySelector(".btn-delete-preset")?.addEventListener("click", () => deletePreset(preset.id));
+  };
 
-    container.appendChild(card);
-  });
+  reconcileKeyedList(
+    container,
+    bossPresets || [],
+    p => p.id,
+    p => `${p.id}|${p.name}|${p.schedule_time_msk}|${Boolean(p.daily_enabled)}|${Boolean(p.is_running)}|${p.current_step_index}|${p.last_status}|${JSON.stringify(p.items || [])}`,
+    preset => {
+      const card = document.createElement("div");
+      bindPresetCard(card, preset);
+      return card;
+    },
+    (card, preset) => bindPresetCard(card, preset),
+    `<div style="font-size: 11px; color: var(--muted-foreground); text-align: center; padding: 14px; background: rgba(0,0,0,0.1); border-radius: 6px; border: 1px dashed var(--border);">
+      Нет созданных пресетов. Нажмите «+ Создать пресет», чтобы настроить цепочку атак боссов с ежедневным расписанием.
+    </div>`
+  );
 }
 
 function openPresetModal(preset = null) {
@@ -6321,10 +6708,49 @@ let _radarFetchSeq = 0;
 let _isLoadingRadar = false;
 let _lastRadarFingerprint = "";
 
-async function loadActivePlayersRadar(opts = {}) {
+function renderActivePlayersRadarFromData(res) {
   const container = document.getElementById("radar-players-container");
   const statsText = document.getElementById("radar-stats-text");
   const dbStatsEl = document.getElementById("radar-db-stats");
+  if (!container || !res) return;
+
+  liveSlices.data.radar = res;
+  radarPlayers = res.players || [];
+
+  setTextIfChanged(statsText, `Найдено активных игроков: ${radarPlayers.length}`);
+
+  const activeCount = radarPlayers.filter(p => p.isActiveRecently || (p.authorityDelta && p.authorityDelta > 0)).length;
+  setTextIfChanged(dbStatsEl, `Отобрано: ${radarPlayers.length} игроков (${activeCount} активных за 24ч)`);
+
+  if (res.safety) {
+    raidsSafetyStatus = res.safety;
+    renderSafetyBar(res.safety);
+  }
+
+  if (radarPlayers.length === 0) {
+    _lastRadarFingerprint = "empty";
+    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Игроков с заданными параметрами не найдено. Нажмите «Сканировать бригады» для наполнения базы!</div>';
+    return;
+  }
+
+  const fingerprint = JSON.stringify(
+    radarPlayers.map((p, i) => [
+      p.userId, p.rank || (i + 1), p.nickname, p.level, p.authority, p.authorityDelta,
+      p.damage, p.damageDelta, p.score, p.poisonDamage, p.gunshotDamage, p.knifeDamage,
+      p.talents, p.friendStatus, p.source, p.guildName,
+    ])
+  );
+
+  if (fingerprint === _lastRadarFingerprint && container.querySelectorAll(".radar-player-row[data-user-id]").length === radarPlayers.length) {
+    return;
+  }
+  _lastRadarFingerprint = fingerprint;
+  renderRadarPlayers(radarPlayers, container);
+}
+
+async function loadActivePlayersRadar(opts = {}) {
+  const container = document.getElementById("radar-players-container");
+  const statsText = document.getElementById("radar-stats-text");
   if (!container) return;
 
   if (_isLoadingRadar && opts.silent) return;
@@ -6332,10 +6758,10 @@ async function loadActivePlayersRadar(opts = {}) {
   const seq = ++_radarFetchSeq;
 
   const hasRows = Boolean(container.querySelector(".radar-player-row[data-user-id]"));
-  if (!hasRows) {
+  if (!hasRows && !liveSlices.data.radar) {
     container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Сканирование кандидатов и активных игроков...</div>';
     if (statsText) statsText.textContent = "Загрузка игроков...";
-  } else if (statsText) {
+  } else if (hasRows && !opts.silent && statsText) {
     statsText.innerHTML = `Найдено активных игроков: ${radarPlayers.length} <span class="radar-sync-pill">🔄 Синхронизация...</span>`;
   }
 
@@ -6349,56 +6775,7 @@ async function loadActivePlayersRadar(opts = {}) {
     await loadOutreachConfig();
     const res = await apiFetch(`/raids/active-players?source=${source}&minDamage=${minDmg}&maxDamage=${maxDmg}&limit=${limit}&excludeFriends=${excludeFriends}`);
     if (seq !== _radarFetchSeq) return;
-
-    radarPlayers = res.players || [];
-
-    if (statsText) {
-      statsText.textContent = `Найдено активных игроков: ${radarPlayers.length}`;
-    }
-
-    const activeCount = radarPlayers.filter(p => p.isActiveRecently || (p.authorityDelta && p.authorityDelta > 0)).length;
-    if (dbStatsEl) {
-      dbStatsEl.textContent = `Отобрано: ${radarPlayers.length} игроков (${activeCount} активных за 24ч)`;
-    }
-
-    if (res.safety) {
-      raidsSafetyStatus = res.safety;
-      renderSafetyBar(res.safety);
-    }
-
-    if (radarPlayers.length === 0) {
-      _lastRadarFingerprint = "empty";
-      container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Игроков с заданными параметрами не найдено. Нажмите «Сканировать бригады» для наполнения базы!</div>';
-      return;
-    }
-
-    const fingerprint = JSON.stringify(
-      radarPlayers.map((p, i) => [
-        p.userId,
-        p.rank || (i + 1),
-        p.nickname,
-        p.level,
-        p.authority,
-        p.authorityDelta,
-        p.damage,
-        p.damageDelta,
-        p.score,
-        p.poisonDamage,
-        p.gunshotDamage,
-        p.knifeDamage,
-        p.talents,
-        p.friendStatus,
-        p.source,
-        p.guildName,
-      ])
-    );
-
-    if (fingerprint === _lastRadarFingerprint && container.querySelectorAll(".radar-player-row[data-user-id]").length === radarPlayers.length) {
-      return;
-    }
-    _lastRadarFingerprint = fingerprint;
-
-    renderRadarPlayers(radarPlayers, container);
+    renderActivePlayersRadarFromData(res);
   } catch (err) {
     if (!hasRows) {
       container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка сканирования игроков: ${err.message}</div>`;
