@@ -342,15 +342,15 @@ class DropParser:
     _last_prune_ts: float = 0.0
 
     @classmethod
-    def load_collection_catalog(cls, path: str = "storage/collections_catalog.json") -> None:
+    def load_collection_catalog(cls, path: Optional[str] = None) -> None:
         """Загружает локальный каталог коллекций из JSON-файла при холодном старте."""
-        if cls._collection_catalog_loaded:
+        if cls._collection_catalog_loaded and path is None:
             return
         cls._collection_catalog_loaded = True
         try:
             import json
             from pathlib import Path
-            p = Path(path)
+            p = Path(path) if path else (Path(__file__).resolve().parent.parent / "storage" / "collections_catalog.json")
             if p.exists():
                 data = json.loads(p.read_text(encoding="utf-8"))
                 cls.update_collection_cache(data)
@@ -443,32 +443,36 @@ class DropParser:
                 cls.update_collection_cache(collection_catalog)
             elif not cls._collection_item_map:
                 cls.load_collection_catalog()
-            c_drop = payload["collectionDrop"]
-            if not isinstance(c_drop, dict):
-                c_drop = {"title": str(c_drop)}
-            c_id = c_drop.get("itemId") or c_drop.get("id")
-            c_img = str(c_drop.get("imageUrl") or c_drop.get("image") or "").strip()
-            col_label = (
-                (cls._collection_item_map.get(str(c_id)) if c_id is not None else None)
-                or (cls._collection_image_map.get(c_img) if c_img else None)
-                or (cls._collection_image_map.get(c_img.rsplit("/", 1)[-1]) if c_img else None)
-            )
-            c_name = (
-                c_drop.get("title")
-                or c_drop.get("name")
-                or c_drop.get("itemName")
-                or c_drop.get("collectionName")
-                or (f"Коллекция «{col_label}»" if col_label else None)
-                or (f"Предмет коллекции ({prison_name})" if prison_name else "Предмет коллекции")
-            )
-            sub_txt = f"Нычка: {col_label}" if col_label else (f"Нычка ({prison_name})" if prison_name else "Нычка")
-            drops.append({
-                "kind": "item",
-                "title": c_name,
-                "subtitle": sub_txt,
-                "itemId": c_id,
-                "imageUrl": c_img or None,
-            })
+            raw_cd = payload["collectionDrop"]
+            cd_list = raw_cd if isinstance(raw_cd, list) else [raw_cd]
+            for c_drop in cd_list:
+                if isinstance(c_drop, (int, str)):
+                    c_drop = {"itemId": c_drop}
+                elif not isinstance(c_drop, dict):
+                    c_drop = {"title": str(c_drop)}
+                c_id = c_drop.get("itemId") or c_drop.get("id")
+                c_img = str(c_drop.get("imageUrl") or c_drop.get("image") or "").strip()
+                col_label = (
+                    (cls._collection_item_map.get(str(c_id)) if c_id is not None else None)
+                    or (cls._collection_image_map.get(c_img) if c_img else None)
+                    or (cls._collection_image_map.get(c_img.rsplit("/", 1)[-1]) if c_img else None)
+                )
+                c_name = (
+                    c_drop.get("title")
+                    or c_drop.get("name")
+                    or c_drop.get("itemName")
+                    or c_drop.get("collectionName")
+                    or (f"Коллекция «{col_label}»" if col_label else None)
+                    or (f"Предмет коллекции ({prison_name})" if prison_name else "Предмет коллекции")
+                )
+                sub_txt = f"Нычка: {col_label}" if col_label else (f"Нычка ({prison_name})" if prison_name else "Нычка")
+                drops.append({
+                    "kind": "item",
+                    "title": c_name,
+                    "subtitle": sub_txt,
+                    "itemId": c_id,
+                    "imageUrl": c_img or None,
+                })
 
         if payload.get("weaponDrop"):
             w_drop = payload["weaponDrop"]

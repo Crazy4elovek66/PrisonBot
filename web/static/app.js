@@ -4401,8 +4401,8 @@ async function prepareFittingRoomLayers(currentToken = null) {
       }
     }
 
-    // Front clothing: Zone 1 (shorts), Zone 2 (shirt), Zone 4 (hat), Zone 8 (jacket/raven)
-    for (const z of ["1", "2", "4", "8"]) {
+    // Front clothing: Zone 4 (jacket/shirt), Zone 8 (raven), Zone 2 (mask/glasses), Zone 1 (hat/cap/hood)
+    for (const z of ["4", "8", "2", "1"]) {
       if (clothingZones[z]) {
         const cVal = clothingZones[z];
         const cUrl = typeof cVal === "object" ? cVal.imageUrl || cVal.url : String(cVal);
@@ -4410,7 +4410,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
           const cImg = await getCanvasImage(cUrl);
           if (cImg) {
             const offset = FITTING_CONFIG.staticClothingOffsets[Number(z)] || { x: 0, y: 0, scale: 1 };
-            layers.push({ ...offset, img: cImg, overEyes: (z === "4" || z === "8") });
+            layers.push({ ...offset, img: cImg, overEyes: (z === "1" || z === "2") });
           }
         }
       }
@@ -4542,6 +4542,18 @@ function openFittingRoom(previewData = null) {
   // 2. Clear out active layers immediately so previous preview item never lingers
   fittingRoomActiveLayers = [];
   fittingRoomLayersReady = false;
+  if (fittingRoomStaticCtx) {
+    fittingRoomStaticCtx.save();
+    fittingRoomStaticCtx.setTransform(1, 0, 0, 1, 0, 0);
+    fittingRoomStaticCtx.clearRect(0, 0, fittingRoomStaticCanvas.width, fittingRoomStaticCanvas.height);
+    fittingRoomStaticCtx.restore();
+  }
+  if (fittingRoomTopStaticCtx) {
+    fittingRoomTopStaticCtx.save();
+    fittingRoomTopStaticCtx.setTransform(1, 0, 0, 1, 0, 0);
+    fittingRoomTopStaticCtx.clearRect(0, 0, fittingRoomTopStaticCanvas.width, fittingRoomTopStaticCanvas.height);
+    fittingRoomTopStaticCtx.restore();
+  }
 
   // Smart side selection:
   // If preview item/set contains ONLY back zones (zone >= 23 or side === "back"), open in "back" view!

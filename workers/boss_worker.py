@@ -547,11 +547,16 @@ class BossWorker:
             return results
 
         equipped_slots = weapons_data.get("equippedSlots") or []
+        equipped_types = {
+            (slot_item.get("type") if isinstance(slot_item, dict) else str(slot_item))
+            for slot_item in equipped_slots
+            if slot_item
+        }
         weapon_stats_effective = bootstrap.get("weaponStatsEffective") or {}
         now_utc = datetime.now(timezone.utc)
         now_ts = now_utc.timestamp()
 
-        available_melee = [w for w in MELEE_CONFIG if w in equipped_slots] if equipped_slots else list(MELEE_CONFIG.keys())
+        available_melee = [w for w in MELEE_CONFIG if w in equipped_types] if equipped_types else list(MELEE_CONFIG.keys())
         ready_hits: List[str] = []
         earliest_ready_dt: Optional[datetime] = None
         for w in available_melee:

@@ -39,6 +39,11 @@ async def lifespan(app: FastAPI):
         await prune_old_notifications(engine, days=settings.NOTIFICATIONS_RETENTION_DAYS)
     except Exception as pe:
         logger.warning("Could not prune old notifications on boot: %s", pe)
+    try:
+        from core.drop_parser import DropParser
+        DropParser.load_collection_catalog()
+    except Exception as ce:
+        logger.warning("Could not load collections catalog on boot: %s", ce)
 
     # Очистка зависших активных пресетов после перезапуска процесса (stale PresetRunState guard)
     try:
