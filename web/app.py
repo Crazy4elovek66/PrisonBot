@@ -3,6 +3,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -253,6 +254,12 @@ def create_app() -> FastAPI:
     @app.get("/assets/{rest_path:path}")
     async def root_assets_proxy(rest_path: str):
         return await proxy_game_asset(path=f"assets/{rest_path}")
+
+    # Direct hashed asset cache route (local dev + Nginx @prison_asset_miss fallback)
+    @app.get("/assets_cache/{filename}")
+    async def root_assets_cache(filename: str, path: Optional[str] = None, url: Optional[str] = None):
+        from web.routes import serve_direct_cached_asset
+        return await serve_direct_cached_asset(filename=filename, path=path, url=url)
 
     # Static files directory
     static_dir = Path(__file__).resolve().parent / "static"

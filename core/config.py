@@ -55,8 +55,8 @@ class Settings(BaseSettings):
 
     # Asset Cache & Nginx X-Accel-Redirect
     ASSET_CACHE_DIR: str = "storage/asset_cache"
-    ASSET_CACHE_MAX_MB: int = 600
-    ASSET_CACHE_MIN_FREE_GB: float = 4.0
+    ASSET_CACHE_MAX_MB: int = 2500
+    ASSET_CACHE_MIN_FREE_GB: float = 5.0
     ASSET_CACHE_NGINX_ACCEL_PREFIX: str = ""
 
     model_config = SettingsConfigDict(

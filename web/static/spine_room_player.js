@@ -33,6 +33,9 @@
   };
 
   function proxyAssetUrl(relPath) {
+    if (typeof window !== "undefined" && typeof window.proxyAssetUrl === "function") {
+      return window.proxyAssetUrl(relPath);
+    }
     const clean = String(relPath || "").replace(/^\/+/, "");
     return `/api/v1/assets/proxy?path=${encodeURIComponent(clean)}`;
   }

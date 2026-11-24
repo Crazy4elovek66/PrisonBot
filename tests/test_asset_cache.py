@@ -130,8 +130,86 @@ async def test_prewarm_dry_run_and_disk_guard():
 def test_sw_js_rules_and_network_only():
     root = Path(__file__).resolve().parent.parent
     sw_text = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
-    assert "prisonbot-assets-v1" in sw_text
+    assert "prisonbot-assets-v2" in sw_text
+    assert "/assets_cache/" in sw_text
     assert "/api/v1/assets/proxy" in sw_text
     assert "/static/assets/icons/" in sw_text
     assert "/static/assets/rooms/" in sw_text
     assert "live/stream" not in sw_text or "Network-Only" in sw_text
+
+
+def test_python_and_js_sha256_hash_parity():
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    start = app_js.index("function sha256Hex(ascii)")
+    end = app_js.index("if (typeof window !== \"undefined\")", start)
+    js_snippet = app_js[start:end]
+
+    test_paths = [
+        "assets/PrisonV3/Clotch/Mafia/C/C_Zone1Mafia.png",
+        "assets/PrisonV3/Tattoos/manga/T/manga_Zone11.png",
+        "assets/PrisonV3/RoomCameraUrl/37/skeleton.json",
+        "assets/PrisonV3/RoomCameraUrl/54/room.bundle",
+        "assets/PrisonV3/collections/1/1/1.webp",
+    ]
+    import json
+    node_script = f"""
+    const API_BASE = "/api/v1";
+    const _sha256Memo = new Map();
+    {js_snippet}
+    const paths = {json.dumps(test_paths)};
+    console.log(JSON.stringify(paths.map(p => sha256Hex(normalizeAssetRelPath(p)) + _assetExtFromPath(normalizeAssetRelPath(p)))));
+    """
+    out = subprocess.check_output(["node"], input=node_script, text=True).strip()
+    js_filenames = json.loads(out)
+    py_filenames = [asset_cache_filename(p) for p in test_paths]
+    assert js_filenames == py_filenames
+
+
+@pytest.mark.asyncio
+async def test_direct_assets_cache_endpoint_hit_miss_and_validation(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from web.app import create_app
+    import web.routes as routes_mod
+
+    mgr = AssetCacheManager(cache_dir=tmp_path, max_mb=10, min_free_gb=0.0)
+    monkeypatch.setattr(routes_mod, "get_asset_cache_manager", lambda: mgr)
+
+    rel = "assets/PrisonV3/Clotch/Mafia/C/C_Zone1Mafia.png"
+    fname = asset_cache_filename(rel)
+
+    async def _fake_fetch(_):
+        return b"CDN_PNG_BYTES", "image/png", True
+
+    monkeypatch.setattr(routes_mod, "_fetch_asset_from_cdn", _fake_fetch)
+
+    app = create_app()
+    client = TestClient(app)
+
+    # 1. Invalid filename -> 400
+    assert client.get("/assets_cache/bad_name.png").status_code == 400
+
+    # 2. MISS -> fetches from CDN, stores atomically, returns MISS-STORED
+    r_miss = client.get(f"/assets_cache/{fname}?path={rel}")
+    assert r_miss.status_code == 200
+    assert r_miss.headers.get("X-Asset-Cache") == "MISS-STORED"
+    assert (tmp_path / fname).exists()
+
+    # 3. HIT -> returns HIT-DISK with 1-year immutable Cache-Control
+    r_hit = client.get(f"/assets_cache/{fname}?path={rel}")
+    assert r_hit.status_code == 200
+    assert r_hit.headers.get("X-Asset-Cache") == "HIT-DISK"
+    assert "max-age=31536000" in r_hit.headers.get("Cache-Control", "")
+
+
+def test_config_defaults_and_no_hover_prefetch():
+    from core.config import Settings
+    s = Settings(_env_file=None)
+    assert s.ASSET_CACHE_MAX_MB == 2500
+    assert s.ASSET_CACHE_MIN_FREE_GB == 5.0
+
+    root = Path(__file__).resolve().parent.parent
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "mouseenter" not in app_js.lower()
+    assert "hoverprefetch" not in app_js.lower()

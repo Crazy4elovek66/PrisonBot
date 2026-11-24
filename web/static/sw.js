@@ -1,7 +1,8 @@
-const ASSET_CACHE_NAME = "prisonbot-assets-v1";
+const ASSET_CACHE_NAME = "prisonbot-assets-v2";
 
 function isImmutableAssetRequest(url) {
   const path = url.pathname || "";
+  if (path.includes("/assets_cache/")) return true;
   if (path.includes("/api/v1/assets/proxy")) return true;
   if (path.includes("/static/assets/icons/")) return true;
   if (path.includes("/static/assets/rooms/")) return true;

@@ -368,6 +368,68 @@ async def get_asset_cache_stats() -> Dict[str, Any]:
     return await get_asset_cache_manager().get_stats()
 
 
+_ASSET_FILENAME_RE = re.compile(r"^([a-f0-9]{64})\.(png|webp|jpg|jpeg|gif|json|atlas|bundle|skel)$")
+
+
+async def serve_direct_cached_asset(
+    filename: str,
+    path: Optional[str] = None,
+    url: Optional[str] = None,
+) -> Any:
+    """
+    Прямой обработчик /assets_cache/{filename}?path=... (локальный запуск и fallback @prison_asset_miss от Nginx).
+    """
+    from fastapi.responses import FileResponse, Response
+
+    m = _ASSET_FILENAME_RE.match(filename)
+    if not m:
+        raise HTTPException(status_code=400, detail="Invalid asset cache filename")
+
+    raw_path = (path or url or "").lstrip("/").strip()
+    if raw_path:
+        if ".." in raw_path or "://" in raw_path or raw_path.startswith("http:") or raw_path.startswith("https:"):
+            raise HTTPException(status_code=400, detail="Invalid asset path")
+        if not (
+            raw_path.startswith("assets/")
+            or raw_path.startswith("avatars/")
+            or raw_path.startswith("PrisonV3/")
+            or raw_path.startswith("Clotch/")
+            or raw_path.startswith("game-rooms/")
+            or raw_path.startswith("game-icons/")
+            or raw_path.startswith("static/")
+        ):
+            raise HTTPException(status_code=400, detail="Invalid asset path prefix")
+        expected_hash, expected_ext = asset_cache_key_and_ext(raw_path)
+        if f"{expected_hash}{expected_ext}" != filename:
+            raise HTTPException(status_code=400, detail="Filename hash mismatch")
+
+    ext = f".{m.group(2)}"
+    c_type = content_type_for_ext(ext)
+    base_headers = {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "ETag": f'"{m.group(1)}"',
+    }
+
+    mgr = get_asset_cache_manager()
+    direct_file = mgr.cache_dir / filename
+    if direct_file.exists() and direct_file.stat().st_size > 0:
+        return FileResponse(direct_file, media_type=c_type, headers={**base_headers, "X-Asset-Cache": "HIT-DISK"})
+
+    if not raw_path:
+        raise HTTPException(status_code=404, detail="Cached asset not found and no source path provided")
+
+    cached_file, mem_bytes, fetched_type = await mgr.get_or_fetch(raw_path, _fetch_asset_from_cdn)
+    if cached_file is not None:
+        return FileResponse(
+            cached_file,
+            media_type=fetched_type,
+            headers={**base_headers, "X-Asset-Cache": "MISS-STORED"},
+        )
+    return Response(content=mem_bytes or b"", media_type=fetched_type, headers={**base_headers, "X-Asset-Cache": "MISS-MEM"})
+
+
 class BatchAssetRequest(BaseModel):
     paths: List[str]
 

@@ -4,9 +4,8 @@ import json
 import logging
 import os
 import sys
-import time
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Dict, List, Set
 
 import httpx
 
@@ -14,7 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.asset_cache import AssetCacheManager, content_type_for_ext  # noqa: E402
+from core.asset_cache import AssetCacheManager  # noqa: E402
+from core.config import settings  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,9 +36,14 @@ def normalize_asset_path(raw_url: str) -> str:
     if s.startswith(CDN_BASE + "/"):
         s = s[len(CDN_BASE) + 1:]
     elif s.startswith("http://") or s.startswith("https://"):
-        return ""
-    if "/api/v1/assets/proxy?path=" in s:
-        s = s.split("/api/v1/assets/proxy?path=", 1)[1].split("&", 1)[0]
+        try:
+            from urllib.parse import urlparse
+            s = urlparse(s).path
+        except Exception:
+            return ""
+    if "path=" in s:
+        from urllib.parse import unquote
+        s = unquote(s.split("path=", 1)[1].split("&", 1)[0])
     s = s.lstrip("/").strip()
     if not s or ".." in s:
         return ""
@@ -48,7 +53,19 @@ def normalize_asset_path(raw_url: str) -> str:
 def _walk_extract_urls(obj, out: Set[str]) -> None:
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if k in ("image", "imageUrl", "imageBackUrl", "backImageUrl", "previewUrl", "cardPreviewUrl", "eyesUrl", "noseUrl", "mouthUrl", "icon", "iconUrl"):
+            if k in (
+                "image",
+                "imageUrl",
+                "imageBackUrl",
+                "backImageUrl",
+                "previewUrl",
+                "cardPreviewUrl",
+                "eyesUrl",
+                "noseUrl",
+                "mouthUrl",
+                "icon",
+                "iconUrl",
+            ):
                 if isinstance(v, str):
                     p = normalize_asset_path(v)
                     if p:
@@ -61,26 +78,65 @@ def _walk_extract_urls(obj, out: Set[str]) -> None:
 
 
 def collect_all_asset_paths(root: Path = PROJECT_ROOT) -> List[str]:
-    urls: Set[str] = set()
-    storage = root / "storage"
+    """
+    Собирает 100% URL ассетов с приоритетным порядком:
+    1. Хаты (включая Spine и Bundle)
+    2. Одежда (clothing)
+    3. Татуировки (tattoos)
+    4. Нычки и боссы
+    """
+    ordered: List[str] = []
+    seen: Set[str] = set()
 
-    for fname in ("tattoo_clothing_cache.json", "collections_catalog.json", "bosses_catalog.json"):
+    def _add_many(items: Set[str]) -> None:
+        for p in sorted(items):
+            if p not in seen:
+                seen.add(p)
+                ordered.append(p)
+
+    storage = root / "storage"
+    tc_path = storage / "tattoo_clothing_cache.json"
+    tc_data: Dict = {}
+    if tc_path.exists():
+        try:
+            tc_data = json.loads(tc_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Ошибка чтения %s: %s", tc_path, e)
+
+    # 1. Хаты и Spine/Bundle ассеты
+    room_urls: Set[str] = set()
+    _walk_extract_urls(tc_data.get("cameras") or [], room_urls)
+    for rid in SPINE_ROOM_IDS:
+        room_urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.json")
+        room_urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.atlas")
+        room_urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.webp")
+    for rid in BUNDLE_ROOM_IDS:
+        room_urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/room.bundle")
+    _add_many(room_urls)
+
+    # 2. Одежда
+    cloth_urls: Set[str] = set()
+    _walk_extract_urls(tc_data.get("clothing") or [], cloth_urls)
+    _add_many(cloth_urls)
+
+    # 3. Татуировки
+    tattoo_urls: Set[str] = set()
+    _walk_extract_urls(tc_data.get("tattoos") or [], tattoo_urls)
+    _add_many(tattoo_urls)
+
+    # 4. Коллекции и боссы
+    extra_urls: Set[str] = set()
+    for fname in ("collections_catalog.json", "bosses_catalog.json"):
         fpath = storage / fname
         if fpath.exists():
             try:
                 data = json.loads(fpath.read_text(encoding="utf-8"))
-                _walk_extract_urls(data, urls)
+                _walk_extract_urls(data, extra_urls)
             except Exception as e:
                 logger.warning("Ошибка чтения %s: %s", fpath, e)
+    _add_many(extra_urls)
 
-    for rid in SPINE_ROOM_IDS:
-        urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.json")
-        urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.atlas")
-        urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/skeleton.webp")
-    for rid in BUNDLE_ROOM_IDS:
-        urls.add(f"assets/PrisonV3/RoomCameraUrl/{rid}/room.bundle")
-
-    return sorted(urls)
+    return ordered
 
 
 def _current_load_avg() -> float:
@@ -93,11 +149,11 @@ def _current_load_avg() -> float:
 
 
 async def prewarm(
-    concurrency: int = 3,
-    delay: float = 0.15,
-    max_load: float = 1.5,
-    max_mb: int = 600,
-    min_free_gb: float = 4.0,
+    concurrency: int = 4,
+    delay: float = 0.05,
+    max_load: float = 1.4,
+    max_mb: int = settings.ASSET_CACHE_MAX_MB,
+    min_free_gb: float = settings.ASSET_CACHE_MIN_FREE_GB,
     dry_run: bool = False,
 ) -> dict:
     mgr = AssetCacheManager(max_mb=max_mb, min_free_gb=min_free_gb)
@@ -134,7 +190,9 @@ async def prewarm(
         use_http2 = False
 
     sem = asyncio.Semaphore(max(1, concurrency))
-    limits = httpx.Limits(max_keepalive_connections=concurrency, max_connections=concurrency + 2)
+    limits = httpx.Limits(max_keepalive_connections=concurrency + 2, max_connections=concurrency + 4)
+    processed = 0
+
     async with httpx.AsyncClient(http2=use_http2, timeout=20.0, limits=limits, follow_redirects=True) as client:
         for i in range(0, len(to_download), concurrency):
             if not mgr.has_enough_disk_space():
@@ -142,16 +200,17 @@ async def prewarm(
                 summary["skipped_limits"] += len(to_download) - i
                 break
 
-            stats = await mgr.get_stats(force=(i % 30 == 0))
-            if stats["total_mb"] >= max_mb:
-                logger.warning("Остановка прогрева: достигнут лимит кэша %.2f MB >= %d MB", stats["total_mb"], max_mb)
-                summary["skipped_limits"] += len(to_download) - i
-                break
+            if i % (concurrency * 20) == 0:
+                stats = await mgr.get_stats(force=True)
+                if stats["total_mb"] >= max_mb:
+                    logger.warning("Остановка прогрева: достигнут лимит кэша %.2f MB >= %d MB", stats["total_mb"], max_mb)
+                    summary["skipped_limits"] += len(to_download) - i
+                    break
 
             load = _current_load_avg()
-            if max_load > 0 and load > max_load:
-                logger.info("Высокий Load Average (%.2f > %.2f), пауза 6с...", load, max_load)
-                await asyncio.sleep(6.0)
+            if max_load > 0 and load >= max_load:
+                logger.info("Высокий Load Average (%.2f >= %.2f), пауза 5с...", load, max_load)
+                await asyncio.sleep(5.0)
 
             batch = to_download[i:i + concurrency]
 
@@ -173,6 +232,18 @@ async def prewarm(
                         summary["errors"] += 1
 
             await asyncio.gather(*[_fetch_one(p) for p in batch])
+            processed += len(batch)
+            if processed % 250 < concurrency:
+                st = await mgr.get_stats(force=True)
+                logger.info(
+                    "Прогресс: downloaded=%d, skipped=%d, failed=%d, cache_mb=%.2f, free_gb=%.2f, load1=%.2f",
+                    summary["downloaded"],
+                    already_cached,
+                    summary["errors"],
+                    st["total_mb"],
+                    st["free_gb"],
+                    _current_load_avg(),
+                )
             if delay > 0:
                 await asyncio.sleep(delay)
 
@@ -184,11 +255,11 @@ async def prewarm(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Бережный фоновый прогрев кэша ассетов PrisonBot")
-    parser.add_argument("--concurrency", type=int, default=3)
-    parser.add_argument("--delay", type=float, default=0.15)
-    parser.add_argument("--max-load", type=float, default=1.5)
-    parser.add_argument("--max-mb", type=int, default=600)
-    parser.add_argument("--min-free-gb", type=float, default=4.0)
+    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--delay", type=float, default=0.05)
+    parser.add_argument("--max-load", type=float, default=1.4)
+    parser.add_argument("--max-mb", type=int, default=settings.ASSET_CACHE_MAX_MB)
+    parser.add_argument("--min-free-gb", type=float, default=settings.ASSET_CACHE_MIN_FREE_GB)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
