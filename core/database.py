@@ -81,7 +81,7 @@ def _migrate_bot_configs(connection) -> None:
         ("kolsik_currency", "VARCHAR(20) DEFAULT 'paper' NOT NULL"),
         ("auto_boss_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_friend_outreach", "BOOLEAN DEFAULT 0 NOT NULL"),
-        ("friend_outreach_daily_limit", "INTEGER DEFAULT 25 NOT NULL"),
+        ("friend_outreach_daily_limit", "INTEGER DEFAULT 50 NOT NULL"),
         ("friend_outreach_min_damage", "BIGINT DEFAULT 0 NOT NULL"),
         ("friend_outreach_max_damage", "BIGINT DEFAULT 0 NOT NULL"),
         ("friend_outreach_only_active", "BOOLEAN DEFAULT 1 NOT NULL"),
@@ -93,11 +93,20 @@ def _migrate_bot_configs(connection) -> None:
         ("friend_cleanup_inactive_days", "INTEGER DEFAULT 14 NOT NULL"),
         ("friend_cleanup_daily_limit", "INTEGER DEFAULT 5 NOT NULL"),
         ("friend_cleanup_trigger_threshold", "INTEGER DEFAULT 10 NOT NULL"),
+        ("auto_podogrev_send", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("auto_katala", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("auto_monthly_tasks", "BOOLEAN DEFAULT 0 NOT NULL"),
     ]
 
     for col_name, col_type in col_defs:
         if col_name not in existing_cols:
             connection.execute(text(f"ALTER TABLE bot_configs ADD COLUMN {col_name} {col_type};"))
+
+    # Миграция старого дефолтного лимита 25 -> 50 (если не настраивался пользователем вручную)
+    if "friend_outreach_daily_limit" in existing_cols:
+        connection.execute(
+            text("UPDATE bot_configs SET friend_outreach_daily_limit = 50 WHERE friend_outreach_daily_limit = 25;")
+        )
 
 
 def _migrate_notifications(connection) -> None:
@@ -133,6 +142,22 @@ def _migrate_tracked_candidates(connection) -> None:
             connection.execute(text(f"ALTER TABLE tracked_candidates ADD COLUMN {col_name} {col_type};"))
 
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_candidates_score ON tracked_candidates (score);"))
+
+    # Сброс устаревших фиктивных значений урона 250/60/30, нулевых оружейных статов и нулевого авторитета для переобогащения реальными данными
+    connection.execute(
+        text(
+            "UPDATE tracked_candidates "
+            "SET poison_damage = 0, gunshot_damage = 0, knife_damage = 0, enriched_at = NULL "
+            "WHERE poison_damage = 250 AND gunshot_damage = 60 AND knife_damage = 30;"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE tracked_candidates "
+            "SET enriched_at = NULL "
+            "WHERE authority = 0 OR (poison_damage = 0 AND gunshot_damage = 0 AND knife_damage = 0);"
+        )
+    )
 
 
 def _migrate_sent_friend_requests(connection) -> None:

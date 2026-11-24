@@ -528,4 +528,42 @@ ctx.restore();
 }
 ```
 
+---
+
+## 12. Аутентичный рендер хат игры (Flash `room.bundle`, официальный Spine 4.2/4.3 и `effect_config.json`)
+
+Проверено напрямую в `parsed_js/bundle.js` (`CameraController`, `CameraSpinePlayer42`, `CameraRoomBundle`, `module 979`), `@pro_prison_bot` (`1aaea4hunfv7f.js`, `559957`) и по живому CDN `https://oldprison-prod.cachefly.net/assets/PrisonV3/RoomCameraUrl/{folderId}/`:
+
+### 12.1. Три подлинных механизма рендера комнат (`CameraController`)
+1. **Flash-бандлы (`bundleRoomIds = {39, 40, 41, 42, 44, 45, 54}`):**
+   - Загружаются из `/assets/PrisonV3/RoomCameraUrl/{folderId}/room.bundle` (ZIP-архив с `manifest.bin` в формате MessagePack и PNG-слоями `shapes/*.png`).
+   - В `web/static/vendor/bundle-codec.js` используется подлинный встроенный декодер ZIP + Inflate + MessagePack из `parsed_js/bundle.js`.
+   - Сдвиг и масштаб в `bundle.js` (`CameraRoomBundle._reposition`): центр `cx=1000, cy=800`, базовый оффсет `dx=-138, dy=-302`, `scale=1.302`, локальный центр клипа `(290, 215)` и точные оффсеты комнат (`42: [-4.9, -6]`, `45: [-12, -5.3]`, остальные `[0, 0]`). Частота анимации — 30 FPS.
+   - При этом комната `42` является гибридной (`hybridOverlayRooms = {42}`) и поверх бандла дополнительно воспроизводит `effect_config.json`.
+   - В комнате `45` нейтрализуется multiply-блендинг (`blendMode === 3 -> 0`), в комнате `44` в клипе `21` (кадры `7..18`) активен эллиптический clip `(203, 100, 165, 150)`.
+2. **Официальный Spine-рендер (`spineRoomIds = {27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37}`):**
+   - Ассеты загружаются из `/assets/PrisonV3/RoomCameraUrl/{folderId}/skeleton.json`, `skeleton.atlas` и текстуры страницы (`skeleton.webp` / `1.png` согласно заголовку атласа).
+   - Версии скелетов по живому CDN: `27` — Spine `4.2.43`, `30/35/37` — Spine `4.3.x-beta` (`animations: ["animation"]`, `skins: ["default"]`).
+   - Для комнат `spineAltRootIds = {30, 31, 32, 33, 34, 35, 37}` применяется сдвиг камеры `dx = -138 - 376 = -514`, `dy = -302 - 279 = -581`.
+   - Рендер выполняется через официальный `@esotericsoftware` Spine runtime (`module 979` из `parsed_js/bundle.js`, вынесенный в `web/static/vendor/spine-runtime.js` + `SkeletonRenderer` / `AnimationState` / `SkeletonJson` / `TextureAtlas`), без самописных покачиваний и имитаций.
+3. **Статичные комнаты + покадровые эффекты `effect_config.json`:**
+   - Статичные комнаты (`default, 1..26, 43, 46..48`) рисуются оригинальным изображением (`1.webp` / `1.png`) в масштабе `1.302 * (580 / naturalWidth)` строго без придуманного движения.
+   - Для комнат с непустым `effect_config.json` (`1..10, 14, 15, 18..26, 42, 43, 46..48`) поверх фоновой картинки проигрываются покадровые эффекты из `effect/{name}/{name}.json` + `_config.json` (+ `masks/` при наличии).
+
+### 12.2. Хата «Торт Люськи» (id `54`) — 1-в-1 z-order из `room.bundle`
+* Хата `54` — это `room.bundle` (`3.6 МБ`), в `manifest.bin` которого содержатся:
+  * корневой клип `background\d+` (рисуется ПЕРЕД персонажем: стены, шконка, тумба, телевизор `TV: 695`, ковёр, красное кресло);
+  * передний клип `gameBirthday_back_front` (рисуется ПОСЛЕ персонажа: весь праздничный стол целиком со скатертью, кастрюлей с половником, пирожными, тортом с анимированными горящими свечами `CAKE: 309`, курицей, хлебом с икрой, пачкой чая, верхней гирляндой и котом `CAT: 249` на полу).
+  * Заглушки сидящего персонажа (`clip 449, 494`), hitClip (`697, 699, 701`) и маркеры друзей (`a && 23 === n`) фильтруются по оригинальному правилу `bundle.js` / `1aaea4hunfv7f.js`, а в центре `x=1055, y=780, scale=0.811` рисуется реальный персонаж пользователя.
+  * Все самодельно обрезанные файлы (`room_54_foreground.webp`) удалены.
+
+### 12.3. Актуальный урон оружия в разделе «Боссы»
+* **Базовые значения урона оружия в игре:**
+  * Яд: `250`
+  * Самопал: `60`
+  * Финка: `30`
+* В `GET /api/v1/live/boss` возвращается словарь `weaponDamages: {"poison": int, "gunshot": int, "knife": int}`, учитывающий базовый урон + бонусы талантов, активных баффов и надетых сетов.
+* В UI `#sec-bosses` рядом с количеством оружия (`14 шт.`) отображается бейдж урона `⚔️ <damage>`.
+
+
 

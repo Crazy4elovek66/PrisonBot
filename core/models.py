@@ -108,6 +108,9 @@ class BotConfig(Base):
     auto_business = Column(Boolean, default=False, nullable=False)
     auto_beard = Column(Boolean, default=False, nullable=False)
     auto_podogrev = Column(Boolean, default=False, nullable=False)
+    auto_podogrev_send = Column(Boolean, default=False, nullable=False)
+    auto_katala = Column(Boolean, default=False, nullable=False)
+    auto_monthly_tasks = Column(Boolean, default=False, nullable=False)
     auto_kolsik = Column(Boolean, default=False, nullable=False)
     kolsik_currency = Column(String(20), default="paper", nullable=False)
 
@@ -145,7 +148,7 @@ class BotConfig(Base):
     # Friend Outreach & Limits (Safe Auto-Friend Radar)
     auto_friend_outreach = Column(Boolean, default=False, nullable=False)
     auto_parse_news_raids = Column(Boolean, default=False, nullable=False)
-    friend_outreach_daily_limit = Column(Integer, default=25, nullable=False)
+    friend_outreach_daily_limit = Column(Integer, default=50, nullable=False)
     friend_outreach_min_damage = Column(BigInteger, default=0, nullable=False)
     friend_outreach_max_damage = Column(BigInteger, default=0, nullable=False)
     friend_outreach_only_active = Column(Boolean, default=True, nullable=False)

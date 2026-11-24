@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional, Set
 import httpx
 from sqlalchemy import select, func, or_
 
-from client.api.social import SocialAPI, calculate_level_from_authority
+from client.api.social import SocialAPI, calculate_level_from_authority, extract_player_combat_stats
 from core.database import get_session
 from core.models import SentFriendRequest, TrackedCandidate, BotConfig
 
@@ -177,7 +177,7 @@ class OutreachRateGuard:
             rem_sec = int(max(0, self._circuit_reset_at - time.time()))
             return False, 0, f"Предохранитель активен: {self._circuit_reason}. До сброса: {rem_sec} сек."
 
-        effective_limit = min(max(1, daily_limit or 25), 50)
+        effective_limit = max(1, int(daily_limit or 50))
         sent = await self.get_daily_sent_count(account_id, db_engine)
         if sent >= effective_limit:
             return False, 0, f"Суточный лимит заявок исчерпан ({sent}/{effective_limit})"
@@ -245,7 +245,7 @@ class OutreachRateGuard:
     ) -> Dict[str, Any]:
         """Получение сводки статуса безопасности и лимитов."""
         circuit_open = self.is_circuit_open()
-        effective_limit = min(max(1, daily_limit or 25), 50)
+        effective_limit = max(1, int(daily_limit or 50))
         sent = await self.get_daily_sent_count(account_id, db_engine)
         remaining = max(0, effective_limit - sent)
         _, g_cd = self.can_scan_guilds()
@@ -491,6 +491,7 @@ class RaidsAPI:
             if not db_engine:
                 continue
 
+            seen_in_tx: Dict[int, TrackedCandidate] = {}
             async with get_session(db_engine) as session:
                 for m in members:
                     if not isinstance(m, dict):
@@ -516,11 +517,13 @@ class RaidsAPI:
                     nick = m.get("nickname") or m.get("name") or f"Игрок {uid_int}"
                     photo = m.get("photoUrl") or m.get("avatarUrl")
 
-                    stmt = select(TrackedCandidate).where(
-                        TrackedCandidate.account_id == account_id,
-                        TrackedCandidate.user_id == uid_int,
-                    )
-                    cand = (await session.execute(stmt)).scalar_one_or_none()
+                    cand = seen_in_tx.get(uid_int)
+                    if not cand:
+                        stmt = select(TrackedCandidate).where(
+                            TrackedCandidate.account_id == account_id,
+                            TrackedCandidate.user_id == uid_int,
+                        )
+                        cand = (await session.execute(stmt)).scalar_one_or_none()
 
                     if not cand:
                         cand = TrackedCandidate(
@@ -551,7 +554,9 @@ class RaidsAPI:
                         )
                         cand.score = compute_candidate_score(cand, now)
                         session.add(cand)
+                        seen_in_tx[uid_int] = cand
                     else:
+                        seen_in_tx[uid_int] = cand
                         cand.last_seen_at = now
                         cand.nickname = nick or cand.nickname
                         cand.guild_id = g_info["guildId"]
@@ -572,13 +577,14 @@ class RaidsAPI:
 
                         elapsed_sec = (now - cand.last_snapshot_at).total_seconds()
                         if elapsed_sec >= 6 * 3600:
-                            a_delta = max(0, authority - cand.prev_authority)
+                            a_delta = max(0, authority - cand.prev_authority) if authority > 0 else 0
                             d_delta = max(0, boss_damage - cand.prev_total_damage)
                             cand.authority_delta = a_delta
                             cand.damage_delta = d_delta
                             cand.is_active_recently = (d_delta > 0 or a_delta > 0 or cand.camp_activity > 0)
                             if elapsed_sec >= 24 * 3600:
-                                cand.prev_authority = authority
+                                if authority > 0:
+                                    cand.prev_authority = authority
                                 cand.prev_total_damage = boss_damage
                                 cand.last_snapshot_at = now
                         elif cand.damage_delta > 0 or cand.authority_delta > 0 or cand.camp_activity > 0:
@@ -586,7 +592,8 @@ class RaidsAPI:
 
                         if boss_damage > 0:
                             cand.total_damage = max(cand.total_damage, boss_damage)
-                        cand.authority = authority
+                        if authority > 0:
+                            cand.authority = authority
                         cand.score = compute_candidate_score(cand, now)
 
                 await session.commit()
@@ -835,9 +842,10 @@ class RaidsAPI:
                     db_engine=db_engine,
                     candidates=candidates,
                     account_id=account_id,
-                    max_enrich=min(limit, 25),
+                    max_enrich=min(limit, 50),
                     min_damage=min_damage,
                     max_damage=max_damage,
+                    social_api=social_api,
                 )
             except Exception as e:
                 logger.warning(f"Ошибка точечного обогащения кандидатов Радара: {e}")
@@ -899,26 +907,57 @@ class RaidsAPI:
         now = datetime.utcnow()
         synced_count = 0
 
-        async with get_session(db_engine) as session:
-            for entry, src in top_entries:
-                uid = entry.get("userId") or entry.get("id")
-                if not uid:
-                    continue
-                uid_int = int(uid)
+        merged_by_uid: Dict[int, Dict[str, Any]] = {}
+        for entry, src in top_entries:
+            uid = entry.get("userId") or entry.get("id")
+            if not uid:
+                continue
+            uid_int = int(uid)
+            dmg = int(entry.get("damage") or entry.get("totalDamage") or 0)
+            authority = int(entry.get("authority") or 0)
+            lvl = int(entry.get("level") or entry.get("lvl") or 0)
+            nick = entry.get("nickname") or entry.get("name") or f"Игрок {uid_int}"
+            photo = entry.get("photoUrl") or entry.get("avatarUrl")
+            if uid_int not in merged_by_uid:
+                merged_by_uid[uid_int] = {
+                    "uid_int": uid_int,
+                    "damage": dmg,
+                    "authority": authority,
+                    "level": lvl,
+                    "nickname": nick,
+                    "photoUrl": photo,
+                    "source": src,
+                }
+            else:
+                m = merged_by_uid[uid_int]
+                if dmg > m["damage"]:
+                    m["damage"] = dmg
+                if authority > m["authority"]:
+                    m["authority"] = authority
+                if lvl > m["level"]:
+                    m["level"] = lvl
+                if not m["photoUrl"] and photo:
+                    m["photoUrl"] = photo
 
-                dmg = int(entry.get("damage") or entry.get("totalDamage") or 0)
-                authority = int(entry.get("authority") or 0)
-                lvl = int(entry.get("level") or entry.get("lvl") or 0)
+        seen_in_tx: Dict[int, TrackedCandidate] = {}
+        async with get_session(db_engine) as session:
+            for uid_int, data in merged_by_uid.items():
+                dmg = data["damage"]
+                authority = data["authority"]
+                lvl = data["level"]
                 if lvl == 0 and authority > 0:
                     lvl = calculate_level_from_authority(authority)
-                nick = entry.get("nickname") or entry.get("name") or f"Игрок {uid_int}"
-                photo = entry.get("photoUrl") or entry.get("avatarUrl")
+                nick = data["nickname"]
+                photo = data["photoUrl"]
+                src = data["source"]
 
-                stmt = select(TrackedCandidate).where(
-                    TrackedCandidate.account_id == account_id,
-                    TrackedCandidate.user_id == uid_int,
-                )
-                cand = (await session.execute(stmt)).scalar_one_or_none()
+                cand = seen_in_tx.get(uid_int)
+                if not cand:
+                    stmt = select(TrackedCandidate).where(
+                        TrackedCandidate.account_id == account_id,
+                        TrackedCandidate.user_id == uid_int,
+                    )
+                    cand = (await session.execute(stmt)).scalar_one_or_none()
 
                 if not cand:
                     cand = TrackedCandidate(
@@ -933,6 +972,9 @@ class RaidsAPI:
                         total_damage=dmg,
                         prev_total_damage=dmg,
                         damage_delta=0,
+                        poison_damage=0,
+                        gunshot_damage=0,
+                        knife_damage=0,
                         source=src,
                         is_active_recently=(dmg > 0),
                         first_seen_at=now,
@@ -941,23 +983,31 @@ class RaidsAPI:
                     )
                     cand.score = compute_candidate_score(cand, now)
                     session.add(cand)
+                    seen_in_tx[uid_int] = cand
                 else:
+                    seen_in_tx[uid_int] = cand
                     cand.last_seen_at = now
                     cand.nickname = nick or cand.nickname
                     if photo:
                         cand.photo_url = photo
                     if lvl > 0:
                         cand.level = max(cand.level, lvl)
+                    if cand.poison_damage == 250 and cand.gunshot_damage == 60 and cand.knife_damage == 30:
+                        cand.poison_damage = 0
+                        cand.gunshot_damage = 0
+                        cand.knife_damage = 0
+                        cand.enriched_at = None
 
                     elapsed_sec = (now - cand.last_snapshot_at).total_seconds()
                     if elapsed_sec >= 6 * 3600:
-                        a_delta = max(0, authority - cand.prev_authority)
+                        a_delta = max(0, authority - cand.prev_authority) if authority > 0 else 0
                         d_delta = max(0, dmg - cand.prev_total_damage)
                         cand.authority_delta = a_delta
                         cand.damage_delta = d_delta
                         cand.is_active_recently = (d_delta > 0 or dmg > 0 or a_delta > 0)
                         if elapsed_sec >= 24 * 3600:
-                            cand.prev_authority = authority
+                            if authority > 0:
+                                cand.prev_authority = authority
                             cand.prev_total_damage = dmg
                             cand.last_snapshot_at = now
                     elif cand.damage_delta > 0 or dmg > 0 or cand.authority_delta > 0:
@@ -965,7 +1015,8 @@ class RaidsAPI:
 
                     if dmg > 0:
                         cand.total_damage = max(cand.total_damage, dmg)
-                    cand.authority = authority
+                    if authority > 0:
+                        cand.authority = authority
                     cand.score = compute_candidate_score(cand, now)
 
                 synced_count += 1
@@ -1047,6 +1098,7 @@ class RaidsAPI:
         now = datetime.utcnow()
         found_count = 0
 
+        seen_in_tx: Dict[int, TrackedCandidate] = {}
         async with get_session(db_engine) as session:
             for text_block in texts:
                 parsed = await self.parse_raid_text(text_block, player_api=player_api)
@@ -1060,11 +1112,13 @@ class RaidsAPI:
                     authority = int(p.get("authority") or 0)
                     photo = p.get("photoUrl")
 
-                    stmt = select(TrackedCandidate).where(
-                        TrackedCandidate.account_id == account_id,
-                        TrackedCandidate.user_id == uid_int,
-                    )
-                    cand = (await session.execute(stmt)).scalar_one_or_none()
+                    cand = seen_in_tx.get(uid_int)
+                    if not cand:
+                        stmt = select(TrackedCandidate).where(
+                            TrackedCandidate.account_id == account_id,
+                            TrackedCandidate.user_id == uid_int,
+                        )
+                        cand = (await session.execute(stmt)).scalar_one_or_none()
 
                     if not cand:
                         cand = TrackedCandidate(
@@ -1079,6 +1133,9 @@ class RaidsAPI:
                             total_damage=claimed_dmg,
                             prev_total_damage=claimed_dmg,
                             damage_delta=0,
+                            poison_damage=0,
+                            gunshot_damage=0,
+                            knife_damage=0,
                             source="news_ad",
                             is_active_recently=True,
                             first_seen_at=now,
@@ -1087,7 +1144,9 @@ class RaidsAPI:
                         )
                         cand.score = compute_candidate_score(cand, now)
                         session.add(cand)
+                        seen_in_tx[uid_int] = cand
                     else:
+                        seen_in_tx[uid_int] = cand
                         cand.last_seen_at = now
                         cand.nickname = nick or cand.nickname
                         if photo:
@@ -1114,11 +1173,12 @@ class RaidsAPI:
         max_enrich: int = 15,
         min_damage: int = 0,
         max_damage: int = 0,
+        social_api: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """
         Точечное обогащение топ-кандидатов перед отправкой заявки:
-        Запрашивает player_api.get_player_view(uid) для кандидатов, не обогащенных
-        или обновлявшихся более 24 часов назад.
+        Запрашивает player_api.get_player_view(uid), get_player_summary(uid) и сверяет со входящими заявками
+        для получения реальных authority, level, talents и weaponDamage (без подстановки 250/60/30).
         """
         if not player_api or not db_engine or not candidates:
             return candidates
@@ -1126,6 +1186,26 @@ class RaidsAPI:
         sem = asyncio.Semaphore(3)
         now = datetime.utcnow()
         to_enrich = []
+
+        # Подтягиваем реальные weaponDamage из входящих заявок (/api/friendship/requests), если игрок есть там
+        incoming_req_map: Dict[int, Dict[str, Any]] = {}
+        if social_api and hasattr(social_api, "get_friend_requests"):
+            try:
+                req_res = await social_api.get_friend_requests(page=0, page_size=50)
+                req_list = (
+                    req_res
+                    if isinstance(req_res, list)
+                    else req_res.get("requests", [])
+                    if isinstance(req_res, dict)
+                    else []
+                )
+                for req_item in req_list:
+                    if isinstance(req_item, dict):
+                        r_uid = req_item.get("userId") or req_item.get("fromUserId") or req_item.get("id")
+                        if r_uid:
+                            incoming_req_map[int(r_uid)] = req_item
+            except Exception as e:
+                logger.debug(f"Не удалось получить входящие заявки при обогащении радара: {e}")
 
         async with get_session(db_engine) as session:
             cand_map = {int(c["userId"]): c for c in candidates if c.get("userId")}
@@ -1139,22 +1219,33 @@ class RaidsAPI:
                 )
                 cand = (await session.execute(stmt)).scalar_one_or_none()
                 if cand:
+                    has_fake_floor = (cand.poison_damage == 250 and cand.gunshot_damage == 60 and cand.knife_damage == 30)
+                    has_zero_weapons = (
+                        (cand.poison_damage or 0) == 0
+                        and (cand.gunshot_damage or 0) == 0
+                        and (cand.knife_damage or 0) == 0
+                    )
+                    has_incoming_match = int(uid) in incoming_req_map and (cand.poison_damage or 0) == 0
                     needs = (
                         cand.enriched_at is None
                         or (now - cand.enriched_at).total_seconds() >= 24 * 3600
-                        or (cand.authority == 0 and cand.poison_damage == 0 and cand.gunshot_damage == 0 and cand.knife_damage == 0)
+                        or (cand.authority or 0) == 0
+                        or has_fake_floor
+                        or has_zero_weapons
+                        or has_incoming_match
                     )
                     if needs:
                         to_enrich.append(cand)
                     else:
-                        # Синхронизируем статы из кэша БД в in-memory структуру
+                        # Синхронизируем реальные статы из кэша БД в in-memory структуру
                         target_c = cand_map.get(int(cand.user_id))
                         if target_c:
-                            target_c["authority"] = cand.authority
+                            target_c["authority"] = int(cand.authority or 0)
                             c_lvl = cand.level or 0
                             if (c_lvl <= 1 or c_lvl == 0) and cand.authority > 0:
                                 c_lvl = calculate_level_from_authority(cand.authority)
                             target_c["level"] = c_lvl
+                            target_c["talents"] = int(cand.talents or 0)
                             target_c["poisonDamage"] = int(cand.poison_damage or 0)
                             target_c["gunshotDamage"] = int(cand.gunshot_damage or 0)
                             target_c["knifeDamage"] = int(cand.knife_damage or 0)
@@ -1166,51 +1257,68 @@ class RaidsAPI:
                 async with sem:
                     try:
                         p_view = await player_api.get_player_view(cand.user_id)
-                        p_data = p_view.get("data") if isinstance(p_view.get("data"), dict) else p_view
-                        if isinstance(p_data, dict):
-                            cand.authority = int(
-                                p_data.get("resources", {}).get("authority")
-                                or p_data.get("authority")
-                                or cand.authority
-                            )
-                            raw_lvl = int(p_data.get("level") or p_data.get("lvl") or cand.level or 0)
-                            if (raw_lvl <= 1 or raw_lvl == 0) and cand.authority > 0:
-                                cand.level = calculate_level_from_authority(cand.authority)
-                            else:
-                                cand.level = raw_lvl
+                        p_summary = None
+                        if hasattr(player_api, "get_player_summary"):
+                            try:
+                                p_summary = await player_api.get_player_summary(cand.user_id)
+                            except Exception:
+                                p_summary = None
 
+                        p_data = p_view.get("data") if isinstance(p_view.get("data"), dict) else p_view
+                        inc_data = incoming_req_map.get(int(cand.user_id))
+
+                        # Объединяем данные player/view и входящей заявки (если есть) без затирания реальных полей
+                        merged_payload: Dict[str, Any] = {}
+                        if isinstance(p_data, dict):
+                            merged_payload.update(p_data)
+                        if isinstance(inc_data, dict):
+                            for k, v in inc_data.items():
+                                if k not in merged_payload or not merged_payload[k]:
+                                    merged_payload[k] = v
+
+                        ext = extract_player_combat_stats(merged_payload, summary_payload=p_summary)
+
+                        if ext["authority"] > 0:
+                            cand.authority = ext["authority"]
+                        if ext["level"] > 0:
+                            cand.level = ext["level"]
+                        elif (cand.level or 0) <= 1 and (cand.authority or 0) > 0:
+                            cand.level = calculate_level_from_authority(cand.authority)
+
+                        if isinstance(p_data, dict):
                             cand.nickname = p_data.get("nickname") or p_data.get("name") or cand.nickname
                             cand.photo_url = p_data.get("photoUrl") or p_data.get("avatarUrl") or cand.photo_url
-                            cand.talents = int(p_data.get("talents") or p_data.get("talentsCount") or cand.talents)
 
-                            wep = (
-                                p_data.get("weaponDamage")
-                                or p_data.get("WeaponDamage")
-                                or p_data.get("stats", {}).get("weaponDamage")
-                                or {}
-                            )
-                            if wep:
-                                cand.poison_damage = int(wep.get("poison") or wep.get("Poison") or cand.poison_damage)
-                                cand.gunshot_damage = int(wep.get("gunshot") or wep.get("Gunshot") or cand.gunshot_damage)
-                                cand.knife_damage = int(wep.get("knife") or wep.get("Knife") or cand.knife_damage)
+                        if ext["talents"] > 0:
+                            cand.talents = ext["talents"]
 
-                            cand.enriched_at = now
-                            cand.score = compute_candidate_score(cand, now, min_damage=min_damage, max_damage=max_damage)
+                        # Сбрасываем фиктивные 250/60/30, оставляем только реально полученные значения (или 0)
+                        was_fake = (cand.poison_damage == 250 and cand.gunshot_damage == 60 and cand.knife_damage == 30)
+                        cur_p = 0 if was_fake else int(cand.poison_damage or 0)
+                        cur_g = 0 if was_fake else int(cand.gunshot_damage or 0)
+                        cur_k = 0 if was_fake else int(cand.knife_damage or 0)
 
-                            target_c = cand_map.get(int(cand.user_id))
-                            if target_c:
-                                target_c["authority"] = cand.authority
-                                target_c["level"] = cand.level
-                                target_c["nickname"] = cand.nickname
-                                target_c["photoUrl"] = cand.photo_url
-                                target_c["talents"] = cand.talents
-                                target_c["poisonDamage"] = cand.poison_damage
-                                target_c["gunshotDamage"] = cand.gunshot_damage
-                                target_c["knifeDamage"] = cand.knife_damage
-                                target_c["score"] = cand.score
+                        cand.poison_damage = ext["poisonDamage"] if ext["poisonDamage"] > 0 else cur_p
+                        cand.gunshot_damage = ext["gunshotDamage"] if ext["gunshotDamage"] > 0 else cur_g
+                        cand.knife_damage = ext["knifeDamage"] if ext["knifeDamage"] > 0 else cur_k
+
+                        cand.enriched_at = now
+                        cand.score = compute_candidate_score(cand, now, min_damage=min_damage, max_damage=max_damage)
+
+                        target_c = cand_map.get(int(cand.user_id))
+                        if target_c:
+                            target_c["authority"] = int(cand.authority or 0)
+                            target_c["level"] = int(cand.level or 0)
+                            target_c["nickname"] = cand.nickname
+                            target_c["photoUrl"] = cand.photo_url
+                            target_c["talents"] = int(cand.talents or 0)
+                            target_c["poisonDamage"] = int(cand.poison_damage or 0)
+                            target_c["gunshotDamage"] = int(cand.gunshot_damage or 0)
+                            target_c["knifeDamage"] = int(cand.knife_damage or 0)
+                            target_c["score"] = cand.score
                     except Exception as e:
                         logger.debug(f"Ошибка точечного обогащения игрока {cand.user_id}: {e}")
-                    await asyncio.sleep(random.uniform(0.2, 0.5))
+                    await asyncio.sleep(random.uniform(0.1, 0.25))
 
             tasks = [_enrich_one(cand) for cand in to_enrich]
             await asyncio.gather(*tasks, return_exceptions=True)

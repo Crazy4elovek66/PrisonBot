@@ -1,6 +1,8 @@
 import logging
+from datetime import timedelta, timezone
 from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from core.config import settings
 from workers.routine_worker import RoutineWorker
 from workers.boss_worker import BossWorker
@@ -34,6 +36,18 @@ def create_scheduler(
         max_instances=1,
     )
     logger.info(f"RoutineWorker зарегистрирован с интервалом {r_interval} минут.")
+
+    # Ежедневный точный сброс туалетной бумаги в 00:00 МСК (триггер в 00:01 UTC+3)
+    msk_tz = timezone(timedelta(hours=3))
+    scheduler.add_job(
+        routine_worker.claim_daily_toilet_paper_if_ready,
+        trigger=CronTrigger(hour=0, minute=1, timezone=msk_tz),
+        id=f"daily_toilet_paper_msk_{routine_worker.account_id}",
+        name=f"Daily Toilet Paper 00:01 MSK for account {routine_worker.account_id}",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Cron-триггер ежедневной туалетной бумаги (00:01 МСК) зарегистрирован.")
 
     if boss_worker:
         b_interval = boss_interval_minutes or settings.BOSS_INTERVAL_MINUTES

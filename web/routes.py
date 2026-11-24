@@ -167,13 +167,16 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     if ".." in clean_path or "://" in clean_path or clean_path.startswith("http:") or clean_path.startswith("https:"):
         raise HTTPException(status_code=400, detail="Invalid asset path: traversal and external urls forbidden")
 
-    # 1. Проверка локальных статических хат (папки 27..37, 54)
-    for folder, static_file in STATIC_ROOM_FILES.items():
-        if f"RoomCameraUrl/{folder}/" in clean_path or clean_path.endswith(f"room_{folder}.webp"):
-            if static_file.exists():
-                b = await asyncio.to_thread(static_file.read_bytes)
-                _lru_set(clean_path, b, "image/webp")
-                return b, "image/webp"
+    ext = Path(clean_path).suffix.lower() or ".png"
+
+    # 1. Проверка локальных статических хат-превью (только сам 1.png / room_*.webp, но НЕ skeleton.webp/atlas/json/bundle/effect)
+    if ext not in (".json", ".atlas", ".bundle"):
+        for folder, static_file in STATIC_ROOM_FILES.items():
+            if clean_path.endswith(f"RoomCameraUrl/{folder}/1.png") or clean_path.endswith(f"room_{folder}.webp"):
+                if static_file.exists():
+                    b = await asyncio.to_thread(static_file.read_bytes)
+                    _lru_set(clean_path, b, "image/webp")
+                    return b, "image/webp"
 
     # 2. RAM LRU-кэш
     cached = _lru_get(clean_path)
@@ -183,7 +186,6 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     # 3. Дисковый кэш storage/asset_cache/
     import hashlib
     path_hash = hashlib.sha256(clean_path.encode("utf-8")).hexdigest()
-    ext = Path(clean_path).suffix or ".png"
     cached_file = ASSET_CACHE_DIR / f"{path_hash}{ext}"
 
     if cached_file.exists():
@@ -195,6 +197,10 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
                     c_type = "image/webp"
                 elif ext == ".json":
                     c_type = "application/json"
+                elif ext == ".atlas":
+                    c_type = "text/plain; charset=utf-8"
+                elif ext == ".bundle":
+                    c_type = "application/octet-stream"
                 _lru_set(clean_path, cached_bytes, c_type)
                 return cached_bytes, c_type
         except Exception as e:
@@ -212,8 +218,12 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     resp = await client.get(target_url)
     if resp.status_code != 200:
         if resp.status_code in (403, 404):
+            if ext == ".bundle":
+                raise HTTPException(status_code=404, detail="Bundle asset not found on CDN")
             if ext == ".json":
                 return b"{}", "application/json"
+            if ext == ".atlas":
+                return b"", "text/plain; charset=utf-8"
             transparent_png = (
                 b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
                 b"\x1f\x15c4\x00\x00\x00\rIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
@@ -222,7 +232,18 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
             return transparent_png, "image/png"
         raise HTTPException(status_code=resp.status_code, detail="Asset not found on CDN")
 
-    content_type = resp.headers.get("content-type", "image/png")
+    content_type = resp.headers.get("content-type")
+    if not content_type or content_type == "application/octet-stream":
+        if ext == ".atlas":
+            content_type = "text/plain; charset=utf-8"
+        elif ext == ".json":
+            content_type = "application/json"
+        elif ext == ".webp":
+            content_type = "image/webp"
+        elif ext == ".bundle":
+            content_type = "application/octet-stream"
+        else:
+            content_type = "image/png"
     content_bytes = resp.content
 
     # Сохранение на диск
@@ -248,9 +269,11 @@ def _proxy_asset_url(path: str) -> str:
         return path
     if path.startswith("/api/v1/assets/proxy"):
         return path
-    for folder in STATIC_ROOM_FILES:
-        if f"RoomCameraUrl/{folder}/" in path or path.endswith(f"room_{folder}.webp"):
-            return f"/static/assets/rooms/room_{folder}.webp"
+    ext = Path(path).suffix.lower()
+    if ext not in (".json", ".atlas", ".bundle"):
+        for folder in STATIC_ROOM_FILES:
+            if path.endswith(f"RoomCameraUrl/{folder}/1.png") or path.endswith(f"room_{folder}.webp"):
+                return f"/static/assets/rooms/room_{folder}.webp"
     clean = path.strip()
     cdn_prefix = "https://oldprison-prod-assets-cdn-yandex.luckygem.online/"
     if clean.startswith(cdn_prefix):
@@ -432,40 +455,11 @@ async def get_state(account_id: int = 1) -> Dict[str, Any]:
             "updatedAt": snapshot.created_at.isoformat() if snapshot.created_at else None,
         }
 
-    cfg_data = {
-        "is_paused": cfg.is_paused,
-        "sleep_mode_enabled": cfg.sleep_mode_enabled,
-        "sleep_start_hour": cfg.sleep_start_hour,
-        "sleep_end_hour": cfg.sleep_end_hour,
-        "auto_toilet_paper": cfg.auto_toilet_paper,
-        "auto_business": cfg.auto_business,
-        "auto_beard": cfg.auto_beard,
-        "auto_podogrev": cfg.auto_podogrev,
-        "auto_boss_hits": cfg.auto_boss_hits,
-        "auto_boss_summon": cfg.auto_boss_summon,
-        "boss_allow_paid_weapons": cfg.boss_allow_paid_weapons,
-        "boss_targets": cfg.boss_targets or [],
-        "auto_prison": cfg.auto_prison,
-        "prison_target_id": cfg.prison_target_id,
-        "prison_prefer_night": cfg.prison_prefer_night,
-        "prison_min_energy": cfg.prison_min_energy,
-        "auto_masters": cfg.auto_masters,
-        "master_target_id": cfg.master_target_id,
-        "auto_gifts": cfg.auto_gifts,
-        "auto_friends": cfg.auto_friends,
-        "auto_events": cfg.auto_events,
-        "friend_accept_all": cfg.friend_accept_all,
-        "friend_min_level": cfg.friend_min_level,
-        "friend_min_authority": cfg.friend_min_authority,
-        "friend_min_biceps": cfg.friend_min_biceps,
-        "friend_min_talents": cfg.friend_min_talents,
-        "friend_min_poison_damage": cfg.friend_min_poison_damage,
-        "friend_min_total_damage": cfg.friend_min_total_damage,
-        "friend_auto_decline_below": cfg.friend_auto_decline_below,
-        "auto_kolsik": cfg.auto_kolsik,
-        "kolsik_currency": cfg.kolsik_currency,
-        "auto_boss_enabled": bool(getattr(cfg, "auto_boss_enabled", False) or cfg.auto_boss_hits or cfg.auto_boss_summon),
-    }
+    cfg_data = {c.name: getattr(cfg, c.name) for c in BotConfig.__table__.columns}
+    cfg_data["boss_targets"] = cfg.boss_targets or []
+    cfg_data["auto_boss_enabled"] = bool(
+        getattr(cfg, "auto_boss_enabled", False) or cfg.auto_boss_hits or cfg.auto_boss_summon
+    )
 
     scheduler_status = "paused" if bot_context.is_paused() else "active"
 
@@ -510,6 +504,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         "friend_outreach_max_damage", "friend_outreach_only_active", "raid_tg_channels",
         "friend_filter_mode", "auto_parse_news_raids", "auto_friend_cleanup",
         "friend_cleanup_inactive_days", "friend_cleanup_daily_limit", "friend_cleanup_trigger_threshold",
+        "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
     }
 
     updates = {k: v for k, v in payload.items() if k in allowed_fields}
@@ -532,8 +527,8 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             val_lim = int(updates["friend_outreach_daily_limit"])
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="friend_outreach_daily_limit must be an integer")
-        if not (1 <= val_lim <= 50):
-            raise HTTPException(status_code=400, detail="friend_outreach_daily_limit must be between 1 and 50")
+        if not (1 <= val_lim <= 500):
+            raise HTTPException(status_code=400, detail="friend_outreach_daily_limit must be between 1 and 500")
         updates["friend_outreach_daily_limit"] = val_lim
 
     if "raid_tg_channels" in updates:
@@ -1089,6 +1084,8 @@ async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
         or 0
     )
     last_energy_restore = player_data.get("lastEnergyRestoreTime") or player_data.get("energyRestoreTime")
+    from workers.routine_worker import get_toilet_paper_reset_info
+    tp_info = get_toilet_paper_reset_info(can_claim_paper)
 
     return {
         "success": True,
@@ -1107,7 +1104,9 @@ async def get_live_profile(account_id: int = 1) -> Dict[str, Any]:
             "energyRestoreIntervalSeconds": 300,
             "beardDays": player_data.get("beardDays", 0),
             "canClaimToiletPaper": can_claim_paper,
+            "toiletPaper": tp_info,
         },
+        "toiletPaper": tp_info,
         "currencies": {
             "cigarettes": currencies.get("cigarettes", 0),
             "sugar": currencies.get("sugar", 0),
@@ -1205,6 +1204,22 @@ async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
 
     player_stats = bootstrap.get("playerStats") or {}
 
+    # Расчет эффективного урона оружия за 1 удар (базовые: Яд 250, Самопал 60, Финка 30)
+    poi_dmg = int(weapon_stats.get("poison") or weapon_stats.get("poisonDamage") or weapons_data.get("poisonDamage") or 250)
+    gun_dmg = int(weapon_stats.get("gunshot") or weapon_stats.get("gunshotDamage") or weapons_data.get("gunshotDamage") or 60)
+    kni_dmg = int(weapon_stats.get("knife") or weapon_stats.get("knifeDamage") or weapons_data.get("knifeDamage") or 30)
+    if poi_dmg <= 0:
+        poi_dmg = 250
+    if gun_dmg <= 0:
+        gun_dmg = 60
+    if kni_dmg <= 0:
+        kni_dmg = 30
+    weapon_damages = {
+        "poison": poi_dmg,
+        "gunshot": gun_dmg,
+        "knife": kni_dmg,
+    }
+
     # Загрузка активного пресета (при наличии)
     active_preset_info = None
     engine = bot_context.db_engine or get_engine()
@@ -1233,6 +1248,7 @@ async def get_live_boss(account_id: int = 1) -> Dict[str, Any]:
         "hasReward": has_reward,
         "session": session_data,
         "weaponStatsEffective": weapon_stats,
+        "weaponDamages": weapon_damages,
         "meleeTimestamps": melee_ts,
         "cooldowns": cooldowns,
         "playerStats": player_stats,
@@ -2871,15 +2887,19 @@ async def get_wardrobe_overview() -> Dict[str, Any]:
                 is_owned = bool(cid in owned_cameras or cam.get("owned", False) or cid == 1)
                 raw_c_img = cam.get("imageUrl") or ""
                 img_url = _proxy_asset_url(raw_c_img)
+                m_folder = re.search(r"RoomCameraUrl/([^/]+)/", str(raw_c_img))
+                folder_id = m_folder.group(1) if m_folder else str(cid)
                 is_equipped = bool(raw_c_img and raw_c_img == room_camera_url) or (not room_camera_url and cid == 1)
                 cameras_list.append({
                     "id": cid,
+                    "folderId": folder_id,
                     "name": cam.get("name") or f"Камера #{cid}",
                     "owned": is_owned,
                     "equipped": is_equipped,
                     "price": cam.get("price") or 0,
                     "currency": cam.get("currency") or "",
                     "imageUrl": img_url,
+                    "rawImageUrl": raw_c_img,
                     "currencyIconUrl": cam.get("currencyIconUrl") or "",
                 })
 
@@ -3228,6 +3248,16 @@ async def get_collections(user_id: Optional[int] = Query(None)) -> Dict[str, Any
                     "items": items_detail,
                 })
 
+        # Ранжирование: коллекции, доступные для обмена прямо сейчас (canExchange == True), всегда первыми
+        parsed_prisons.sort(
+            key=lambda c: (
+                0 if c.get("canExchange") else 1,
+                -(c.get("collected", 0) / max(1, c.get("total", 1))),
+                c.get("prisonId", 0),
+                c.get("collectionId", 0),
+            )
+        )
+
         return {
             "success": True,
             "collections": parsed_prisons,
@@ -3238,6 +3268,149 @@ async def get_collections(user_id: Optional[int] = Query(None)) -> Dict[str, Any
     except Exception as e:
         logger.error("Error fetching collections: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/live/collections")
+async def get_live_collections(user_id: Optional[int] = Query(None)) -> Dict[str, Any]:
+    """Алиас для получения коллекций игрока (с приоритетом готовых к обмену)."""
+    return await get_collections(user_id=user_id)
+
+
+@api_router.post("/daily/toilet-paper")
+async def action_claim_toilet_paper(account_id: int = 1) -> Dict[str, Any]:
+    """Ручной сбор бесплатной туалетной бумаги."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    try:
+        from workers.routine_worker import get_toilet_paper_reset_info
+        res = await player_api.claim_toilet_paper()
+        _flight_cache.invalidate(f"profile:{account_id}")
+        can_claim_after = bool(res.get("canClaimToiletPaper", False)) if isinstance(res, dict) else False
+        return {
+            "success": True,
+            "result": res,
+            "toiletPaper": get_toilet_paper_reset_info(can_claim_after),
+        }
+    except Exception as e:
+        logger.error("Ошибка сбора туалетной бумаги: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/daily/podogrev-send")
+async def action_send_podogrev(account_id: int = 1) -> Dict[str, Any]:
+    """Ручная отправка бесплатных суточных подогревов друзьям."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    try:
+        res = await player_api.send_all_podogrev()
+        return {"success": True, "result": res}
+    except Exception as e:
+        logger.error("Ошибка отправки подогревов: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/daily/katala-play")
+async def action_play_katala(account_id: int = 1) -> Dict[str, Any]:
+    """Ручной запуск бесплатной суточной игры у Каталы."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    try:
+        from client.api.katala import KatalaAPI, play_free_daily_game
+        game_client = getattr(player_api, "client", None) or getattr(player_api, "_client", None)
+        if not game_client and hasattr(bot_context, "game_client"):
+            game_client = bot_context.game_client
+        katala_api = KatalaAPI(client=game_client)
+        res = await play_free_daily_game(katala_api=katala_api, player_api=player_api, account_id=account_id)
+        return {"success": True, "result": res}
+    except Exception as e:
+        logger.error("Ошибка игры у Каталы: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/daily/monthly-claim")
+async def action_claim_monthly(account_id: int = 1) -> Dict[str, Any]:
+    """Ручной запуск проверки и сбора наград за выполненные тиры месячных делюг."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    try:
+        state = await player_api.get_monthly_state(track_open=True)
+        tiers_data = state.get("tiers") or state.get("items") or []
+        claimable = state.get("claimableTiers") or []
+        if not claimable and isinstance(tiers_data, list):
+            for t in tiers_data:
+                if isinstance(t, dict) and t.get("completed") and not t.get("claimed"):
+                    t_id = t.get("tier") or t.get("id") or t.get("tierId")
+                    if t_id is not None:
+                        claimable.append(int(t_id))
+
+        claimed = []
+        for t_id in claimable:
+            try:
+                c_res = await player_api.claim_monthly_tier(t_id)
+                claimed.append({"tier": t_id, "result": c_res})
+            except Exception as e:
+                logger.warning("Ошибка сбора тира %s месячных делюг: %s", t_id, e)
+
+        return {"success": True, "claimableCount": len(claimable), "claimed": claimed}
+    except Exception as e:
+        logger.error("Ошибка сбора месячных делюг: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_SPINE_ROOM_IDS = set(range(27, 38))
+_SPINE_ALT_ROOT_IDS = {30, 31, 32, 33, 34, 35, 37}
+_BUNDLE_ROOM_IDS = {39, 40, 41, 42, 44, 45, 54}
+_EFFECT_ROOM_IDS = (
+    set(range(1, 11))
+    | {14, 15}
+    | set(range(18, 27))
+    | {42, 43, 46, 47, 48}
+)
+
+
+@api_router.get("/wardrobe/room-render/{room_id}")
+async def get_room_render_info(room_id: int) -> Dict[str, Any]:
+    """Дескриптор подлинного рендера комнаты (Spine 4.2/4.3, room.bundle MovieClip, effect_config, static)."""
+    preview_url = _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/1.png")
+    is_spine = room_id in _SPINE_ROOM_IDS
+    is_bundle = room_id in _BUNDLE_ROOM_IDS
+    has_effects = (room_id in _EFFECT_ROOM_IDS) and (not is_spine) and (not is_bundle or room_id == 42)
+    is_animated = is_spine or is_bundle or has_effects
+
+    render_mode = "spine" if is_spine else "bundle" if is_bundle else "effects" if has_effects else "static"
+
+    spine_info = None
+    if is_spine:
+        spine_info = {
+            "skeletonUrl": _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/skeleton.json"),
+            "atlasUrl": _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/skeleton.atlas"),
+            "textureUrl": _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/skeleton.webp"),
+            "altRootOffset": room_id in _SPINE_ALT_ROOT_IDS,
+        }
+
+    bundle_url = _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/room.bundle") if is_bundle else None
+    effect_config_url = (
+        _proxy_asset_url(f"assets/PrisonV3/RoomCameraUrl/{room_id}/effect_config.json")
+        if has_effects
+        else None
+    )
+
+    return {
+        "success": True,
+        "roomId": room_id,
+        "renderMode": render_mode,
+        "previewUrl": preview_url,
+        "hasForeground": (room_id == 54),
+        "foregroundSource": "room.bundle:gameBirthday_back_front" if room_id == 54 else None,
+        "bundleUrl": bundle_url,
+        "effectConfigUrl": effect_config_url,
+        "isAnimated": is_animated,
+        "spine": spine_info,
+    }
 
 
 @api_router.post("/actions/collections/exchange")
@@ -3500,11 +3673,14 @@ async def get_active_players(
         limit=limit,
         exclude_friends=excludeFriends,
     )
+    for p in players:
+        if p.get("photoUrl"):
+            p["photoUrl"] = _proxy_asset_url(str(p["photoUrl"]))
 
     cfg = await get_or_create_config(account_id, bot_context.db_engine)
     safety = await _raids_api.rate_guard.get_safety_status(
         account_id=account_id,
-        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 25),
+        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 50),
         db_engine=bot_context.db_engine,
     )
 
@@ -3569,7 +3745,7 @@ async def get_safety_status_endpoint(account_id: int = 1) -> Dict[str, Any]:
     cfg = await get_or_create_config(account_id, bot_context.db_engine)
     safety = await _raids_api.rate_guard.get_safety_status(
         account_id=account_id,
-        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 25),
+        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 50),
         db_engine=bot_context.db_engine,
     )
     return {"success": True, "safety": safety}
@@ -3644,7 +3820,7 @@ async def action_send_friend_request(
     cfg = await get_or_create_config(account_id, bot_context.db_engine)
     allowed, rem, reason = await _raids_api.rate_guard.can_send(
         account_id=account_id,
-        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 25),
+        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 50),
         db_engine=bot_context.db_engine,
     )
     if not allowed:
@@ -3710,7 +3886,7 @@ async def action_send_friend_batch(
     cfg = await get_or_create_config(account_id, bot_context.db_engine)
     allowed, rem, reason = await _raids_api.rate_guard.can_send(
         account_id=account_id,
-        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 25),
+        daily_limit=getattr(cfg, "friend_outreach_daily_limit", 50),
         db_engine=bot_context.db_engine,
     )
     if not allowed:

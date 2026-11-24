@@ -375,3 +375,56 @@ async def test_routine_worker_auto_kolsik_roll(worker_setup):
     assert res2["kolsik_rolled"] is False
     assert ("POST", "/api/kolsik/roll") not in calls
 
+
+@pytest.mark.asyncio
+async def test_toilet_paper_reset_info_and_scheduled_claim(worker_setup):
+    """Тест расчета сброса 00:00 МСК и планового автосбора claim_daily_toilet_paper_if_ready()."""
+    from workers.routine_worker import get_toilet_paper_reset_info
+
+    # 1. Проверка расчета таймера до 00:00 МСК (23:50 MSK == 20:50 UTC -> 600 секунд до сброса)
+    ref_utc = datetime(2026, 11, 24, 20, 50, 0, tzinfo=timezone.utc)
+    info_wait = get_toilet_paper_reset_info(can_claim=False, now_utc=ref_utc)
+    assert info_wait["canClaim"] is False
+    assert info_wait["resetMode"] == "midnight_msk"
+    assert info_wait["secondsUntilReset"] == 600
+    assert info_wait["nextResetAt"].startswith("2026-11-25T00:00:00+03:00")
+
+    info_ready = get_toilet_paper_reset_info(can_claim=True, now_utc=ref_utc)
+    assert info_ready["canClaim"] is True
+    assert info_ready["secondsUntilReset"] == 0
+
+    # 2. Проверка планового сбора (сначала доступно -> собирает, повторно -> already_claimed)
+    engine, acc_id = worker_setup
+    state = {"can_claim": True}
+    tp_posts = []
+
+    def mock_handler(request: httpx.Request):
+        if request.url.path == "/api/player/init":
+            return httpx.Response(200, json={"success": True, "canClaimToiletPaper": state["can_claim"]})
+        elif request.url.path == "/api/daily/toilet-paper":
+            tp_posts.append(1)
+            state["can_claim"] = False
+            return httpx.Response(200, json={"success": True, "balance": 101})
+        return httpx.Response(200, json={})
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    player_api = PlayerAPI(http_client=http_client)
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == acc_id))).scalar_one()
+        cfg.auto_toilet_paper = True
+        await session.commit()
+
+    worker = RoutineWorker(account_id=acc_id, player_api=player_api, db_engine=engine, enable_jitter=False)
+
+    r1 = await worker.claim_daily_toilet_paper_if_ready()
+    assert r1["status"] == "claimed"
+    assert len(tp_posts) == 1
+
+    # Повторный вызов в те же сутки не дергает /api/daily/toilet-paper
+    r2 = await worker.claim_daily_toilet_paper_if_ready()
+    assert r2["status"] == "already_claimed"
+    assert len(tp_posts) == 1
+

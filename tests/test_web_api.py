@@ -1983,17 +1983,26 @@ async def test_raids_safety_status_endpoint(web_setup):
 
 @pytest.mark.asyncio
 async def test_patch_config_outreach_validation(web_setup):
-    """Тест валидации суточного лимита заявок (<= 50) и списка каналов (<= 10) в PATCH /config."""
+    """Тест валидации суточного лимита заявок (1..500, дефолт 50) и списка каналов (<= 10) в PATCH /config."""
     client, engine = web_setup
     headers = {"X-Admin-Token": "test_admin_token"}
 
-    # 1. Успешная установка лимита 50
+    # 1. Успешная установка лимита 50 и 100 (без потолка 50)
     res_ok = await client.patch("/api/v1/config", json={"friend_outreach_daily_limit": 50}, headers=headers)
     assert res_ok.status_code == 200
     assert res_ok.json()["config"]["friend_outreach_daily_limit"] == 50
 
-    # 2. Превышение жесткого потолка 50 -> 400
-    res_err1 = await client.patch("/api/v1/config", json={"friend_outreach_daily_limit": 51}, headers=headers)
+    res_ok_100 = await client.patch("/api/v1/config", json={"friend_outreach_daily_limit": 100}, headers=headers)
+    assert res_ok_100.status_code == 200
+    assert res_ok_100.json()["config"]["friend_outreach_daily_limit"] == 100
+
+    # Немедленное отражение в GET /api/v1/raids/safety-status
+    res_safety = await client.get("/api/v1/raids/safety-status", headers=headers)
+    assert res_safety.status_code == 200
+    assert res_safety.json()["safety"]["dailyLimit"] == 100
+
+    # 2. Выход за 500 -> 400
+    res_err1 = await client.patch("/api/v1/config", json={"friend_outreach_daily_limit": 501}, headers=headers)
     assert res_err1.status_code == 400
 
     # 3. Меньше 1 -> 400
@@ -2580,6 +2589,135 @@ def test_back_poworot_icon_integrity():
     img = Image.open(icon_path)
     assert img.format == "WEBP"
     assert img.size[0] > 0 and img.size[1] > 0
+
+
+@pytest.mark.asyncio
+async def test_live_profile_toilet_paper_timer_and_js_syntax(web_setup):
+    """Проверка поля toiletPaper в /api/v1/live/profile и синтаксиса JS (node --check)."""
+    import subprocess
+    from unittest.mock import AsyncMock, MagicMock
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    mock_player = MagicMock()
+    mock_player.init_player = AsyncMock(return_value={
+        "success": True,
+        "id": 123,
+        "nickname": "Тест",
+        "canClaimToiletPaper": False,
+        "currencies": {"paper": 10},
+    })
+    mock_player.get_businesses = AsyncMock(return_value={"businesses": [], "playerBusinesses": []})
+    bot_context.player_api = mock_player
+
+    from web.routes import _flight_cache
+    _flight_cache.invalidate("profile:")
+
+    res = await client.get("/api/v1/live/profile", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "toiletPaper" in data
+    tp = data["toiletPaper"]
+    assert tp["canClaim"] is False
+    assert tp["resetMode"] == "midnight_msk"
+    assert tp["secondsUntilReset"] > 0
+    assert "nextResetAt" in tp
+
+    # Проверка синтаксиса фронтенд JS и vendor-рантаймов
+    for js_file in [
+        "web/static/app.js",
+        "web/static/spine_room_player.js",
+        "web/static/vendor/spine-runtime.js",
+        "web/static/vendor/bundle-codec.js",
+    ]:
+        proc = subprocess.run(["node", "--check", js_file], capture_output=True, text=True)
+        assert proc.returncode == 0, f"JS syntax error in {js_file}: {proc.stderr}"
+
+
+@pytest.mark.asyncio
+async def test_config_auto_podogrev_send_and_routine_toggles_persistence(web_setup):
+    """Проверка сохранения auto_podogrev_send, auto_katala, auto_monthly_tasks через GET/PATCH и HTML label-оберток."""
+    from pathlib import Path
+    import re
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    # 1. PATCH /api/v1/config сохраняет auto_podogrev_send, auto_katala, auto_monthly_tasks
+    patch_res = await client.patch(
+        "/api/v1/config",
+        json={
+            "auto_podogrev_send": True,
+            "auto_katala": True,
+            "auto_monthly_tasks": True,
+        },
+        headers=headers,
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["success"] is True
+
+    get_res = await client.get("/api/v1/config", headers=headers)
+    assert get_res.status_code == 200
+    cfg = get_res.json()["config"]
+    assert cfg["auto_podogrev_send"] is True
+    assert cfg["auto_katala"] is True
+    assert cfg["auto_monthly_tasks"] is True
+
+    # GET /api/v1/state также обязан возвращать актуальные флаги после обновления/F5
+    state_res = await client.get("/api/v1/state", headers=headers)
+    assert state_res.status_code == 200
+    st_cfg = state_res.json()["config"]
+    assert st_cfg["auto_podogrev_send"] is True
+    assert st_cfg["auto_katala"] is True
+    assert st_cfg["auto_monthly_tasks"] is True
+
+    # Выключение тоже корректно сохраняется
+    patch_off = await client.patch(
+        "/api/v1/config",
+        json={"auto_podogrev_send": False},
+        headers=headers,
+    )
+    assert patch_off.status_code == 200
+    cfg_off = (await client.get("/api/v1/config", headers=headers)).json()["config"]
+    assert cfg_off["auto_podogrev_send"] is False
+    st_off = (await client.get("/api/v1/state", headers=headers)).json()["config"]
+    assert st_off["auto_podogrev_send"] is False
+
+    # 2. Все .toggle-switch в index.html кликабельны (не обернуты в некликабельный <div> без <label>)
+    html_text = Path("web/static/index.html").read_text(encoding="utf-8")
+    assert not re.search(r'<div\s+class=["\'][^"\']*toggle-switch', html_text), (
+        "Обнаружен некликабельный <div class='toggle-switch'> в index.html"
+    )
+    assert 'id="cfg-auto_podogrev_send"' in html_text
+    assert 'vendor/spine-runtime.js' in html_text
+    assert 'vendor/bundle-codec.js' in html_text
+
+
+@pytest.mark.asyncio
+async def test_room_render_authentic_assets_and_no_fake_crop(web_setup):
+    """Проверка отсутствия фейкового room_54_foreground.webp и отдачи аутентичных дескрипторов Spine/bundle/effects."""
+    from pathlib import Path
+
+    assert not Path("web/static/assets/rooms/room_54_foreground.webp").exists()
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    r54 = (await client.get("/api/v1/wardrobe/room-render/54", headers=headers)).json()
+    assert r54["renderMode"] == "bundle"
+    assert r54["hasForeground"] is True
+    assert r54["foregroundSource"] == "room.bundle:gameBirthday_back_front"
+    assert "room.bundle" in r54["bundleUrl"]
+
+    r30 = (await client.get("/api/v1/wardrobe/room-render/30", headers=headers)).json()
+    assert r30["renderMode"] == "spine"
+    assert r30["spine"]["altRootOffset"] is True
+
+    r42 = (await client.get("/api/v1/wardrobe/room-render/42", headers=headers)).json()
+    assert r42["renderMode"] == "bundle"
+    assert r42["effectConfigUrl"] is not None
+
 
 
 

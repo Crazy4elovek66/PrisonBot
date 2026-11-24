@@ -164,7 +164,7 @@ async function fetchWithSWR(cacheKey, fetcher, onData) {
         cachedEntry = JSON.parse(stored);
         _swrMemoryCache.set(cacheKey, cachedEntry);
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   // 1. Немедленный показ кэшированных данных (0 мс)
@@ -184,7 +184,7 @@ async function fetchWithSWR(cacheKey, fetcher, onData) {
       _swrMemoryCache.set(cacheKey, { ts: Date.now(), json: freshJson, data: freshData });
       try {
         sessionStorage.setItem("prison_swr_" + cacheKey, JSON.stringify({ ts: Date.now(), json: freshJson, data: freshData }));
-      } catch (e) {}
+      } catch (e) { }
       onData(freshData, false /* fromCache */);
     }
     return freshData;
@@ -239,7 +239,7 @@ function switchSection(secName) {
     document.documentElement.setAttribute("data-active-sec", secName);
     localStorage.setItem("prison_active_section", secName);
     window.location.hash = secName;
-  } catch (e) {}
+  } catch (e) { }
 
   // Update Drawer active items
   document.querySelectorAll(".drawer-item").forEach(item => {
@@ -374,7 +374,8 @@ function updateConfigUI(cfg) {
   // Sync checkboxes
   const checkboxKeys = [
     "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
-    "auto_beard", "auto_podogrev", "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
+    "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+    "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
     "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
     "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
     "auto_kolsik"
@@ -500,9 +501,80 @@ async function loadProfile() {
 
     // Render businesses with real levels and pending rewards
     renderBusinesses();
+
+    // Update Toilet Paper live reset timer state
+    if (data.toiletPaper || prof.toiletPaper) {
+      updateToiletPaperState(data.toiletPaper || prof.toiletPaper);
+    } else {
+      updateToiletPaperState({ canClaim: Boolean(prof.canClaimToiletPaper), resetMode: "midnight_msk" });
+    }
   } catch (err) {
     console.warn("loadProfile error:", err);
   }
+}
+
+let toiletPaperResetState = null;
+let _tpRefreshTriggered = false;
+
+function updateToiletPaperState(tpObj) {
+  if (!tpObj) return;
+  const targetMs = tpObj.nextResetAt
+    ? Date.parse(tpObj.nextResetAt)
+    : (tpObj.secondsUntilReset ? Date.now() + Number(tpObj.secondsUntilReset) * 1000 : null);
+  toiletPaperResetState = {
+    canClaim: Boolean(tpObj.canClaim),
+    resetMode: tpObj.resetMode || "midnight_msk",
+    nextResetMs: Number.isFinite(targetMs) ? targetMs : null,
+  };
+  _tpRefreshTriggered = false;
+  updateToiletPaperTimer();
+}
+
+function updateToiletPaperTimer() {
+  const badge = document.getElementById("toilet-paper-timer-badge");
+  const btn = document.querySelector('.btn-routine-action[data-target="toilet_paper"]');
+  if (!badge) return;
+
+  if (!toiletPaperResetState) {
+    badge.className = "tp-timer-badge";
+    badge.textContent = "⏱️ Загрузка статуса...";
+    return;
+  }
+
+  if (toiletPaperResetState.canClaim) {
+    badge.className = "tp-timer-badge tp-timer-ready";
+    badge.textContent = "✅ Доступно сейчас";
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  const nowMs = Date.now();
+  let remSec = 0;
+  if (toiletPaperResetState.nextResetMs) {
+    remSec = Math.max(0, Math.floor((toiletPaperResetState.nextResetMs - nowMs) / 1000));
+  } else {
+    // Fallback compute next 00:00 MSK (UTC+3)
+    const mskOffsetMs = 3 * 3600 * 1000;
+    const nowMsk = new Date(nowMs + mskOffsetMs);
+    const nextMidnightMsk = Date.UTC(nowMsk.getUTCFullYear(), nowMsk.getUTCMonth(), nowMsk.getUTCDate() + 1, 0, 0, 0) - mskOffsetMs;
+    remSec = Math.max(0, Math.floor((nextMidnightMsk - nowMs) / 1000));
+  }
+
+  if (remSec <= 0) {
+    badge.className = "tp-timer-badge tp-timer-ready";
+    badge.textContent = "✅ Сброс наступил — обновление...";
+    if (!_tpRefreshTriggered) {
+      _tpRefreshTriggered = true;
+      loadProfile();
+    }
+    return;
+  }
+
+  const hh = String(Math.floor(remSec / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((remSec % 3600) / 60)).padStart(2, "0");
+  const ss = String(remSec % 60).padStart(2, "0");
+  badge.className = "tp-timer-badge tp-timer-wait";
+  badge.textContent = `⏱️ Сброс через ${hh}:${mm}:${ss}`;
 }
 
 function updateEnergyTimer() {
@@ -602,6 +674,18 @@ async function loadBoss() {
       }
       if (manualAttackCard) manualAttackCard.style.display = "block";
     }
+
+    // Update actual weapon damages badges (Яд, Самопал, Финка)
+    const wepDmgs = data.weaponDamages || {};
+    const poiDmg = wepDmgs.poison || 250;
+    const gunDmg = wepDmgs.gunshot || 60;
+    const kniDmg = wepDmgs.knife || 30;
+    const elPoi = document.getElementById("boss-poison-damage");
+    if (elPoi) elPoi.textContent = `⚔️ ${poiDmg}`;
+    const elGun = document.getElementById("boss-gunshot-damage");
+    if (elGun) elGun.textContent = `⚔️ ${gunDmg}`;
+    const elKni = document.getElementById("boss-knife-damage");
+    if (elKni) elKni.textContent = `⚔️ ${kniDmg}`;
 
     updateMeleeTimers();
     if (botConfig) updateBossQueueUI(botConfig.boss_targets || []);
@@ -843,14 +927,14 @@ function renderBusinesses() {
     pillsContainer.innerHTML = pills.join("");
   }
 
-  // 2. Accordion button label
+  // 2. Compact accordion button label
   const btnToggleText = document.getElementById("btn-toggle-biz-text");
   const btnToggleIcon = document.getElementById("btn-toggle-biz-icon");
   if (btnToggleText) {
-    btnToggleText.textContent = isBusinessesExpanded ? "Скрыть бизнесы" : `Показать бизнесы (${bizList.length})`;
+    btnToggleText.textContent = `(${bizList.length})`;
   }
   if (btnToggleIcon) {
-    btnToggleIcon.textContent = isBusinessesExpanded ? "▲" : "▼";
+    btnToggleIcon.textContent = isBusinessesExpanded ? "▴" : "▾";
   }
 
   // 3. Render collapsed/expanded list
@@ -1245,6 +1329,8 @@ async function loadFriendsAudit() {
 }
 
 // --- 4.8 Friend Requests (Кореша) ---
+let _lastFriendReqHash = "";
+
 async function loadFriendRequests() {
   const container = document.getElementById("friend-requests-list");
   if (!container) return;
@@ -1260,11 +1346,18 @@ async function loadFriendRequests() {
     }
 
     if (reqs.length === 0) {
+      _lastFriendReqHash = "empty";
       container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>';
       return;
     }
 
-    container.innerHTML = "";
+    const reqHash = JSON.stringify(reqs.map(r => [r.userId || r.fromUserId || r.id, r.authority, r.talentsCount || r.talents]));
+    if (reqHash === _lastFriendReqHash && container.querySelectorAll(".friend-card").length === reqs.length) {
+      return;
+    }
+    _lastFriendReqHash = reqHash;
+
+    const frag = document.createDocumentFragment();
     reqs.forEach(r => {
       const uId = r.userId || r.fromUserId || r.id;
       const nick = r.nickname || `Игрок #${uId}`;
@@ -1389,8 +1482,9 @@ async function loadFriendRequests() {
         }
       });
 
-      container.appendChild(card);
+      frag.appendChild(card);
     });
+    container.replaceChildren(frag);
   } catch (err) {
     console.warn("loadFriendRequests error:", err);
   }
@@ -1459,9 +1553,9 @@ async function loadBossBuffs() {
           <div class="boss-buff-footer">
             ${priceHtml}
             ${b.isActive
-              ? '<button class="btn btn-secondary btn-sm" disabled style="background: rgba(52, 211, 153, 0.15); color: #34d399; border-color: rgba(52, 211, 153, 0.3);">✓ Активен</button>'
-              : `<button class="btn btn-primary btn-sm btn-activate-buff" data-buff-id="${b.id}">Активировать</button>`
-            }
+            ? '<button class="btn btn-secondary btn-sm" disabled style="background: rgba(52, 211, 153, 0.15); color: #34d399; border-color: rgba(52, 211, 153, 0.3);">✓ Активен</button>'
+            : `<button class="btn btn-primary btn-sm btn-activate-buff" data-buff-id="${b.id}">Активировать</button>`
+          }
           </div>
         `;
 
@@ -1716,6 +1810,9 @@ async function loadCollections() {
       return;
     }
 
+    // Сортировка: готовые к обмену коллекции всегда первыми
+    list.sort((a, b) => (b.canExchange ? 1 : 0) - (a.canExchange ? 1 : 0));
+
     container.innerHTML = "";
     list.forEach(c => {
       const isComplete = Boolean(c.canExchange);
@@ -1735,6 +1832,7 @@ async function loadCollections() {
       }).join("");
 
       const prisonLabel = c.prisonName ? `<span class="badge" style="background: rgba(255,255,255,0.08); font-size: 10px; margin-right: 6px;">${c.prisonName}</span>` : "";
+      const readyBadge = isComplete ? `<span class="badge-can-exchange">⚡️ Готово к обмену</span>` : "";
 
       card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
@@ -1742,6 +1840,7 @@ async function loadCollections() {
             <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
               ${prisonLabel}
               <span>${c.name}</span>
+              ${readyBadge}
             </div>
             <div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">Собрано предметов: <b style="color: ${isComplete ? '#34d399' : '#fff'};">${c.collected || 0}/${c.total || 7}</b></div>
           </div>
@@ -1990,16 +2089,50 @@ document.querySelectorAll(".btn-routine-action").forEach(btn => {
     const target = btn.getAttribute("data-target");
     btn.disabled = true;
     try {
-      const res = await apiFetch("/actions/routine/collect", {
-        method: "POST",
-        body: JSON.stringify({ target }),
-      });
-      if (res.success) {
-        const msg = target === "monthly" ? "Награды месячных делюг собраны!" : "Действие успешно выполнено!";
+      let res;
+      let msg = "Действие успешно выполнено!";
+      if (target === "toilet_paper") {
+        res = await apiFetch("/daily/toilet-paper", { method: "POST" });
+        const inner = res.result || {};
+        if (inner.success === false) {
+          msg = inner.message || "Ещё рано! Приходи завтра.";
+          if (res.toiletPaper) updateToiletPaperState(res.toiletPaper);
+          showToast(msg, "info");
+          loadProfile();
+          return;
+        }
+        if (res.toiletPaper) updateToiletPaperState(res.toiletPaper);
+        msg = "Бесплатная туалетная бумага успешно получена!";
+      } else if (target === "podogrev_send") {
+        res = await apiFetch("/daily/podogrev-send", { method: "POST" });
+        const cnt = res.result?.sent || res.result?.count || 0;
+        msg = `Подогревы друзьям отправлены (отправлено: ${cnt})!`;
+      } else if (target === "katala") {
+        res = await apiFetch("/daily/katala-play", { method: "POST" });
+        const r = res.result || {};
+        if (r.status === "already_played") {
+          msg = "Бесплатная суточная партия уже была сыграна!";
+        } else {
+          msg = `Партия у Каталы завершена! Комбинация: ${r.hand_name || r.reward || 'Успех'}`;
+        }
+      } else if (target === "monthly") {
+        res = await apiFetch("/daily/monthly-claim", { method: "POST" });
+        const claimed = (res.claimed || []).length;
+        msg = claimed > 0 ? `Собрано ${claimed} наград месячных делюг!` : "Нет доступных для сбора наград месячных делюг.";
+      } else {
+        res = await apiFetch("/actions/routine/collect", {
+          method: "POST",
+          body: JSON.stringify({ target }),
+        });
+      }
+
+      if (res && res.success !== false) {
         showToast(msg, "success");
         loadProfile();
         refreshState();
         if (target === "monthly") loadMonthlyState();
+      } else if (res && res.message) {
+        showToast(res.message, "info");
       }
     } catch (e) {
       showToast(`Ошибка: ${e.message}`, "error");
@@ -2042,11 +2175,11 @@ btnToggleBiz?.addEventListener("click", () => {
   isBusinessesExpanded = !isBusinessesExpanded;
   const wrap = document.getElementById("businesses-collapsible");
   if (wrap) wrap.style.display = isBusinessesExpanded ? "block" : "none";
-  const bizList = playerProfile.businesses || [];
+  const bizList = (playerProfile && playerProfile.businesses) || [];
   const textEl = document.getElementById("btn-toggle-biz-text");
   const iconEl = document.getElementById("btn-toggle-biz-icon");
-  if (textEl) textEl.textContent = isBusinessesExpanded ? "Скрыть бизнесы" : `Показать бизнесы (${bizList.length})`;
-  if (iconEl) iconEl.textContent = isBusinessesExpanded ? "▲" : "▼";
+  if (textEl) textEl.textContent = `(${bizList.length})`;
+  if (iconEl) iconEl.textContent = isBusinessesExpanded ? "▴" : "▾";
 });
 
 // --- 5.13 Refresh Buttons for Hooks ---
@@ -2196,7 +2329,7 @@ document.getElementById("btn-sync-top")?.addEventListener("click", async () => {
   try {
     const res = await apiFetch("/raids/sync-top", { method: "POST", body: JSON.stringify({ force: true }) });
     showToast(res.message || "Синхронизация завершена", res.success ? "success" : "info");
-    loadRadarPlayers();
+    await loadActivePlayersRadar({ silent: true });
   } catch (e) {
     showToast(`Ошибка синхронизации: ${e.message}`, "error");
   } finally {
@@ -2211,7 +2344,7 @@ document.getElementById("btn-scan-news")?.addEventListener("click", async () => 
   try {
     const res = await apiFetch("/raids/scan-news", { method: "POST" });
     showToast(res.message || "Парсинг новостей завершен", res.success ? "success" : "info");
-    loadRadarPlayers();
+    await loadActivePlayersRadar({ silent: true });
   } catch (e) {
     showToast(`Ошибка парсинга новостей: ${e.message}`, "error");
   } finally {
@@ -2222,7 +2355,8 @@ document.getElementById("btn-scan-news")?.addEventListener("click", async () => 
 // --- 5.14 Config Toggles & Inputs Auto-Save ---
 const autoConfigKeys = [
   "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
-  "auto_beard", "auto_podogrev", "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
+  "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+  "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
   "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
   "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
   "auto_kolsik"
@@ -2233,12 +2367,17 @@ autoConfigKeys.forEach(k => {
   if (el) {
     el.addEventListener("change", async () => {
       const val = el.checked;
-      await apiFetch("/config", {
-        method: "PATCH",
-        body: JSON.stringify({ [k]: val }),
-      });
-      showToast(`Настройка сохранена`, "info");
-      refreshState();
+      try {
+        await apiFetch("/config", {
+          method: "PATCH",
+          body: JSON.stringify({ [k]: val }),
+        });
+        showToast(`Настройка сохранена`, "info");
+        refreshState();
+      } catch (e) {
+        el.checked = !val;
+        showToast(`Ошибка сохранения настройки: ${e.message}`, "error");
+      }
     });
   }
 });
@@ -2290,12 +2429,17 @@ const autoFriendsSec = document.getElementById("cfg-auto_friends_sec");
 if (autoFriendsSec) {
   autoFriendsSec.addEventListener("change", async () => {
     const val = autoFriendsSec.checked;
-    await apiFetch("/config", {
-      method: "PATCH",
-      body: JSON.stringify({ auto_friends: val }),
-    });
-    showToast(`Авто-прием заявок: ${val ? 'ВКЛ' : 'ВЫКЛ'}`, "info");
-    refreshState();
+    try {
+      await apiFetch("/config", {
+        method: "PATCH",
+        body: JSON.stringify({ auto_friends: val }),
+      });
+      showToast(`Авто-прием заявок: ${val ? 'ВКЛ' : 'ВЫКЛ'}`, "info");
+      refreshState();
+    } catch (e) {
+      autoFriendsSec.checked = !val;
+      showToast(`Ошибка сохранения: ${e.message}`, "error");
+    }
   });
 }
 
@@ -2918,7 +3062,7 @@ function proxyAssetUrl(url) {
       const parsed = new URL(clean);
       const p = parsed.pathname.replace(/^\/+/, "");
       return `/api/v1/assets/proxy?path=${encodeURIComponent(p)}`;
-    } catch (e) {}
+    } catch (e) { }
   }
   const p = clean.replace(/^\/+/, "");
   return `/api/v1/assets/proxy?path=${encodeURIComponent(p)}`;
@@ -3041,11 +3185,11 @@ function getCanvasImage(url) {
               if (cache) {
                 fetch(cleanUrl, { mode: "cors" }).then(res => {
                   if (res.ok) cache.put(cleanUrl, res.clone());
-                }).catch(() => {});
+                }).catch(() => { });
               }
             });
           }
-        } catch (e) {}
+        } catch (e) { }
         resolve(img);
       };
       img.onerror = () => resolve(null);
@@ -3321,6 +3465,42 @@ let fittingRoomStaticCanvas = null;
 let fittingRoomStaticCtx = null;
 let fittingRoomAnimLayers = [];
 
+function extractRoomFolderId(cameraUrl, fallbackId = "1") {
+  const s = String(cameraUrl || "");
+  const m1 = s.match(/RoomCameraUrl\/([^/?#&]+)\//i);
+  if (m1) return m1[1];
+  const m2 = s.match(/room_(\d+)\.(?:webp|png)/i);
+  if (m2) return m2[1];
+  return String(fallbackId || "1");
+}
+
+function drawFittingRoomImage(ctx, img, roomFolderId) {
+  if (!ctx || !img || img.naturalWidth <= 1 || img.naturalHeight <= 1) return;
+  ctx.save();
+  try {
+    ctx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
+    if (img.naturalWidth === 755 && img.naturalHeight === 562) {
+      ctx.drawImage(img, FITTING_CONFIG.U.x, FITTING_CONFIG.U.y, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
+    } else {
+      const scale = 1.302 * (580 / (img.naturalWidth || 580));
+      const nw = img.naturalWidth * scale;
+      const nh = img.naturalHeight * scale;
+      const isShift = FITTING_CONFIG.shiftRooms.has(String(roomFolderId));
+      const dx = isShift ? FITTING_CONFIG.e.dx - 376 : FITTING_CONFIG.e.dx;
+      const dy = isShift ? FITTING_CONFIG.e.dy - 279 : FITTING_CONFIG.e.dy;
+      ctx.drawImage(
+        img,
+        FITTING_CONFIG.e.cx + dx - nw / 2,
+        FITTING_CONFIG.e.cy + dy - nh / 2,
+        nw,
+        nh
+      );
+    }
+  } finally {
+    ctx.restore();
+  }
+}
+
 function startFittingRoomLoop() {
   if (fittingRoomAnimFrameId) {
     cancelAnimationFrame(fittingRoomAnimFrameId);
@@ -3329,7 +3509,7 @@ function startFittingRoomLoop() {
 
   const stage = document.getElementById("fitting-stage");
   if (!stage) return;
-  const canvas = stage.querySelector("canvas");
+  const canvas = stage.querySelector("#fitting-main-canvas");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
 
@@ -3340,39 +3520,77 @@ function startFittingRoomLoop() {
       return;
     }
 
-    // Canvas size: 1510 x 1124 (retina DPR=2 for 755 x 562)
-    ctx.setTransform(2, 0, 0, 2, 0, 0);
-    ctx.clearRect(0, 0, 755, 562);
-
-    // 1. Blit pre-rendered static composite buffer with 1 draw call
-    if (fittingRoomStaticCanvas) {
-      ctx.drawImage(fittingRoomStaticCanvas, 0, 0, 755, 562);
+    if (document.hidden) {
+      fittingRoomAnimFrameId = requestAnimationFrame(renderFrame);
+      return;
     }
 
-    // 2. Only draw live animated layers (EyesAnim, BrushAnim) if any exist
-    if (fittingRoomAnimLayers && fittingRoomAnimLayers.length > 0) {
-      ctx.save();
-      ctx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y); // -485, -217
-      ctx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y); // 1055, 780
-      ctx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale); // 0.811, 0.811
+    const dpr = canvas.width / FITTING_CONFIG.U.w; // 2 (1510 / 755)
+    ctx.save();
+    try {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
 
-      for (const layer of fittingRoomAnimLayers) {
-        if (layer.angle) {
-          ctx.save();
-          ctx.translate(layer.x, layer.y);
-          ctx.rotate((layer.angle * Math.PI) / 180);
-          drawLayer(ctx, { ...layer, x: 0, y: 0 }, timeMs);
-          ctx.restore();
+      // 1. Фон хаты: официальный Spine / room.bundle ("back") или статический оригинальный фон + эффекты effect_config
+      const curRoomId = fittingRoomRoomData ? fittingRoomRoomData.id : null;
+      const roomPlayer = window.SpineRoomPlayer;
+      let fullBgDrawn = false;
+      if (curRoomId && roomPlayer && roomPlayer.hasFullBackground(curRoomId)) {
+        fullBgDrawn = roomPlayer.renderBack(ctx, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h, timeMs, curRoomId);
+      }
+      if (!fullBgDrawn) {
+        if (fittingRoomRoomData && fittingRoomRoomData.img && fittingRoomRoomData.img.naturalWidth > 1) {
+          drawFittingRoomImage(ctx, fittingRoomRoomData.img, curRoomId);
         } else {
-          drawLayer(ctx, layer, timeMs);
+          ctx.fillStyle = "#1e2124";
+          ctx.fillRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
         }
       }
-      ctx.restore();
+      if (curRoomId && roomPlayer && roomPlayer.isReady(curRoomId)) {
+        roomPlayer.renderEffects(ctx, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h, timeMs, curRoomId);
+      }
 
-      // Only schedule next frame if live animations are active
+      // 2. Персонаж (тело + тату + шмот) строго поверх фона
+      if (fittingRoomStaticCanvas) {
+        ctx.drawImage(fittingRoomStaticCanvas, 0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
+      }
+
+      // 3. Живые анимационные слои персонажа (EyesAnim, BrushAnim)
+      if (fittingRoomAnimLayers && fittingRoomAnimLayers.length > 0) {
+        ctx.save();
+        ctx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
+        ctx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y);
+        ctx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale);
+
+        for (const layer of fittingRoomAnimLayers) {
+          if (layer.angle) {
+            ctx.save();
+            ctx.translate(layer.x, layer.y);
+            ctx.rotate((layer.angle * Math.PI) / 180);
+            drawLayer(ctx, { ...layer, x: 0, y: 0 }, timeMs);
+            ctx.restore();
+          } else {
+            drawLayer(ctx, layer, timeMs);
+          }
+        }
+        ctx.restore();
+      }
+
+      // 4. Передний слой room.bundle (для хаты 54 — gameBirthday_back_front со столом, тортом, свечами и котом строго поверх персонажа)
+      if (curRoomId && roomPlayer && roomPlayer.hasBundleFront(curRoomId)) {
+        roomPlayer.renderFront(ctx, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h, timeMs, curRoomId);
+      }
+    } finally {
+      ctx.restore();
+    }
+
+    const needAnimLoop =
+      (fittingRoomAnimLayers && fittingRoomAnimLayers.length > 0) ||
+      (fittingRoomRoomData && window.SpineRoomPlayer && window.SpineRoomPlayer.isReady(fittingRoomRoomData.id));
+
+    if (needAnimLoop) {
       fittingRoomAnimFrameId = requestAnimationFrame(renderFrame);
     } else {
-      // In static view (e.g. back view or no animated layers), stop 60 FPS loop!
       fittingRoomAnimFrameId = null;
     }
   }
@@ -3412,24 +3630,35 @@ async function prepareFittingRoomLayers(currentToken = null) {
     }
   }
 
-  // 1. Camera Room (Хата)
+  // 1. Camera Room (Хата) — извлекаем реальный ID папки RoomCameraUrl (например 27 для Бугра, 30 для Гризли, 54 для Торта Люськи)
   let cameraUrl = charLayers.roomCameraUrl || "assets/PrisonV3/RoomCameraUrl/1/1.png";
-  let roomId = 1;
+  let roomFolderId = extractRoomFolderId(charLayers.roomCameraRaw || cameraUrl, "1");
+  let cameraId = Number(roomFolderId) || 1;
   if (fittingRoomPreview) {
     if (fittingRoomPreview.type === "camera") {
       cameraUrl = fittingRoomPreview.camera.imageUrl || cameraUrl;
-      roomId = fittingRoomPreview.camera.id || 1;
+      cameraId = fittingRoomPreview.camera.id || cameraId;
+      roomFolderId = String(
+        fittingRoomPreview.camera.folderId ||
+        extractRoomFolderId(fittingRoomPreview.camera.rawImageUrl || cameraUrl, fittingRoomPreview.camera.id)
+      );
     } else if (fittingRoomPreview.type === "loot" && fittingRoomPreview.item.kind === "camera") {
       cameraUrl = fittingRoomPreview.item.previewUrl || cameraUrl;
-      roomId = fittingRoomPreview.item.id || 1;
+      cameraId = fittingRoomPreview.item.id || cameraId;
+      roomFolderId = extractRoomFolderId(cameraUrl, fittingRoomPreview.item.id);
     }
-  } else if (charLayers.roomCameraRaw) {
-    const match = String(charLayers.roomCameraRaw).match(/RoomCameraUrl\/(\d+)\//);
-    if (match) roomId = Number(match[1]);
   }
+
   const roomImg = await getCanvasImage(cameraUrl);
   if (currentToken && currentToken !== fittingRenderToken) return;
-  fittingRoomRoomData = { id: roomId, img: roomImg };
+
+  let resolvedRoomImg = roomImg;
+  if (!resolvedRoomImg || resolvedRoomImg.naturalWidth <= 1) {
+    resolvedRoomImg = await getCanvasImage(charLayers.roomCameraUrl || "assets/PrisonV3/RoomCameraUrl/default/1.png");
+    if (currentToken && currentToken !== fittingRenderToken) return;
+  }
+
+  fittingRoomRoomData = { id: roomFolderId, cameraId, img: resolvedRoomImg };
 
   const layers = [];
 
@@ -3791,55 +4020,33 @@ async function prepareFittingRoomLayers(currentToken = null) {
   }
   fittingRoomAnimLayers = animLayers;
 
-  fittingRoomStaticCtx.setTransform(2, 0, 0, 2, 0, 0);
-  fittingRoomStaticCtx.clearRect(0, 0, 755, 562);
-
   fittingRoomStaticCtx.save();
-  fittingRoomStaticCtx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
+  try {
+    fittingRoomStaticCtx.setTransform(2, 0, 0, 2, 0, 0);
+    fittingRoomStaticCtx.clearRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
 
-  // 1. Draw Room Background
-  if (fittingRoomRoomData && fittingRoomRoomData.img) {
-    const roomImg = fittingRoomRoomData.img;
-    if (roomImg.naturalWidth === 755 && roomImg.naturalHeight === 562) {
-      fittingRoomStaticCtx.drawImage(roomImg, FITTING_CONFIG.U.x, FITTING_CONFIG.U.y, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
-    } else {
-      const scale = 1.302 * (580 / (roomImg.naturalWidth || 580));
-      const nw = roomImg.naturalWidth * scale;
-      const nh = roomImg.naturalHeight * scale;
-      const isShift = FITTING_CONFIG.shiftRooms.has(String(fittingRoomRoomData.id));
-      const dx = isShift ? FITTING_CONFIG.e.dx - 376 : FITTING_CONFIG.e.dx;
-      const dy = isShift ? FITTING_CONFIG.e.dy - 279 : FITTING_CONFIG.e.dy;
-      fittingRoomStaticCtx.drawImage(
-        roomImg,
-        FITTING_CONFIG.e.cx + dx - nw / 2,
-        FITTING_CONFIG.e.cy + dy - nh / 2,
-        nw,
-        nh
-      );
+    fittingRoomStaticCtx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
+
+    // Draw Static Character Layers onto transparent static composite buffer
+    fittingRoomStaticCtx.save();
+    fittingRoomStaticCtx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y);
+    fittingRoomStaticCtx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale);
+
+    for (const layer of staticLayers) {
+      if (layer.angle) {
+        fittingRoomStaticCtx.save();
+        fittingRoomStaticCtx.translate(layer.x, layer.y);
+        fittingRoomStaticCtx.rotate((layer.angle * Math.PI) / 180);
+        drawLayer(fittingRoomStaticCtx, { ...layer, x: 0, y: 0 }, 0);
+        fittingRoomStaticCtx.restore();
+      } else {
+        drawLayer(fittingRoomStaticCtx, layer, 0);
+      }
     }
-  } else {
-    fittingRoomStaticCtx.fillStyle = "#1e2124";
-    fittingRoomStaticCtx.fillRect(485, 217, 755, 562);
+    fittingRoomStaticCtx.restore();
+  } finally {
+    fittingRoomStaticCtx.restore();
   }
-
-  // 2. Draw Static Character Layers
-  fittingRoomStaticCtx.save();
-  fittingRoomStaticCtx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y);
-  fittingRoomStaticCtx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale);
-
-  for (const layer of staticLayers) {
-    if (layer.angle) {
-      fittingRoomStaticCtx.save();
-      fittingRoomStaticCtx.translate(layer.x, layer.y);
-      fittingRoomStaticCtx.rotate((layer.angle * Math.PI) / 180);
-      drawLayer(fittingRoomStaticCtx, { ...layer, x: 0, y: 0 }, 0);
-      fittingRoomStaticCtx.restore();
-    } else {
-      drawLayer(fittingRoomStaticCtx, layer, 0);
-    }
-  }
-  fittingRoomStaticCtx.restore();
-  fittingRoomStaticCtx.restore();
 }
 
 function openFittingRoom(previewData = null) {
@@ -3972,6 +4179,11 @@ function closeFittingRoom() {
     cancelAnimationFrame(fittingRoomAnimFrameId);
     fittingRoomAnimFrameId = null;
   }
+  const staleSpineCanvas = document.getElementById("spine-room-canvas");
+  if (staleSpineCanvas) staleSpineCanvas.remove();
+  if (window.SpineRoomPlayer) {
+    window.SpineRoomPlayer.stop();
+  }
   fittingRoomPreview = null;
 }
 
@@ -3981,9 +4193,14 @@ async function drawFittingRoomStage(currentToken = null) {
 
   const myToken = currentToken || ++fittingRenderToken;
 
-  let canvas = stage.querySelector("canvas");
+  // Clean up any legacy separate spine canvas so querySelector("#fitting-main-canvas") is unambiguous
+  const staleSpine = stage.querySelector("#spine-room-canvas");
+  if (staleSpine) staleSpine.remove();
+
+  let canvas = stage.querySelector("#fitting-main-canvas");
   if (!canvas) {
     canvas = document.createElement("canvas");
+    canvas.id = "fitting-main-canvas";
     canvas.width = 1510;
     canvas.height = 1124;
     canvas.style.width = "100%";
@@ -4037,7 +4254,20 @@ async function drawFittingRoomStage(currentToken = null) {
 
   if (overlay) overlay.style.display = "none";
 
+  // Immediately start rendering static room + character + foreground (0 ms fallback)
   startFittingRoomLoop();
+
+  // If animated Spine room, preload Spine assets in background and seamlessly enable once ready
+  const curRoomId = fittingRoomRoomData ? fittingRoomRoomData.id : null;
+  if (curRoomId && window.SpineRoomPlayer && window.SpineRoomPlayer.isAnimatedRoom(curRoomId)) {
+    window.SpineRoomPlayer.preload(curRoomId).then(ok => {
+      if (ok && myToken === fittingRenderToken) {
+        startFittingRoomLoop();
+      }
+    });
+  } else if (window.SpineRoomPlayer) {
+    window.SpineRoomPlayer.stop();
+  }
 
   // Background preheat for opposite side
   setTimeout(() => {
@@ -4058,7 +4288,7 @@ async function drawFittingRoomStage(currentToken = null) {
         ].filter(Boolean);
         if (frontUrls.length > 0) batchLoadAssets(frontUrls);
       }
-    } catch (e) {}
+    } catch (e) { }
   }, 100);
 }
 
@@ -4253,6 +4483,7 @@ setInterval(() => {
   updateMeleeTimers();
   updateBusinessCountdown();
   updateEnergyTimer();
+  updateToiletPaperTimer();
 }, 1000);
 
 // 5-second periodic ping measurement
@@ -4270,7 +4501,7 @@ setInterval(() => {
   if (activeSection === "prisons") loadPrisons();
   if (activeSection === "routine") loadRoutine();
   if (activeSection === "friends") { loadFriendsSummary(); loadFriendRequests(); loadFriendsAudit(); }
-  if (activeSection === "raids") { loadRaidsSection(); }
+  if (activeSection === "raids") { loadRaidsSection({ silent: true }); }
 }, 30000);
 
 // Пауза / возобновление при сворачивании и возврате на вкладку браузера
@@ -4459,14 +4690,14 @@ function renderBossDropHtml(b, mode) {
     currenciesHtml = `
       <div class="boss-drop-currencies">
         ${currencies.map(c => {
-          const icon = curIcons[c.currency] || "/static/assets/icons/rubles.webp";
-          return `
+      const icon = curIcons[c.currency] || "/static/assets/icons/rubles.webp";
+      return `
             <span class="loot-currency" title="${c.label || c.currency}">
               <img src="${icon}" alt="${c.label || c.currency}" onerror="this.style.display='none'">
               +${formatNum(c.amount)}
             </span>
           `;
-        }).join("")}
+    }).join("")}
       </div>
     `;
   }
@@ -4476,13 +4707,13 @@ function renderBossDropHtml(b, mode) {
     itemsHtml = `
       <div class="boss-drop-items">
         ${items.map((it, idx) => {
-          const fallbackIcon = it.kind === "stash" ? "/static/assets/icons/stash.webp" : (it.kind === "camera" ? "/static/assets/icons/punchChest.webp" : "/static/assets/icons/kolsik.webp");
-          const thumb = it.previewUrl ? proxyAssetUrl(it.previewUrl) : fallbackIcon;
-          const isOwned = Boolean(it.owned);
-          const hasCount = it.totalCount && it.totalCount > 1;
-          const countBadge = hasCount ? `<span class="boss-loot-parts-badge">${it.ownedCount || 0}/${it.totalCount}</span>` : "";
-          const checkBadge = isOwned ? '<span class="boss-loot-owned-badge">✓</span>' : '';
-          return `
+      const fallbackIcon = it.kind === "stash" ? "/static/assets/icons/stash.webp" : (it.kind === "camera" ? "/static/assets/icons/punchChest.webp" : "/static/assets/icons/kolsik.webp");
+      const thumb = it.previewUrl ? proxyAssetUrl(it.previewUrl) : fallbackIcon;
+      const isOwned = Boolean(it.owned);
+      const hasCount = it.totalCount && it.totalCount > 1;
+      const countBadge = hasCount ? `<span class="boss-loot-parts-badge">${it.ownedCount || 0}/${it.totalCount}</span>` : "";
+      const checkBadge = isOwned ? '<span class="boss-loot-owned-badge">✓</span>' : '';
+      return `
             <div class="boss-loot-item-chip ${isOwned ? 'owned' : ''}" data-boss-id="${b.id}" data-item-idx="${idx}" title="Кликните для примерки в Примерочной">
               <img src="${thumb}" class="boss-loot-item-thumb" onerror="this.src='${fallbackIcon}'">
               <div class="boss-loot-item-info">
@@ -4493,7 +4724,7 @@ function renderBossDropHtml(b, mode) {
               ${countBadge}
             </div>
           `;
-        }).join("")}
+    }).join("")}
       </div>
     `;
   }
@@ -5574,7 +5805,7 @@ function initRaidsSection() {
   });
 }
 
-function switchRaidsTab(tabName) {
+function switchRaidsTab(tabName, opts = {}) {
   initRaidsSection();
   currentRaidsTab = tabName;
 
@@ -5602,13 +5833,13 @@ function switchRaidsTab(tabName) {
   // Load data for active tab
   if (tabName === "raids") loadRaids();
   else if (tabName === "news") loadNews();
-  else if (tabName === "radar") loadActivePlayersRadar();
+  else if (tabName === "radar") loadActivePlayersRadar(opts);
 }
 
-async function loadRaidsSection() {
+async function loadRaidsSection(opts = {}) {
   initRaidsSection();
   await loadSafetyStatus();
-  switchRaidsTab(currentRaidsTab || "raids");
+  switchRaidsTab(currentRaidsTab || "raids", opts);
 }
 
 // --- Safety Bar & Status ---
@@ -5630,7 +5861,7 @@ function renderSafetyBar(safety) {
 
   if (limitText) {
     const sent = safety.sentLast24h || 0;
-    const limit = safety.dailyLimit || 25;
+    const limit = safety.dailyLimit || 50;
     const rem = safety.remaining24h !== undefined ? safety.remaining24h : Math.max(0, limit - sent);
     limitText.textContent = `Лимит за 24ч: ${sent} / ${limit} (осталось ${rem})`;
     if (rem === 0) {
@@ -5779,7 +6010,7 @@ async function loadOutreachConfig() {
       const badgeStatus = document.getElementById("badge-outreach-status");
 
       if (autoEn) autoEn.checked = Boolean(cfg.auto_friend_outreach);
-      if (limitIn) limitIn.value = cfg.friend_outreach_daily_limit || 25;
+      if (limitIn) limitIn.value = cfg.friend_outreach_daily_limit || 50;
       if (minDmgIn) minDmgIn.value = cfg.friend_outreach_min_damage || 0;
       if (maxDmgIn) maxDmgIn.value = cfg.friend_outreach_max_damage || 0;
       if (onlyActIn) onlyActIn.checked = cfg.friend_outreach_only_active !== undefined ? Boolean(cfg.friend_outreach_only_active) : true;
@@ -5803,13 +6034,13 @@ async function loadOutreachConfig() {
 
 async function saveOutreachConfig() {
   const autoEn = Boolean(document.getElementById("cfg-auto-friend-outreach")?.checked);
-  const limitVal = parseInt(document.getElementById("cfg-friend-outreach-daily-limit")?.value || "25", 10);
+  const limitVal = parseInt(document.getElementById("cfg-friend-outreach-daily-limit")?.value || "50", 10);
   const minDmg = parseInt(document.getElementById("cfg-friend-outreach-min-damage")?.value || "0", 10);
   const maxDmg = parseInt(document.getElementById("cfg-friend-outreach-max-damage")?.value || "0", 10);
   const onlyAct = Boolean(document.getElementById("cfg-friend-outreach-only-active")?.checked);
 
-  if (isNaN(limitVal) || limitVal < 1 || limitVal > 50) {
-    showToast("Суточный лимит должен быть от 1 до 50 заявок", "warning");
+  if (isNaN(limitVal) || limitVal < 1 || limitVal > 500) {
+    showToast("Суточный лимит должен быть от 1 до 500 заявок", "warning");
     return;
   }
 
@@ -5825,6 +6056,19 @@ async function saveOutreachConfig() {
       }),
     });
     if (res.success) {
+      if (window.currentBotConfig) {
+        window.currentBotConfig.friend_outreach_daily_limit = limitVal;
+        window.currentBotConfig.auto_friend_outreach = autoEn;
+        window.currentBotConfig.friend_outreach_min_damage = minDmg;
+        window.currentBotConfig.friend_outreach_max_damage = maxDmg;
+        window.currentBotConfig.friend_outreach_only_active = onlyAct;
+      }
+      if (raidsSafetyStatus) {
+        const sent = raidsSafetyStatus.sentLast24h || 0;
+        raidsSafetyStatus.dailyLimit = limitVal;
+        raidsSafetyStatus.remaining24h = Math.max(0, limitVal - sent);
+        renderSafetyBar(raidsSafetyStatus);
+      }
       showToast("Настройки авто-набора сохранены!", "success");
       const badgeStatus = document.getElementById("badge-outreach-status");
       if (badgeStatus) {
@@ -5845,19 +6089,26 @@ async function saveOutreachConfig() {
   }
 }
 
+let _lastRaidsHash = "";
+let _raidsFetchSeq = 0;
+
 // --- Subview 1: Рейды ---
 async function loadRaids() {
   const container = document.getElementById("raids-list-container");
   const banner = document.getElementById("raids-source-banner");
   if (!container) return;
 
+  const seq = ++_raidsFetchSeq;
   renderTgChannelsChips();
-  await loadSafetyStatus();
 
-  container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка рейдов...</div>';
+  const hasCards = Boolean(container.querySelector(".raid-card"));
+  if (!hasCards && container.children.length === 0) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка рейдов...</div>';
+  }
 
   try {
     const res = await apiFetch("/raids");
+    if (seq !== _raidsFetchSeq) return;
     const raids = res.raids || [];
     const tgRaids = res.telegramRaids || [];
 
@@ -5933,7 +6184,13 @@ async function loadRaids() {
 }
 
 function renderRaidsList(raids, container) {
-  container.innerHTML = "";
+  const raidsHash = JSON.stringify(raids.map(r => [r.id, r.status, (r.participants || []).map(p => [p.userId, p.friendStatus])]));
+  if (raidsHash === _lastRaidsHash && container.querySelectorAll(".raid-card").length === raids.length) {
+    return;
+  }
+  _lastRaidsHash = raidsHash;
+
+  const frag = document.createDocumentFragment();
   raids.forEach(r => {
     const card = document.createElement("div");
     card.className = "raid-card";
@@ -5989,26 +6246,40 @@ function renderRaidsList(raids, container) {
     `;
 
     bindFriendshipButtons(card);
-    container.appendChild(card);
+    frag.appendChild(card);
   });
+  container.replaceChildren(frag);
 }
+
+let _lastNewsHash = "";
+let _newsFetchSeq = 0;
 
 // --- Subview 2: Новости ---
 async function loadNews() {
   const container = document.getElementById("news-list-container");
   if (!container) return;
 
-  container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка новостей...</div>';
+  const seq = ++_newsFetchSeq;
+  const hasCards = Boolean(container.querySelector(".news-post-card"));
+  if (!hasCards) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка новостей...</div>';
+  }
 
   try {
     const res = await apiFetch("/news");
+    if (seq !== _newsFetchSeq) return;
     const posts = res.news || res.posts || res.items || [];
     if (posts.length === 0) {
+      _lastNewsHash = "empty";
       container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Новостей и объявлений пока нет</div>';
       return;
     }
 
-    container.innerHTML = "";
+    const newsHash = JSON.stringify(posts.map(p => [p.id || p.title, p.date, (p.text || p.content || "").slice(0, 60)]));
+    if (newsHash === _lastNewsHash && hasCards) return;
+    _lastNewsHash = newsHash;
+
+    const frag = document.createDocumentFragment();
     posts.forEach(p => {
       const card = document.createElement("div");
       card.className = "news-post-card";
@@ -6035,25 +6306,38 @@ async function loadNews() {
         <div class="news-post-body">${body}</div>
         ${imagesHtml}
       `;
-      container.appendChild(card);
+      frag.appendChild(card);
     });
+    container.replaceChildren(frag);
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка загрузки новостей: ${err.message}</div>`;
+    if (!hasCards) {
+      container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка загрузки новостей: ${err.message}</div>`;
+    }
   }
 }
 
 // --- Subview 3: Радар активных дамагеров ---
-async function loadActivePlayersRadar() {
+let _radarFetchSeq = 0;
+let _isLoadingRadar = false;
+let _lastRadarFingerprint = "";
+
+async function loadActivePlayersRadar(opts = {}) {
   const container = document.getElementById("radar-players-container");
   const statsText = document.getElementById("radar-stats-text");
   const dbStatsEl = document.getElementById("radar-db-stats");
   if (!container) return;
 
-  await loadSafetyStatus();
-  await loadOutreachConfig();
+  if (_isLoadingRadar && opts.silent) return;
+  _isLoadingRadar = true;
+  const seq = ++_radarFetchSeq;
 
-  container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Сканирование кандидатов и активных игроков...</div>';
-  if (statsText) statsText.textContent = "Загрузка игроков...";
+  const hasRows = Boolean(container.querySelector(".radar-player-row[data-user-id]"));
+  if (!hasRows) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Сканирование кандидатов и активных игроков...</div>';
+    if (statsText) statsText.textContent = "Загрузка игроков...";
+  } else if (statsText) {
+    statsText.innerHTML = `Найдено активных игроков: ${radarPlayers.length} <span class="radar-sync-pill">🔄 Синхронизация...</span>`;
+  }
 
   const source = document.getElementById("radar-filter-source")?.value || "all";
   const minDmg = document.getElementById("radar-filter-min-dmg")?.value || "0";
@@ -6062,7 +6346,10 @@ async function loadActivePlayersRadar() {
   const excludeFriends = Boolean(document.getElementById("radar-filter-exclude-friends")?.checked);
 
   try {
+    await loadOutreachConfig();
     const res = await apiFetch(`/raids/active-players?source=${source}&minDamage=${minDmg}&maxDamage=${maxDmg}&limit=${limit}&excludeFriends=${excludeFriends}`);
+    if (seq !== _radarFetchSeq) return;
+
     radarPlayers = res.players || [];
 
     if (statsText) {
@@ -6075,130 +6362,237 @@ async function loadActivePlayersRadar() {
     }
 
     if (res.safety) {
+      raidsSafetyStatus = res.safety;
       renderSafetyBar(res.safety);
     }
 
     if (radarPlayers.length === 0) {
+      _lastRadarFingerprint = "empty";
       container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Игроков с заданными параметрами не найдено. Нажмите «Сканировать бригады» для наполнения базы!</div>';
       return;
     }
 
+    const fingerprint = JSON.stringify(
+      radarPlayers.map((p, i) => [
+        p.userId,
+        p.rank || (i + 1),
+        p.nickname,
+        p.level,
+        p.authority,
+        p.authorityDelta,
+        p.damage,
+        p.damageDelta,
+        p.score,
+        p.poisonDamage,
+        p.gunshotDamage,
+        p.knifeDamage,
+        p.talents,
+        p.friendStatus,
+        p.source,
+        p.guildName,
+      ])
+    );
+
+    if (fingerprint === _lastRadarFingerprint && container.querySelectorAll(".radar-player-row[data-user-id]").length === radarPlayers.length) {
+      return;
+    }
+    _lastRadarFingerprint = fingerprint;
+
     renderRadarPlayers(radarPlayers, container);
   } catch (err) {
-    container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка сканирования игроков: ${err.message}</div>`;
-    if (statsText) statsText.textContent = "Ошибка загрузки";
+    if (!hasRows) {
+      container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка сканирования игроков: ${err.message}</div>`;
+    }
+    if (statsText) statsText.textContent = hasRows ? `Найдено активных игроков: ${radarPlayers.length}` : "Ошибка загрузки";
+  } finally {
+    if (seq === _radarFetchSeq) {
+      _isLoadingRadar = false;
+    }
   }
 }
 
+const loadRadarPlayers = loadActivePlayersRadar;
+
+function _buildRadarRowData(p, idx) {
+  const rank = p.rank || (idx + 1);
+  let rankCls = "";
+  if (rank === 1) rankCls = "rank-top1";
+  else if (rank === 2) rankCls = "rank-top2";
+  else if (rank === 3) rankCls = "rank-top3";
+
+  const authVal = p.authority || 0;
+  let lvlVal = p.level || 0;
+  if ((!lvlVal || lvlVal <= 1) && authVal > 0) {
+    lvlVal = Math.max(1, Math.floor((-40 + Math.sqrt(1600 + 80 * authVal)) / 40));
+  }
+  const levelDisplay = lvlVal > 0 ? `Ур. ${lvlVal}` : "Ур. 1";
+
+  const dmgVal = p.damage || p.weeklyDamage || 0;
+  const dmgStr = dmgVal > 0 ? formatNum(dmgVal) : "-";
+
+  const isAct = p.isActiveRecently || (p.authorityDelta && p.authorityDelta > 0);
+  const deltaStr = p.authorityDelta && p.authorityDelta > 0 ? ` (+${formatNum(p.authorityDelta)})` : "";
+  const activeBadge = isAct ? `<span class="radar-badge-active">🔥 Активен${deltaStr}</span>` : "";
+
+  const dmgDeltaBadge = (p.damageDelta && p.damageDelta > 0)
+    ? `<span class="radar-badge-delta" style="color: #22c55e; font-weight: 700; font-size: 11px; background: rgba(34, 197, 94, 0.15); padding: 1px 5px; border-radius: 4px;">+Δ ${formatNum(p.damageDelta)}</span>`
+    : "";
+
+  let srcLabel = "";
+  if (p.source === "tg_channel") srcLabel = "📡 TG";
+  else if (p.source === "news_ad") srcLabel = "📰 Новости";
+  else if (p.source === "guild") srcLabel = "🏰 Бригада";
+  else if (p.source === "weekly_top") srcLabel = "🏆 Топ";
+  else if (p.source === "achievements") srcLabel = "🎖️ Достижения";
+  else if (p.source === "import") srcLabel = "📋 Импорт";
+  const srcBadge = srcLabel ? `<span class="radar-badge-source" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 1px 5px; border-radius: 4px; font-size: 10px;">${srcLabel}</span>` : "";
+
+  const scoreBadge = (p.score !== undefined && p.score !== null)
+    ? `<span class="radar-badge-score" style="background: rgba(168, 85, 247, 0.2); color: #c084fc; font-weight: 700; padding: 1px 6px; border-radius: 4px; font-size: 11px;">⚡ Score ${p.score}</span>`
+    : "";
+
+  const talentsBadge = (p.talents && p.talents > 0)
+    ? `<span class="radar-stat-badge radar-stat-talents">⭐ ${p.talents} тал.</span>`
+    : "";
+
+  const guildBadge = p.guildName
+    ? `<span class="radar-badge-guild" title="Бригада">🏰 ${p.guildName}</span>`
+    : "";
+
+  const poisonVal = p.poisonDamage > 0 ? formatNum(p.poisonDamage) : "—";
+  const gunshotVal = p.gunshotDamage > 0 ? formatNum(p.gunshotDamage) : "—";
+  const knifeVal = p.knifeDamage > 0 ? formatNum(p.knifeDamage) : "—";
+
+  let actionBtn = "";
+  if (p.friendStatus === "friend") {
+    actionBtn = '<button class="btn btn-sm btn-friend-added" disabled>✓ В друзьях</button>';
+  } else if (p.friendStatus === "sent") {
+    actionBtn = '<button class="btn btn-sm btn-friend-sent" disabled>✓ Заявка</button>';
+  } else {
+    actionBtn = `<button class="btn btn-primary btn-sm btn-add-friend" data-user-id="${p.userId}" data-nickname="${p.nickname || ''}">+ В друзья</button>`;
+  }
+
+  return {
+    rank, rankCls, levelDisplay, dmgStr, authStr: formatNum(authVal),
+    poisonVal, gunshotVal, knifeVal,
+    scoreBadge, srcBadge, dmgDeltaBadge, activeBadge, guildBadge, talentsBadge,
+    actionBtn, friendStatus: p.friendStatus || "none",
+  };
+}
+
 function renderRadarPlayers(players, container) {
-  container.innerHTML = "";
+  const existingRows = Array.from(container.querySelectorAll(".radar-player-row[data-user-id]"));
+  const sameOrder =
+    existingRows.length === players.length &&
+    players.every((p, i) => existingRows[i].getAttribute("data-user-id") === String(p.userId));
+
+  // Keyed in-place DOM patching (zero flicker, preserves avatars & weapon icon elements)
+  if (sameOrder) {
+    players.forEach((p, idx) => {
+      const row = existingRows[idx];
+      const d = _buildRadarRowData(p, idx);
+
+      const rankEl = row.querySelector(".radar-player-rank");
+      if (rankEl) {
+        const nextRankText = `#${d.rank}`;
+        const nextRankClass = `radar-player-rank ${d.rankCls}`.trim();
+        if (rankEl.textContent !== nextRankText) rankEl.textContent = nextRankText;
+        if (rankEl.className !== nextRankClass) rankEl.className = nextRankClass;
+      }
+
+      const badgesRow = row.querySelector(".radar-player-name-row");
+      if (badgesRow) {
+        const nextBadges = `
+          <span style="font-weight: 700; color: #fff;">${p.nickname || 'Арестант'}</span>
+          <span style="font-size: 10px; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;">${d.levelDisplay}</span>
+          ${d.scoreBadge}${d.srcBadge}${d.dmgDeltaBadge}${d.activeBadge}${d.guildBadge}
+        `;
+        if (badgesRow.dataset.sig !== nextBadges) {
+          badgesRow.innerHTML = nextBadges;
+          badgesRow.dataset.sig = nextBadges;
+        }
+      }
+
+      const dmgEl = row.querySelector(".radar-val-damage");
+      if (dmgEl && dmgEl.textContent !== d.dmgStr) dmgEl.textContent = d.dmgStr;
+      const authEl = row.querySelector(".radar-val-auth");
+      if (authEl && authEl.textContent !== d.authStr) authEl.textContent = d.authStr;
+      const pEl = row.querySelector(".radar-val-poison");
+      if (pEl && pEl.textContent !== d.poisonVal) pEl.textContent = d.poisonVal;
+      const gEl = row.querySelector(".radar-val-gunshot");
+      if (gEl && gEl.textContent !== d.gunshotVal) gEl.textContent = d.gunshotVal;
+      const kEl = row.querySelector(".radar-val-knife");
+      if (kEl && kEl.textContent !== d.knifeVal) kEl.textContent = d.knifeVal;
+
+      const statsWrap = row.querySelector(".radar-player-stats");
+      if (statsWrap) {
+        const existingTal = statsWrap.querySelector(".radar-stat-talents");
+        if (d.talentsBadge) {
+          if (existingTal) {
+            const nextTxt = `⭐ ${p.talents} тал.`;
+            if (existingTal.textContent !== nextTxt) existingTal.textContent = nextTxt;
+          } else {
+            statsWrap.insertAdjacentHTML("beforeend", d.talentsBadge);
+          }
+        } else if (existingTal) {
+          existingTal.remove();
+        }
+      }
+
+      const actWrap = row.querySelector(".radar-player-action");
+      if (actWrap && actWrap.dataset.status !== d.friendStatus) {
+        actWrap.innerHTML = d.actionBtn;
+        actWrap.dataset.status = d.friendStatus;
+        bindFriendshipButtons(actWrap);
+      }
+    });
+    return;
+  }
+
+  // Atomic fragment swap when order or membership changed
+  const frag = document.createDocumentFragment();
   players.forEach((p, idx) => {
     const row = document.createElement("div");
     row.className = "radar-player-row";
     row.id = `radar-player-${p.userId}`;
+    row.setAttribute("data-user-id", String(p.userId));
 
-    const rank = p.rank || (idx + 1);
-    let rankCls = "";
-    if (rank === 1) rankCls = "rank-top1";
-    else if (rank === 2) rankCls = "rank-top2";
-    else if (rank === 3) rankCls = "rank-top3";
-
+    const d = _buildRadarRowData(p, idx);
     const initial = (p.nickname || "А")[0].toUpperCase();
     const avatarHtml = (p.photoUrl || p.avatarUrl)
       ? `<img src="${p.photoUrl || p.avatarUrl}" alt="Аватар" loading="lazy" decoding="async" onerror="this.onerror=null;this.parentElement.textContent='${initial}'">`
       : initial;
 
-    let actionBtn = "";
-    if (p.friendStatus === "friend") {
-      actionBtn = '<button class="btn btn-sm btn-friend-added" disabled>✓ В друзьях</button>';
-    } else if (p.friendStatus === "sent") {
-      actionBtn = '<button class="btn btn-sm btn-friend-sent" disabled>✓ Заявка</button>';
-    } else {
-      actionBtn = `<button class="btn btn-primary btn-sm btn-add-friend" data-user-id="${p.userId}" data-nickname="${p.nickname || ''}">+ В друзья</button>`;
-    }
-
-    const dmgVal = p.damage || p.weeklyDamage || 0;
-    const dmgStr = dmgVal > 0 ? formatNum(dmgVal) : "-";
-
-    const isAct = p.isActiveRecently || (p.authorityDelta && p.authorityDelta > 0);
-    const deltaStr = p.authorityDelta && p.authorityDelta > 0 ? ` (+${formatNum(p.authorityDelta)})` : "";
-    const activeBadge = isAct
-      ? `<span class="radar-badge-active">🔥 Активен${deltaStr}</span>`
-      : "";
-
-    const dmgDeltaBadge = (p.damageDelta && p.damageDelta > 0)
-      ? `<span style="color: #22c55e; font-weight: 700; font-size: 11px; background: rgba(34, 197, 94, 0.15); padding: 1px 5px; border-radius: 4px;">+Δ ${formatNum(p.damageDelta)}</span>`
-      : "";
-
-    let srcLabel = "";
-    if (p.source === "tg_channel") srcLabel = "📡 TG";
-    else if (p.source === "news_ad") srcLabel = "📰 Новости";
-    else if (p.source === "guild") srcLabel = "🏰 Бригада";
-    else if (p.source === "weekly_top") srcLabel = "🏆 Топ";
-    else if (p.source === "achievements") srcLabel = "🎖️ Достижения";
-    else if (p.source === "import") srcLabel = "📋 Импорт";
-    const srcBadge = srcLabel ? `<span class="radar-badge-source" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 1px 5px; border-radius: 4px; font-size: 10px;">${srcLabel}</span>` : "";
-
-    const scoreBadge = (p.score !== undefined && p.score !== null)
-      ? `<span class="radar-badge-score" style="background: rgba(168, 85, 247, 0.2); color: #c084fc; font-weight: 700; padding: 1px 6px; border-radius: 4px; font-size: 11px;">⚡ Score ${p.score}</span>`
-      : "";
-
-    const talentsBadge = (p.talents && p.talents > 0)
-      ? `<span class="radar-stat-badge">⭐ ${p.talents} тал.</span>`
-      : "";
-
-    const guildBadge = p.guildName
-      ? `<span class="radar-badge-guild" title="Бригада">🏰 ${p.guildName}</span>`
-      : "";
-
-    const authVal = p.authority || 0;
-    let lvlVal = p.level || 0;
-    if ((!lvlVal || lvlVal <= 1) && authVal > 0) {
-      lvlVal = Math.max(1, Math.floor((-40 + Math.sqrt(1600 + 80 * authVal)) / 40));
-    }
-    const levelDisplay = lvlVal > 0 ? `Ур. ${lvlVal}` : "Ур. 1";
-
-    const poisonDmg = p.poisonDamage || 0;
-    const gunshotDmg = p.gunshotDamage || 0;
-    const knifeDmg = p.knifeDamage || 0;
-
-    const weaponsHtml = `
-      <span class="radar-stat-badge radar-stat-weapon" title="Урон ядом"><img src="/static/assets/icons/poison.webp" class="radar-weapon-icon" alt="Яд"> ${formatNum(poisonDmg)}</span>
-      <span class="radar-stat-badge radar-stat-weapon" title="Урон самопалом"><img src="/static/assets/icons/gunshot.webp" class="radar-weapon-icon" alt="Самопал"> ${formatNum(gunshotDmg)}</span>
-      <span class="radar-stat-badge radar-stat-weapon" title="Урон финкой"><img src="/static/assets/icons/knife.webp" class="radar-weapon-icon" alt="Финка"> ${formatNum(knifeDmg)}</span>
-    `;
-
     row.innerHTML = `
       <div class="radar-player-left">
-        <div class="radar-player-rank ${rankCls}">#${rank}</div>
+        <div class="radar-player-rank ${d.rankCls}">#${d.rank}</div>
         <div class="radar-player-avatar">${avatarHtml}</div>
         <div class="radar-player-info">
           <div class="radar-player-name-row" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span style="font-weight: 700; color: #fff;">${p.nickname || 'Арестант'}</span>
-            <span style="font-size: 10px; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;">${levelDisplay}</span>
-            ${scoreBadge}
-            ${srcBadge}
-            ${dmgDeltaBadge}
-            ${activeBadge}
-            ${guildBadge}
+            <span style="font-size: 10px; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px;">${d.levelDisplay}</span>
+            ${d.scoreBadge}${d.srcBadge}${d.dmgDeltaBadge}${d.activeBadge}${d.guildBadge}
           </div>
           <div class="radar-player-id">ID: ${p.userId}</div>
           <div class="radar-player-stats">
-            <span class="radar-stat-badge radar-stat-damage" title="Боевой урон">💥 ${dmgStr}</span>
-            <span class="radar-stat-badge radar-stat-auth" title="Авторитет"><img src="/static/assets/icons/authority.webp" class="radar-stat-icon" alt="Авторитет"> ${formatNum(authVal)}</span>
-            ${weaponsHtml}
-            ${talentsBadge}
+            <span class="radar-stat-badge radar-stat-damage" title="Боевой урон">💥 <span class="radar-val-damage">${d.dmgStr}</span></span>
+            <span class="radar-stat-badge radar-stat-auth" title="Авторитет"><img src="/static/assets/icons/authority.webp" class="radar-stat-icon" alt="Авторитет"> <span class="radar-val-auth">${d.authStr}</span></span>
+            <span class="radar-stat-badge radar-stat-weapon" title="Урон ядом"><img src="/static/assets/icons/poison.webp" class="radar-weapon-icon" alt="Яд"> <span class="radar-val-poison">${d.poisonVal}</span></span>
+            <span class="radar-stat-badge radar-stat-weapon" title="Урон самопалом"><img src="/static/assets/icons/gunshot.webp" class="radar-weapon-icon" alt="Самопал"> <span class="radar-val-gunshot">${d.gunshotVal}</span></span>
+            <span class="radar-stat-badge radar-stat-weapon" title="Урон финкой"><img src="/static/assets/icons/knife.webp" class="radar-weapon-icon" alt="Финка"> <span class="radar-val-knife">${d.knifeVal}</span></span>
+            ${d.talentsBadge}
           </div>
         </div>
       </div>
-      <div class="radar-player-action">
-        ${actionBtn}
+      <div class="radar-player-action" data-status="${d.friendStatus}">
+        ${d.actionBtn}
       </div>
     `;
 
     bindFriendshipButtons(row);
-    container.appendChild(row);
+    frag.appendChild(row);
   });
+  container.replaceChildren(frag);
 }
 
 function bindFriendshipButtons(parentEl) {

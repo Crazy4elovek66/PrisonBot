@@ -1,7 +1,7 @@
 import random
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 import httpx
 from core.config import settings
@@ -12,6 +12,31 @@ from bot.notifier import TelegramNotifier
 from core.drop_parser import DropParser
 
 logger = logging.getLogger(__name__)
+
+
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def get_toilet_paper_reset_info(
+    can_claim: bool,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Рассчитывает точный таймер сброса ежедневной бесплатной туалетной бумаги.
+    Согласно серверной логике («Ещё рано! Приходи завтра.»), сброс происходит в 00:00 МСК (UTC+3).
+    """
+    ref_utc = now_utc or datetime.now(timezone.utc)
+    if ref_utc.tzinfo is None:
+        ref_utc = ref_utc.replace(tzinfo=timezone.utc)
+    now_msk = ref_utc.astimezone(MSK_TZ)
+    next_midnight_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    seconds_until = 0 if can_claim else max(1, int((next_midnight_msk - now_msk).total_seconds()))
+    return {
+        "canClaim": bool(can_claim),
+        "resetMode": "midnight_msk",
+        "secondsUntilReset": seconds_until,
+        "nextResetAt": next_midnight_msk.isoformat(),
+    }
 
 
 def parse_iso_utc(ts_str: Optional[str]) -> Optional[datetime]:
@@ -98,6 +123,9 @@ class RoutineWorker:
             "business_collected": False,
             "beard_updated": False,
             "podogrev_collected": False,
+            "podogrev_sent": False,
+            "katala_played": False,
+            "monthly_tiers_claimed": 0,
             "kolsik_rolled": False,
             "errors": [],
         }
@@ -238,28 +266,83 @@ class RoutineWorker:
 
         await self._jitter()
 
-        # 5. Сбор подогревов от друзей
+        # 5. Сбор подогревов от друзей (с защитой от сгорания при полной энергии)
         if getattr(config, "auto_podogrev", False):
+            cur_e = player_data.get("player", {}).get("energy", player_data.get("energy", 0)) if "player_data" in locals() and isinstance(player_data, dict) else 0
+            max_e = player_data.get("player", {}).get("maxEnergy", player_data.get("maxEnergy", 100)) if "player_data" in locals() and isinstance(player_data, dict) else 100
+            should_collect_podogrev = True
+            if (getattr(config, "auto_prison", False) or getattr(config, "auto_masters", False)) and cur_e >= max_e:
+                should_collect_podogrev = False
+                logger.info(f"Энергия полна ({cur_e}/{max_e}) и включены ходки/мастера: сбор подогревов отложен до слива энергии.")
+
+            if should_collect_podogrev:
+                try:
+                    podogrev_res = await self.api.collect_all_podogrev()
+                    results["podogrev_collected"] = True
+                    await self._log_action("collect_podogrev", "/api/podogrev/collect/all", 200, True, podogrev_res)
+                    applied_energy = podogrev_res.get("appliedEnergy", 0)
+                    logger.info(f"Подогревы собраны: добавлено энергии {applied_energy}")
+                    if applied_energy > 0:
+                        await DropParser.save_notification(
+                            self.account_id,
+                            DropParser.parse_other(
+                                "Подогревы от друзей",
+                                f"+{applied_energy} энергии",
+                                rewards=[{"currency": "energy", "label": "Энергия", "amount": applied_energy}],
+                            ),
+                            self.db_engine,
+                        )
+                except Exception as e:
+                    logger.error(f"Ошибка при сборе подогревов: {e}")
+                    results["errors"].append(f"collect_podogrev: {str(e)}")
+                    await self._log_action("collect_podogrev", "/api/podogrev/collect/all", 500, False, {"error": str(e)})
+
+        # 5.1. Отправка бесплатных подогревов друзьям
+        if getattr(config, "auto_podogrev_send", False):
             try:
-                podogrev_res = await self.api.collect_all_podogrev()
-                results["podogrev_collected"] = True
-                await self._log_action("collect_podogrev", "/api/podogrev/collect/all", 200, True, podogrev_res)
-                applied_energy = podogrev_res.get("appliedEnergy", 0)
-                logger.info(f"Подогревы собраны: добавлено энергии {applied_energy}")
-                if applied_energy > 0:
-                    await DropParser.save_notification(
-                        self.account_id,
-                        DropParser.parse_other(
-                            "Подогревы от друзей",
-                            f"+{applied_energy} энергии",
-                            rewards=[{"currency": "energy", "label": "Энергия", "amount": applied_energy}],
-                        ),
-                        self.db_engine,
-                    )
+                friends_res = await self.api.get_podogrev_friends(page=1, page_size=50)
+                friends_list = friends_res.get("friends", []) if isinstance(friends_res, dict) else []
+                uids_to_send = [int(f["userId"]) for f in friends_list if isinstance(f, dict) and f.get("userId")]
+                if uids_to_send:
+                    send_res = await self.api.send_podogrev(uids_to_send)
+                    results["podogrev_sent"] = True
+                    await self._log_action("send_podogrev", "/api/podogrev/send", 200, True, send_res)
+                    logger.info(f"Отправлены бесплатные подогревы друзьям ({len(uids_to_send)} чел.)")
             except Exception as e:
-                logger.error(f"Ошибка при сборе подогревов: {e}")
-                results["errors"].append(f"collect_podogrev: {str(e)}")
-                await self._log_action("collect_podogrev", "/api/podogrev/collect/all", 500, False, {"error": str(e)})
+                logger.error(f"Ошибка при отправке подогревов друзьям: {e}")
+                results["errors"].append(f"send_podogrev: {str(e)}")
+
+        # 5.2. Бесплатная суточная партия у Каталы (1-в-1 по правилам игры с шульмовками)
+        if getattr(config, "auto_katala", False):
+            try:
+                from client.api.katala import KatalaAPI, play_free_daily_game
+                katala_api = KatalaAPI(self.api.http)
+                katala_res = await play_free_daily_game(katala_api)
+                if katala_res.get("success"):
+                    results["katala_played"] = True
+                    await self._log_action("katala_game", "/api/card/finish", 200, True, katala_res)
+                    logger.info(f"Успешно сыграна бесплатная суточная партия у Каталы: комбо={katala_res.get('combo')}")
+            except Exception as e:
+                logger.warning(f"Ошибка при автоигре у Каталы: {e}")
+                results["errors"].append(f"katala_game: {str(e)}")
+
+        # 5.3. Месячные делюги — автосбор наград за выполненные тиры
+        if getattr(config, "auto_monthly_tasks", False) or getattr(config, "auto_events", False):
+            try:
+                m_state = await self.api.get_monthly_state(track_open=True)
+                user_m = m_state.get("user", {}) if isinstance(m_state, dict) else {}
+                claimable_tiers = user_m.get("claimableTiers", []) or []
+                for tier in claimable_tiers:
+                    try:
+                        c_res = await self.api.claim_monthly_tier(tier)
+                        if c_res.get("success", True):
+                            results["monthly_tiers_claimed"] += 1
+                            await self._log_action("monthly_claim", "/api/monthly/claim", 200, True, c_res)
+                            logger.info(f"Собран тир {tier} месячных делюг: {c_res}")
+                    except Exception as te:
+                        logger.warning(f"Ошибка сбора тира {tier} месячных делюг: {te}")
+            except Exception as e:
+                logger.warning(f"Ошибка проверки месячных делюг: {e}")
 
         await self._jitter()
 
@@ -317,4 +400,39 @@ class RoutineWorker:
 
         logger.info(f"=== [Аккаунт {self.account_id}] Цикл рутинных задач завершен ===")
         return results
-        return results
+
+    async def claim_daily_toilet_paper_if_ready(self) -> Dict[str, Any]:
+        """
+        Целевой триггер проверки и сбора ежедневной туалетной бумаги (вызывается по расписанию 00:01 МСК).
+        """
+        config = await get_or_create_config(self.account_id, self.db_engine)
+        if not is_worker_active(config) or not getattr(config, "auto_toilet_paper", False):
+            return {"status": "skipped", "reason": "disabled_or_paused"}
+
+        try:
+            player_data = await self.api.init_player()
+            can_claim = bool(player_data.get("canClaimToiletPaper", False))
+            if not can_claim:
+                return {"status": "already_claimed"}
+
+            paper_res = await self.api.claim_toilet_paper()
+            if not isinstance(paper_res, dict) or not paper_res.get("success", True):
+                return {"status": "rejected", "result": paper_res}
+
+            await self._log_action("claim_toilet_paper", "/api/daily/toilet-paper", 200, True, paper_res)
+            await DropParser.save_notification(
+                self.account_id,
+                DropParser.parse_other(
+                    "Ежедневная бумага",
+                    "Сбор рулона",
+                    rewards=[{"currency": "paper", "label": "Бумага", "amount": 1}],
+                ),
+                self.db_engine,
+            )
+            logger.info(f"[00:01 МСК] Туалетная бумага успешно собрана! Баланс: {paper_res.get('balance')}")
+            if self.prison_worker:
+                asyncio.create_task(self.prison_worker.run_cycle())
+            return {"status": "claimed", "result": paper_res}
+        except Exception as e:
+            logger.warning(f"Ошибка при плановом сборе туалетной бумаги: {e}")
+            return {"status": "error", "error": str(e)}

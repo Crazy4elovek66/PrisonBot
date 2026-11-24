@@ -22,6 +22,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize bot_context APIs if not already set by main.py
     from bot.handlers import bot_context
+    if bot_context.db_engine is None:
+        bot_context.db_engine = engine
     if bot_context.player_api is None:
         try:
             from core.database import get_session

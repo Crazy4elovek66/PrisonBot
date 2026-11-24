@@ -503,3 +503,190 @@ async def test_radar_enrichment_and_stats_caching_24h():
     assert p2["knifeDamage"] == 3500
     assert mock_player_api.get_player_view.call_count == 0
 
+
+@pytest.mark.asyncio
+async def test_radar_no_fake_250_60_30_and_real_stats_extraction():
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import init_db, get_session
+    from core.models import TrackedCandidate
+    from client.api.social import extract_player_combat_stats
+
+    # 1. Единый парсер НЕ подставляет фиктивные 250/60/30
+    empty_stats = extract_player_combat_stats({"authority": 1288250875})
+    assert empty_stats["authority"] == 1288250875
+    assert empty_stats["level"] > 7000
+    assert empty_stats["poisonDamage"] == 0
+    assert empty_stats["gunshotDamage"] == 0
+    assert empty_stats["knifeDamage"] == 0
+
+    real_stats = extract_player_combat_stats(
+        {"resources": {"authority": 500000}, "weaponDamage": {"Poison": 895, "Gunshot": 246, "Knife": 432}},
+        summary_payload={"data": {"overview": {"talentPointsTotal": 985}}},
+    )
+    assert real_stats["authority"] == 500000
+    assert real_stats["talents"] == 985
+    assert real_stats["poisonDamage"] == 895
+    assert real_stats["gunshotDamage"] == 246
+    assert real_stats["knifeDamage"] == 432
+
+    # 2. Переобогащение кандидатов в RaidsAPI с реальными статами и сбросом старых 250/60/30
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    await init_db(test_engine)
+
+    # Имитируем устаревшую запись в БД с нулевым авторитетом и фейковыми 250/60/30
+    from datetime import datetime
+    async with get_session(test_engine) as session:
+        session.add(TrackedCandidate(
+            account_id=1,
+            user_id=9000000000179416,
+            nickname="RV ГАРИК",
+            authority=0,
+            poison_damage=250,
+            gunshot_damage=60,
+            knife_damage=30,
+            total_damage=1000000,
+            enriched_at=datetime.utcnow(),
+        ))
+        session.add(TrackedCandidate(
+            account_id=1,
+            user_id=9000000000475579,
+            nickname="TheCheesechddr",
+            authority=127707,
+            poison_damage=250,
+            gunshot_damage=60,
+            knife_damage=30,
+            total_damage=500000,
+            enriched_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    api = RaidsAPI()
+    mock_social = MagicMock(spec=SocialAPI)
+    mock_social.get_friend_requests = AsyncMock(return_value=[
+        {"userId": 9000000000475579, "talentsCount": 80, "weaponDamage": {"poison": 895, "gunshot": 246, "knife": 432}},
+    ])
+
+    mock_player = MagicMock()
+    async def _view(uid):
+        if uid == 9000000000179416:
+            return {"userId": uid, "nickname": "RV ГАРИК", "authority": 1288250875}
+        return {"userId": uid, "nickname": "TheCheesechddr", "authority": 127707}
+
+    async def _summary(uid):
+        return {"success": True, "data": {"overview": {"talentPointsTotal": 985 if uid == 9000000000179416 else 80}}}
+
+    mock_player.get_player_view = AsyncMock(side_effect=_view)
+    mock_player.get_player_summary = AsyncMock(side_effect=_summary)
+
+    players = await api.get_active_players_radar(
+        social_api=mock_social,
+        player_api=mock_player,
+        db_engine=test_engine,
+        account_id=1,
+        limit=10,
+    )
+    by_uid = {p["userId"]: p for p in players}
+
+    # RV ГАРИК получил реальный авторитет, уровень, таланты и рассчитанный урон 3 оружий (база + таланты >=973)
+    garik = by_uid[9000000000179416]
+    assert garik["authority"] == 1288250875
+    assert garik["level"] > 7000
+    assert garik["talents"] == 985
+    assert garik["poisonDamage"] == 1100
+    assert garik["gunshotDamage"] == 630
+    assert garik["knifeDamage"] == 642
+
+    # Игрок из входящей заявки получил точный серверный урон 895/246/432
+    cheese = by_uid[9000000000475579]
+    assert cheese["poisonDamage"] == 895
+    assert cheese["gunshotDamage"] == 246
+    assert cheese["knifeDamage"] == 432
+    assert cheese["talents"] == 80
+
+
+@pytest.mark.asyncio
+async def test_outreach_rate_guard_limit_50_plus():
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import init_db, get_session
+    from core.models import SentFriendRequest
+    from client.api.raids import OutreachRateGuard
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    await init_db(test_engine)
+
+    guard = OutreachRateGuard()
+    async with get_session(test_engine) as session:
+        for i in range(30):
+            session.add(SentFriendRequest(
+                account_id=1,
+                target_user_id=2000 + i,
+                status="sent",
+                created_at=datetime.utcnow() - timedelta(minutes=15),
+            ))
+        await session.commit()
+
+    # Дефолтный/рабочий лимит 50 пропускает при 30 отправленных (раньше стопорилось на 25!)
+    allowed50, rem50, _ = await guard.can_send(1, daily_limit=50, db_engine=test_engine)
+    assert allowed50 is True
+    assert rem50 == 20
+
+    # Кастомный лимит 80 работает без искусственного потолка 50
+    status80 = await guard.get_safety_status(1, daily_limit=80, db_engine=test_engine)
+    assert status80["dailyLimit"] == 80
+    assert status80["sentLast24h"] == 30
+    assert status80["remaining24h"] == 50
+
+
+@pytest.mark.asyncio
+async def test_radar_weapon_damage_calculation_from_wearables_and_migration():
+    """Проверка расчёта реального урона 3 оружий по надетым тату/шмоту/талантам и сброса нулей при миграции."""
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import select
+    from core.database import init_db, get_session, _migrate_tracked_candidates
+    from core.models import TrackedCandidate
+    from client.api.social import extract_player_combat_stats
+
+    # Расчёт с надетым шмотом (id=13: poison+10), тату (Skull_Zone1: poison+6) и талантами 985 (+850/+570/+612)
+    stats = extract_player_combat_stats(
+        {
+            "authority": 500000,
+            "clothingFrontIds": {"1": 13},
+            "tattooZones": {"1": "assets/PrisonV3/Tattoos/Skull/T/Skull_Zone1.png"},
+        },
+        summary_payload={"data": {"overview": {"talentPointsTotal": 985}}},
+    )
+    assert stats["weaponDamageEstimated"] is True
+    assert stats["poisonDamage"] == 250 + 10 + 6 + 850
+    assert stats["gunshotDamage"] == 60 + 570
+    assert stats["knifeDamage"] == 30 + 612
+
+    # Проверка сброса enriched_at в _migrate_tracked_candidates для записей с 0/0/0 по 3 оружиям
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    await init_db(test_engine)
+    async with get_session(test_engine) as session:
+        session.add(TrackedCandidate(
+            account_id=1,
+            user_id=9000000000199999,
+            nickname="NoWepCached",
+            authority=1000000,
+            poison_damage=0,
+            gunshot_damage=0,
+            knife_damage=0,
+            enriched_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(_migrate_tracked_candidates)
+
+    async with get_session(test_engine) as session:
+        row = (
+            await session.execute(
+                select(TrackedCandidate).where(TrackedCandidate.user_id == 9000000000199999)
+            )
+        ).scalar_one()
+        assert row.enriched_at is None
+
+

@@ -29,8 +29,8 @@ class PlayerAPI:
     - /api/kolsik/* (рулетка у кольщика)
     """
 
-    def __init__(self, http_client: GameHttpClient):
-        self.http = http_client
+    def __init__(self, http_client: Any = None, client: Any = None):
+        self.http = http_client or client
         self._tattoos_cache: Optional[List[Dict[str, Any]]] = None
         self._tattoos_cache_time: float = 0.0
         self._clothing_cache: Optional[List[Dict[str, Any]]] = None
@@ -174,6 +174,12 @@ class PlayerAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_player_summary(self, user_id: int) -> Dict[str, Any]:
+        """Получение сводки достижений, талантов и побед над боссами игрока (GET /api/summary/{userId})."""
+        resp = await self.http.get(f"/api/summary/{user_id}")
+        resp.raise_for_status()
+        return resp.json()
+
     async def roll_kolsik(self, currency: str = "paper") -> Dict[str, Any]:
         """Прокрутка у кольщика: покупка наколки за туалетную бумагу или за рубли."""
         c = str(currency).lower().strip()
@@ -191,6 +197,74 @@ class PlayerAPI:
     async def roll_paper(self) -> Dict[str, Any]:
         """Вращение рулона у кольщика (татуировки за туалетную бумагу)."""
         return await self.roll_kolsik("paper")
+
+    async def claim_toilet_paper(self) -> Dict[str, Any]:
+        """Ежедневное действие: «Щипануть туалетку» у барыги (POST /api/daily/toilet-paper)."""
+        resp = await self.http.post("/api/daily/toilet-paper", json={})
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_podogrev_friends(self, page: int = 1, page_size: int = 50) -> Dict[str, Any]:
+        """Получение списка друзей, которым можно отправить подогрев (GET /api/podogrev/friends)."""
+        resp = await self.http.get(f"/api/podogrev/friends?page={page}&pageSize={page_size}")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def send_podogrev(self, recipient_ids: List[int], send_to_all: bool = False) -> Dict[str, Any]:
+        """
+        Отправка бесплатных подогревов друзьям (POST /api/podogrev/send).
+        Категорический запрет на платные подарки /api/gifts/send.
+        """
+        payload = {
+            "sendToAll": bool(send_to_all),
+            "recipientIds": [int(uid) for uid in recipient_ids],
+        }
+        resp = await self.http.post("/api/podogrev/send", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def send_all_podogrev(self) -> Dict[str, Any]:
+        """
+        Получает список друзей, готовых к приему подогрева (GET /api/podogrev/friends)
+        и отправляет им подогревы (POST /api/podogrev/send).
+        Категорический запрет на /api/gifts/send.
+        """
+        try:
+            friends_data = await self.get_podogrev_friends(page=1, page_size=50)
+            friends_list = (
+                friends_data.get("friends")
+                or friends_data.get("items")
+                or friends_data.get("list")
+                or []
+            )
+            recipient_ids = []
+            for f in friends_list:
+                if isinstance(f, dict):
+                    fid = f.get("id") or f.get("userId")
+                    can_send = f.get("canSend", True)
+                    if fid and can_send:
+                        recipient_ids.append(int(fid))
+
+            if not recipient_ids:
+                return {"success": True, "sent": 0, "message": "Нет доступных друзей для отправки подогревов"}
+
+            res = await self.send_podogrev(recipient_ids=recipient_ids)
+            return {"success": True, "sent": len(recipient_ids), "result": res}
+        except Exception as e:
+            logger.error("Ошибка в send_all_podogrev: %s", e)
+            return {"success": False, "error": str(e), "sent": 0}
+
+    async def get_monthly_state(self, track_open: bool = True) -> Dict[str, Any]:
+        """Получение состояния Месячных Делюг (GET /api/monthly/state)."""
+        resp = await self.http.get(f"/api/monthly/state?trackOpen={'true' if track_open else 'false'}")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def claim_monthly_tier(self, tier: int) -> Dict[str, Any]:
+        """Получение награды за выполненный тир Месячных Делюг (POST /api/monthly/claim)."""
+        resp = await self.http.post("/api/monthly/claim", json={"Tier": int(tier)})
+        resp.raise_for_status()
+        return resp.json()
 
     async def get_wardrobe_inventory(self) -> Dict[str, Any]:
         """Получение инвентаря гардероба (ownedClothing, ownedTattoos, ownedCameras)."""

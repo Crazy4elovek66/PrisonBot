@@ -305,6 +305,79 @@ class PrisonWorker:
                 except Exception as e:
                     logger.warning(f"Ошибка тренировки у мастера {master_id}: {e}")
 
+        # 6.1 Умный сбор входящих подогревов и повторный слив энергии в ходки/мастеров
+        if getattr(config, "auto_podogrev", True) and self.player_api is not None and current_energy < max_energy:
+            try:
+                podogrev_res = await self.player_api.collect_all_podogrev()
+                claimed_count = podogrev_res.get("claimed", 0) if isinstance(podogrev_res, dict) else 0
+                if claimed_count > 0:
+                    logger.info("Собрано %s подогревов. Проверяем баланс энергии для повторного слива...", claimed_count)
+                    try:
+                        init_data = await self.player_api.init_player()
+                        player_info = init_data.get("player", {}) if isinstance(init_data, dict) else {}
+                        current_energy = player_info.get("energy", current_energy)
+                        max_energy = player_info.get("maxEnergy", max_energy)
+                    except Exception as e:
+                        logger.warning("Не удалось обновить баланс энергии после сбора подогревов: %s", e)
+
+                    # Немедленный повторный слив полученной энергии в ходки
+                    if current_energy >= job_energy_cost:
+                        extra_works = 0
+                        while current_energy >= job_energy_cost and iterations < self.max_iterations:
+                            iterations += 1
+                            try:
+                                work_resp = await self.prison_api.do_prison_work(prison_id, is_day=is_day)
+                            except Exception as e:
+                                logger.info("Остановка дополнительного цикла ходок: %s", e)
+                                break
+
+                            if isinstance(work_resp, dict) and work_resp.get("success") is False:
+                                break
+
+                            works_done += 1
+                            extra_works += 1
+
+                            if isinstance(work_resp, dict) and "energy" in work_resp:
+                                current_energy = work_resp["energy"]
+                            else:
+                                current_energy -= job_energy_cost
+
+                            if isinstance(work_resp, dict) and work_resp.get("checkpointCompleted"):
+                                checkpoint_completed = True
+
+                            day_param = "true" if is_day else "false"
+                            await self._log_action(
+                                action_type="prison_work",
+                                endpoint=f"/api/player/prison/{prison_id}/work?isDay={day_param}",
+                                status_code=200,
+                                success=True,
+                                details={
+                                    "prisonId": prison_id,
+                                    "prisonName": prison_name,
+                                    "worksDone": works_done,
+                                    "remainingEnergy": current_energy,
+                                    "source": "podogrev_reinvest",
+                                },
+                            )
+
+                            if isinstance(work_resp, dict) and work_resp.get("runCompleted"):
+                                logger.info("Полный круг тюрьмы #%s успешно завершен!", prison_id)
+                                break
+
+                            await self._jitter()
+
+                        logger.info("Дополнительно выполнено ходок после подогревов: %s", extra_works)
+
+                        # Если осталась энергия на мастера
+                        if getattr(config, "auto_masters", False) and current_energy >= 10:
+                            master_id = getattr(config, "master_target_id", 1)
+                            try:
+                                await self.prison_api.do_master_work(master_id=master_id)
+                            except Exception as e:
+                                logger.warning(f"Ошибка повторной тренировки у мастера {master_id}: {e}")
+            except Exception as e:
+                logger.warning("Ошибка умного сбора подогревов в PrisonWorker: %s", e)
+
         # 7. Сохранение уведомления в Notification
         if works_done > 0:
             parsed_work = DropParser.parse_prison_work(

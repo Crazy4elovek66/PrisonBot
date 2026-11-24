@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -13,13 +14,14 @@
       var hash = (window.location.hash || "").replace(/^#/, "").trim();
       if (hash === "home") hash = "main";
       var saved = "";
-      try { saved = localStorage.getItem("prison_active_section") || ""; } catch (e) {}
+      try { saved = localStorage.getItem("prison_active_section") || ""; } catch (e) { }
       if (saved === "home") saved = "main";
       var sec = (allowed.indexOf(hash) !== -1 && hash) ? hash : ((allowed.indexOf(saved) !== -1 && saved) ? saved : "main");
       document.documentElement.setAttribute("data-active-sec", sec);
     })();
   </script>
 </head>
+
 <body>
 
   <!-- ========================================================================
@@ -127,28 +129,35 @@
       <div class="card card-accent">
         <div class="card-header-row">
           <div class="card-title">
-            <span id="player-avatar-badge" style="background: var(--primary); color: #000; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px;">П</span>
+            <span id="player-avatar-badge"
+              style="background: var(--primary); color: #000; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px;">П</span>
             <span id="player-nickname">Загрузка...</span>
-            <span id="player-level-badge" style="font-size: 10px; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-weight: 600;">Ур. -</span>
+            <span id="player-level-badge"
+              style="font-size: 10px; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-weight: 600;">Ур.
+              -</span>
           </div>
           <button id="btn-refresh-profile" class="btn btn-secondary btn-sm" title="Обновить профиль">🔄</button>
         </div>
 
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; font-size: 12px;">
+        <div
+          style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; font-size: 12px;">
           <div style="background: var(--secondary); padding: 8px; border-radius: 6px; text-align: center;">
-            <div style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            <div
+              style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
               <img src="/static/assets/icons/authority.webp" class="game-icon-sm" alt="Авторитет"> Авторитет
             </div>
             <div id="stat-authority" style="font-weight: 800; font-size: 13px; color: #fbbf24;">-</div>
           </div>
           <div style="background: var(--secondary); padding: 8px; border-radius: 6px; text-align: center;">
-            <div style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            <div
+              style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
               <img src="/static/assets/icons/biceps.webp" class="game-icon-sm" alt="Бицуха"> Бицуха
             </div>
             <div id="stat-biceps" style="font-weight: 800; font-size: 13px; color: #f97316;">-</div>
           </div>
           <div style="background: var(--secondary); padding: 8px; border-radius: 6px; text-align: center;">
-            <div style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            <div
+              style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
               <img src="/static/assets/icons/talents.webp" class="game-icon-sm" alt="Таланты"> Таланты
             </div>
             <div id="stat-talents" style="font-weight: 800; font-size: 13px; color: #60a5fa;">-</div>
@@ -159,7 +168,8 @@
         <div style="margin-bottom: 4px;">
           <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
             <span style="display: flex; align-items: center; gap: 4px;">
-              <img src="/static/assets/icons/energy.webp" class="game-icon-sm" alt="Энергия"> Энергия: <b id="stat-energy">-/-</b>
+              <img src="/static/assets/icons/energy.webp" class="game-icon-sm" alt="Энергия"> Энергия: <b
+                id="stat-energy">-/-</b>
             </span>
             <span style="color: var(--muted-foreground);" id="energy-restore-timer">восстановление: --:--</span>
           </div>
@@ -172,11 +182,13 @@
       <!-- Currencies Grid -->
       <div class="card">
         <div class="card-header-row">
-          <div class="card-title" style="display: flex; align-items: center; gap: 6px;"><img src="/static/assets/icons/rubles.webp" class="game-icon-sm" alt="Валюты"> Валюты и Ресурсы</div>
+          <div class="card-title" style="display: flex; align-items: center; gap: 6px;"><img
+              src="/static/assets/icons/rubles.webp" class="game-icon-sm" alt="Валюты"> Валюты и Ресурсы</div>
         </div>
         <div class="currencies-grid">
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/cigarettes.webp" class="game-icon" alt="Папиросы"></span>
+            <span class="currency-icon"><img src="/static/assets/icons/cigarettes.webp" class="game-icon"
+                alt="Папиросы"></span>
             <div class="currency-details">
               <span id="cur-cigs" class="currency-value">-</span>
               <span class="currency-name">Папиросы</span>
@@ -190,14 +202,16 @@
             </div>
           </div>
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/rubles.webp" class="game-icon" alt="Рубли"></span>
+            <span class="currency-icon"><img src="/static/assets/icons/rubles.webp" class="game-icon"
+                alt="Рубли"></span>
             <div class="currency-details">
               <span id="cur-rubles" class="currency-value" style="color: #34d399;">-</span>
               <span class="currency-name">Рубли</span>
             </div>
           </div>
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/paper.webp" class="game-icon" alt="Бумага"></span>
+            <span class="currency-icon"><img src="/static/assets/icons/paper.webp" class="game-icon"
+                alt="Бумага"></span>
             <div class="currency-details">
               <span id="cur-paper" class="currency-value">-</span>
               <span class="currency-name">Бумага</span>
@@ -223,7 +237,8 @@
       <!-- Weapons Inventory Card -->
       <div class="card">
         <div class="card-header-row">
-          <div class="card-title" style="display: flex; align-items: center; gap: 6px;"><img src="/static/assets/icons/knife.webp" class="game-icon-sm" alt="Арсенал"> Боевой арсенал</div>
+          <div class="card-title" style="display: flex; align-items: center; gap: 6px;"><img
+              src="/static/assets/icons/knife.webp" class="game-icon-sm" alt="Арсенал"> Боевой арсенал</div>
           <div class="card-subtitle">Запас платного оружия</div>
         </div>
         <div class="weapons-grid">
@@ -233,7 +248,8 @@
             <span id="inv-poison-count" class="weapon-count">0 шт.</span>
           </div>
           <div class="weapon-card">
-            <span class="weapon-icon"><img src="/static/assets/icons/gunshot.webp" class="game-icon" alt="Самопал"></span>
+            <span class="weapon-icon"><img src="/static/assets/icons/gunshot.webp" class="game-icon"
+                alt="Самопал"></span>
             <span class="weapon-name">Самопал</span>
             <span id="inv-gunshot-count" class="weapon-count">0 шт.</span>
           </div>
@@ -252,10 +268,12 @@
             <div class="card-title" style="display: flex; align-items: center; gap: 6px;">
               <img src="/static/assets/icons/talents.webp" class="game-icon" alt="Таланты">
               <span>Таланты арестанта</span>
-              <span id="talents-summary-chip" class="accordion-summary-chip" style="display: none;">Очков: 0 (свободно: 0) | До следующего: 0%</span>
+              <span id="talents-summary-chip" class="accordion-summary-chip" style="display: none;">Очков: 0 (свободно:
+                0) | До следующего: 0%</span>
             </div>
             <div class="card-subtitle" id="talents-header-subtitle">
-              Очков: <b id="talents-total-points" style="color: #60a5fa;">0</b> (свободно: <b id="talents-available-points" style="color: #34d399;">0</b>)
+              Очков: <b id="talents-total-points" style="color: #60a5fa;">0</b> (свободно: <b
+                id="talents-available-points" style="color: #34d399;">0</b>)
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
@@ -286,9 +304,11 @@
             <div class="card-title" style="display: flex; align-items: center; gap: 6px;">
               <img src="/static/assets/icons/stash.webp" class="game-icon" alt="Нычки">
               <span>Нычки</span>
-              <span id="collections-summary-chip" class="accordion-summary-chip" style="display: none;">Нычек: 0 | Готово к обмену: 0</span>
+              <span id="collections-summary-chip" class="accordion-summary-chip" style="display: none;">Нычек: 0 |
+                Готово к обмену: 0</span>
             </div>
-            <div class="card-subtitle" id="collections-header-subtitle">Нычек на руках: <b id="collections-stashes-count" style="color: #fbbf24;">0</b></div>
+            <div class="card-subtitle" id="collections-header-subtitle">Нычек на руках: <b
+                id="collections-stashes-count" style="color: #fbbf24;">0</b></div>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
             <button id="btn-refresh-collections" class="btn btn-secondary btn-sm" title="Обновить коллекции">🔄</button>
@@ -318,10 +338,12 @@
         <div class="card-header-row">
           <div>
             <div class="card-title" id="boss-title">⚔️ Поиск активного рейда...</div>
-            <div class="card-subtitle" id="boss-mode-badge" style="display: inline-block; margin-top: 2px;">Режим: -</div>
+            <div class="card-subtitle" id="boss-mode-badge" style="display: inline-block; margin-top: 2px;">Режим: -
+            </div>
           </div>
           <div style="text-align: right;">
-            <div id="boss-timer" style="font-family: monospace; font-size: 13px; font-weight: 700; color: #fbbf24;">--:--:--</div>
+            <div id="boss-timer" style="font-family: monospace; font-size: 13px; font-weight: 700; color: #fbbf24;">
+              --:--:--</div>
             <div style="font-size: 10px; color: var(--muted-foreground);">до конца боя</div>
           </div>
         </div>
@@ -337,11 +359,14 @@
           </div>
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-top: 8px;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-top: 8px;">
           <span>Личный урон: <b id="boss-personal-damage" style="color: #f87171;">0</b></span>
           <div style="display: flex; gap: 6px;">
-            <button id="btn-boss-friend-damage" class="btn btn-secondary btn-sm" title="Собрать урон от друзей">🤝 Урон друзей</button>
-            <button id="btn-boss-claim" class="btn btn-primary btn-sm" style="display: none;">🏆 Забрать награду</button>
+            <button id="btn-boss-friend-damage" class="btn btn-secondary btn-sm" title="Собрать урон от друзей">🤝 Урон
+              друзей</button>
+            <button id="btn-boss-claim" class="btn btn-primary btn-sm" style="display: none;">🏆 Забрать
+              награду</button>
           </div>
         </div>
       </div>
@@ -357,22 +382,26 @@
         </div>
         <div class="attacks-grid">
           <div class="attack-card">
-            <span class="attack-title"><img src="/static/assets/icons/punchChest.webp" class="game-icon-sm" alt="В грудь"> В грудь</span>
+            <span class="attack-title"><img src="/static/assets/icons/punchChest.webp" class="game-icon-sm"
+                alt="В грудь"> В грудь</span>
             <span id="timer-punchChest" class="attack-timer">--:--:--</span>
             <button class="btn btn-secondary btn-sm btn-melee-hit" data-weapon="punchChest">Ударить</button>
           </div>
           <div class="attack-card">
-            <span class="attack-title"><img src="/static/assets/icons/kickBalls.webp" class="game-icon-sm" alt="В пах"> В пах</span>
+            <span class="attack-title"><img src="/static/assets/icons/kickBalls.webp" class="game-icon-sm" alt="В пах">
+              В пах</span>
             <span id="timer-kickBalls" class="attack-timer">--:--:--</span>
             <button class="btn btn-secondary btn-sm btn-melee-hit" data-weapon="kickBalls">Ударить</button>
           </div>
           <div class="attack-card">
-            <span class="attack-title"><img src="/static/assets/icons/pokeEyes.webp" class="game-icon-sm" alt="В глаз"> В глаз</span>
+            <span class="attack-title"><img src="/static/assets/icons/pokeEyes.webp" class="game-icon-sm" alt="В глаз">
+              В глаз</span>
             <span id="timer-pokeEyes" class="attack-timer">--:--:--</span>
             <button class="btn btn-secondary btn-sm btn-melee-hit" data-weapon="pokeEyes">Ударить</button>
           </div>
           <div class="attack-card">
-            <span class="attack-title"><img src="/static/assets/icons/kneeEar.webp" class="game-icon-sm" alt="Коленом"> Коленом</span>
+            <span class="attack-title"><img src="/static/assets/icons/kneeEar.webp" class="game-icon-sm" alt="Коленом">
+              Коленом</span>
             <span id="timer-kneeEar" class="attack-timer">--:--:--</span>
             <button class="btn btn-secondary btn-sm btn-melee-hit" data-weapon="kneeEar">Ударить</button>
           </div>
@@ -389,20 +418,33 @@
           <div class="weapon-card">
             <span class="weapon-icon"><img src="/static/assets/icons/poison.webp" class="game-icon" alt="Яд"></span>
             <span class="weapon-name">Яд</span>
-            <span id="boss-poison-count" class="weapon-count">0 шт.</span>
-            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="poison" style="width: 100%; margin-top: 4px;">Ударить</button>
+            <div class="weapon-stats-row">
+              <span id="boss-poison-count" class="weapon-count">0 шт.</span>
+              <span id="boss-poison-damage" class="boss-weapon-damage" title="Урон за 1 удар">⚔️ 250</span>
+            </div>
+            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="poison"
+              style="width: 100%; margin-top: 4px;">Ударить</button>
           </div>
           <div class="weapon-card">
-            <span class="weapon-icon"><img src="/static/assets/icons/gunshot.webp" class="game-icon" alt="Самопал"></span>
+            <span class="weapon-icon"><img src="/static/assets/icons/gunshot.webp" class="game-icon"
+                alt="Самопал"></span>
             <span class="weapon-name">Самопал</span>
-            <span id="boss-gunshot-count" class="weapon-count">0 шт.</span>
-            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="gunshot" style="width: 100%; margin-top: 4px;">Ударить</button>
+            <div class="weapon-stats-row">
+              <span id="boss-gunshot-count" class="weapon-count">0 шт.</span>
+              <span id="boss-gunshot-damage" class="boss-weapon-damage" title="Урон за 1 удар">⚔️ 60</span>
+            </div>
+            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="gunshot"
+              style="width: 100%; margin-top: 4px;">Ударить</button>
           </div>
           <div class="weapon-card">
             <span class="weapon-icon"><img src="/static/assets/icons/knife.webp" class="game-icon" alt="Финка"></span>
             <span class="weapon-name">Финка</span>
-            <span id="boss-knife-count" class="weapon-count">0 шт.</span>
-            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="knife" style="width: 100%; margin-top: 4px;">Ударить</button>
+            <div class="weapon-stats-row">
+              <span id="boss-knife-count" class="weapon-count">0 шт.</span>
+              <span id="boss-knife-damage" class="boss-weapon-damage" title="Урон за 1 удар">⚔️ 30</span>
+            </div>
+            <button class="btn btn-destructive btn-sm btn-weapon-hit" data-weapon="knife"
+              style="width: 100%; margin-top: 4px;">Ударить</button>
           </div>
         </div>
       </div>
@@ -414,16 +456,19 @@
             <div class="card-title">⚔️ Автоатака боссов</div>
             <div class="card-subtitle">Полный цикл: авто-призыв из очереди, бесплатные удары и сбор наград</div>
           </div>
-          <div class="toggle-switch">
+          <label class="toggle-switch">
             <input type="checkbox" id="cfg-auto_boss_enabled">
             <span class="toggle-slider"></span>
-          </div>
+          </label>
         </div>
         <div style="margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-          <button id="btn-open-boss-menu" class="btn btn-primary" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;">
+          <button id="btn-open-boss-menu" class="btn btn-primary"
+            style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;">
             <img src="/static/assets/icons/boss.webp" class="game-icon-sm" alt="Боссы">
             <span>Меню боссов</span>
-            <span id="badge-boss-queue-count" class="badge" style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 10px; font-size: 11px;">выбрано: 0</span>
+            <span id="badge-boss-queue-count" class="badge"
+              style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 10px; font-size: 11px;">выбрано:
+              0</span>
           </button>
         </div>
         <div id="boss-active-queue-summary" style="margin-top: 10px; font-size: 11px; color: var(--muted-foreground);">
@@ -441,7 +486,8 @@
             <div class="card-title">⚔️ Атака босса</div>
             <div class="card-subtitle">Ручной запуск боя с выбором режима (включая «В одного»)</div>
           </div>
-          <button id="btn-open-single-boss-attack" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; padding: 6px 14px;">
+          <button id="btn-open-single-boss-attack" class="btn btn-primary"
+            style="display: flex; align-items: center; gap: 6px; padding: 6px 14px;">
             <img src="/static/assets/icons/boss.webp" class="game-icon-sm" alt="Атака">
             <span>Выбрать босса</span>
           </button>
@@ -455,7 +501,8 @@
             <div class="card-title">📋 Пресеты боссов</div>
             <div class="card-subtitle">Сохранение наборов боссов и ежедневный автозапуск по МСК (UTC+3)</div>
           </div>
-          <button id="btn-create-preset" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 6px;">
+          <button id="btn-create-preset" class="btn btn-primary btn-sm"
+            style="display: flex; align-items: center; gap: 6px;">
             <span>+ Создать пресет</span>
           </button>
         </div>
@@ -472,7 +519,8 @@
           <div style="flex: 1; min-width: 0;">
             <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
               <span>🔥 Усиления</span>
-              <span id="buffs-summary-chip" class="accordion-summary-chip" style="display: none;">Активно: 0 | Доступно: 0</span>
+              <span id="buffs-summary-chip" class="accordion-summary-chip" style="display: none;">Активно: 0 | Доступно:
+                0</span>
             </div>
             <div class="card-subtitle" id="buffs-header-subtitle">Личные и бригадные усиления урона и энергии</div>
           </div>
@@ -483,7 +531,8 @@
         </div>
         <div id="boss-buffs-card-body" class="accordion-content">
           <!-- Subtabs: Обычные vs Бригадные -->
-          <div class="buffs-nav-tabs" style="display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <div class="buffs-nav-tabs"
+            style="display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
             <button class="filter-pill active" id="btn-buffs-tab-ordinary" data-btab="ordinary">Обычные</button>
             <button class="filter-pill" id="btn-buffs-tab-brigade" data-btab="brigade">Бригадные</button>
           </div>
@@ -517,10 +566,22 @@
             <div class="card-title" id="current-prison-name">⛓️ Выбор тюрьмы...</div>
             <div class="card-subtitle" id="current-prison-info">Прогресс чекпоинтов</div>
           </div>
-          <!-- Day / Night Switch -->
-          <div style="display: flex; background: var(--secondary); border: 1px solid var(--border); border-radius: 6px; padding: 2px;">
-            <button id="btn-shift-day" class="btn btn-sm btn-primary" style="padding: 3px 8px;">☀️ День</button>
-            <button id="btn-shift-night" class="btn btn-sm btn-secondary" style="padding: 3px 8px; border: none;">🌙 Ночь</button>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <!-- Day / Night Switch -->
+            <div
+              style="display: flex; background: var(--secondary); border: 1px solid var(--border); border-radius: 6px; padding: 2px;">
+              <button id="btn-shift-day" class="btn btn-sm btn-primary" style="padding: 3px 8px;">☀️ День</button>
+              <button id="btn-shift-night" class="btn btn-sm btn-secondary" style="padding: 3px 8px; border: none;">🌙
+                Ночь</button>
+            </div>
+            <!-- Auto Prison Toggle -->
+            <div class="auto-toggle-wrap" title="Авто-ходки в тюрьмах (сливать энергию сразу)">
+              <span class="auto-toggle-label">Авто</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_prison">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -570,27 +631,10 @@
             <span class="switch-title">Авто-тренировка у мастеров</span>
             <span class="switch-desc">Автоматически тренироваться при наличии ресурсов</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-auto_masters">
             <span class="toggle-slider"></span>
-          </div>
-        </label>
-      </div>
-
-      <!-- Auto Prison Settings -->
-      <div class="card">
-        <div class="card-header-row">
-          <div class="card-title">⚙️ Настройки авто-ходок</div>
-        </div>
-        <label class="switch-label">
-          <div class="switch-info">
-            <span class="switch-title">Авто-ходки в тюрьмах</span>
-            <span class="switch-desc">Сливать энергию сразу, как только ее хватает хотя бы на 1 действие</span>
-          </div>
-          <div class="toggle-switch">
-            <input type="checkbox" id="cfg-auto_prison">
-            <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
       </div>
     </section>
@@ -617,7 +661,8 @@
           <button class="wardrobe-subtab" data-wsub="clothing">Одежда</button>
           <button class="wardrobe-subtab" data-wsub="cameras">Хаты</button>
         </div>
-        <button id="btn-show-character" class="btn btn-secondary btn-sm" style="display: flex; align-items: center; gap: 5px;">
+        <button id="btn-show-character" class="btn btn-secondary btn-sm"
+          style="display: flex; align-items: center; gap: 5px;">
           👤 <span>Показать персонажа</span>
         </button>
       </div>
@@ -626,17 +671,20 @@
       <div class="card wardrobe-filters-card" id="wardrobe-filters-pane">
         <div class="card-header-row" style="margin-bottom: 8px;">
           <div class="card-title" style="font-size: 13px;">🔍 Фильтры и Поиск</div>
-          <button id="btn-toggle-filters" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 11px;">Свернуть</button>
+          <button id="btn-toggle-filters" class="btn btn-secondary btn-sm"
+            style="padding: 2px 8px; font-size: 11px;">Свернуть</button>
         </div>
 
         <div id="wardrobe-filters-content">
           <!-- Search Input -->
           <div style="margin-bottom: 8px;">
-            <input type="text" id="wardrobe-search" placeholder="Поиск по названию, бонусу или источнику..." class="btn btn-secondary" style="width: 100%; text-align: left; padding: 6px 10px; font-size: 12px;">
+            <input type="text" id="wardrobe-search" placeholder="Поиск по названию, бонусу или источнику..."
+              class="btn btn-secondary" style="width: 100%; text-align: left; padding: 6px 10px; font-size: 12px;">
           </div>
 
           <!-- Status Pills & Can Buy Toggle -->
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
+          <div
+            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
             <div class="filter-pills" id="wardrobe-status-pills">
               <div class="filter-pill active" data-wstatus="all">Все сеты</div>
               <div class="filter-pill" data-wstatus="owned">Собранные</div>
@@ -650,7 +698,9 @@
 
           <!-- Bonus Icon Filters -->
           <div style="margin-bottom: 8px;">
-            <div style="font-size: 10px; color: var(--muted-foreground); margin-bottom: 4px; text-transform: uppercase;">Бонусы:</div>
+            <div
+              style="font-size: 10px; color: var(--muted-foreground); margin-bottom: 4px; text-transform: uppercase;">
+              Бонусы:</div>
             <div class="wardrobe-bonus-filters" id="wardrobe-bonus-filters">
               <button class="bonus-filter-btn active" data-wbonus="all">Все</button>
               <button class="bonus-filter-btn" data-wbonus="knife" title="Финка">
@@ -676,7 +726,9 @@
 
           <!-- Source Category Pills -->
           <div>
-            <div style="font-size: 10px; color: var(--muted-foreground); margin-bottom: 4px; text-transform: uppercase;">Источник:</div>
+            <div
+              style="font-size: 10px; color: var(--muted-foreground); margin-bottom: 4px; text-transform: uppercase;">
+              Источник:</div>
             <div class="filter-pills-wrap" id="wardrobe-source-pills">
               <div class="filter-pill active" data-wsource="all">Все</div>
               <div class="filter-pill" data-wsource="bosses">Боссы</div>
@@ -701,9 +753,11 @@
         <div class="card-header-row" style="margin-bottom: 6px;">
           <div class="card-title" style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
             <span>Сводная таблица бонусов</span>
-            <span id="wardrobe-summary-sublabel" style="font-size: 10px; color: var(--muted-foreground);">(Татуировки)</span>
+            <span id="wardrobe-summary-sublabel"
+              style="font-size: 10px; color: var(--muted-foreground);">(Татуировки)</span>
           </div>
-          <button id="btn-toggle-summary-details" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 10px;">Подробности ▼</button>
+          <button id="btn-toggle-summary-details" class="btn btn-secondary btn-sm"
+            style="padding: 2px 7px; font-size: 10px;">Подробности ▼</button>
         </div>
 
         <table class="wardrobe-summary-table">
@@ -742,8 +796,10 @@
         </table>
 
         <!-- Expandable Details for Biceps & Melee -->
-        <div id="wardrobe-summary-details" style="display: none; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border);">
-          <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Дополнительные характеристики:</div>
+        <div id="wardrobe-summary-details"
+          style="display: none; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border);">
+          <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Дополнительные
+            характеристики:</div>
           <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px;">
             <div class="stat-chip">
               <div class="stat-chip-lbl">💪 Бицуха</div>
@@ -808,7 +864,8 @@
             <div class="card-subtitle">Сбор накопленных ресурсов</div>
           </div>
           <div style="text-align: right;">
-            <div id="biz-countdown" style="font-family: monospace; font-size: 13px; font-weight: 700; color: #34d399;">--:--:--</div>
+            <div id="biz-countdown" style="font-family: monospace; font-size: 13px; font-weight: 700; color: #34d399;">
+              --:--:--</div>
             <div style="font-size: 10px; color: var(--muted-foreground);">до сбора</div>
           </div>
         </div>
@@ -822,10 +879,14 @@
         </div>
 
         <!-- Collapsible Businesses List -->
-        <button id="btn-toggle-businesses" class="accordion-toggle-btn" type="button">
-          <span id="btn-toggle-biz-text">Показать бизнесы (0)</span>
-          <span id="btn-toggle-biz-icon">▼</span>
-        </button>
+        <div class="biz-accordion-header">
+          <span style="font-size: 11px; font-weight: 600; color: var(--muted-foreground);">Список предприятий</span>
+          <button id="btn-toggle-businesses" class="btn-biz-chevron" type="button" aria-label="Развернуть бизнесы"
+            title="Список бизнесов">
+            <span id="btn-toggle-biz-text">(0)</span>
+            <span id="btn-toggle-biz-icon">▾</span>
+          </button>
+        </div>
 
         <div id="businesses-collapsible" style="display: none; margin-bottom: 10px;">
           <div id="businesses-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
@@ -833,14 +894,15 @@
           </div>
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px;">
           <button id="btn-collect-business" class="btn btn-primary btn-sm">💰 Собрать прибыль сейчас</button>
           <div class="auto-toggle-wrap">
             <span class="auto-toggle-label">Авто</span>
-            <div class="toggle-switch">
+            <label class="toggle-switch">
               <input type="checkbox" id="cfg-auto_business">
               <span class="toggle-slider"></span>
-            </div>
+            </label>
           </div>
         </div>
       </div>
@@ -855,17 +917,20 @@
         <!-- 1. Туалетная бумага -->
         <div class="routine-action-row">
           <div class="routine-action-info">
-            <div class="routine-action-title"><img src="/static/assets/icons/paper.webp" class="game-icon-sm" alt="Бумага"> Туалетная бумага</div>
-            <div class="routine-action-desc">Ежедневный бесплатный рулон</div>
+            <div class="routine-action-title"><img src="/static/assets/icons/paper.webp" class="game-icon-sm"
+                alt="Бумага"> Туалетная бумага</div>
+            <div class="routine-action-desc">Ежедневный бесплатный рулон (сброс в 00:00 МСК)</div>
+            <div id="toilet-paper-timer-badge" class="tp-timer-badge">⏱️ Проверка статуса...</div>
           </div>
           <div class="routine-action-controls">
-            <button class="btn btn-secondary btn-sm btn-routine-action" data-target="toilet_paper">Забрать бумагу</button>
+            <button class="btn btn-secondary btn-sm btn-routine-action" data-target="toilet_paper">Щипануть
+              бумагу</button>
             <div class="auto-toggle-wrap">
               <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
+              <label class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_toilet_paper">
                 <span class="toggle-slider"></span>
-              </div>
+              </label>
             </div>
           </div>
         </div>
@@ -880,33 +945,65 @@
             <button class="btn btn-secondary btn-sm btn-routine-action" data-target="beard">Побрить</button>
             <div class="auto-toggle-wrap">
               <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
+              <label class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_beard">
                 <span class="toggle-slider"></span>
-              </div>
+              </label>
             </div>
           </div>
         </div>
 
-        <!-- 3. Подогревы -->
+        <!-- 3. Подогревы: Сбор и Отправка -->
         <div class="routine-action-row">
           <div class="routine-action-info">
-            <div class="routine-action-title"><img src="/static/assets/icons/energy.webp" class="game-icon-sm" alt="Энергия"> Подогревы от корешей</div>
-            <div class="routine-action-desc">Сбор всех подогревов с энергией</div>
+            <div class="routine-action-title"><img src="/static/assets/icons/energy.webp" class="game-icon-sm"
+                alt="Энергия"> Подогревы корешей</div>
+            <div class="routine-action-desc">Сбор энергии после слива и отправка друзьям</div>
           </div>
-          <div class="routine-action-controls">
-            <button class="btn btn-secondary btn-sm btn-routine-action" data-target="podogrev">Собрать подогревы</button>
-            <div class="auto-toggle-wrap">
-              <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
-                <input type="checkbox" id="cfg-auto_podogrev">
-                <span class="toggle-slider"></span>
+          <div class="routine-action-controls"
+            style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end;">
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <button class="btn btn-secondary btn-sm btn-routine-action" data-target="podogrev">Собрать</button>
+              <div class="auto-toggle-wrap" title="Авто-сбор подогревов строго после расхода энергии">
+                <span class="auto-toggle-label">Сбор</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-auto_podogrev">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <button class="btn btn-secondary btn-sm btn-routine-action" data-target="podogrev_send">Отправить</button>
+              <div class="auto-toggle-wrap" title="Авто-отправка бесплатных подогревов корешам">
+                <span class="auto-toggle-label">Раздача</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-auto_podogrev_send">
+                  <span class="toggle-slider"></span>
+                </label>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 4. Посылки / Подарки -->
+        <!-- 4. Катала (Бесплатная партия в карты) -->
+        <div class="routine-action-row">
+          <div class="routine-action-info">
+            <div class="routine-action-title">🃏 Катала (Карты)</div>
+            <div class="routine-action-desc">Ежедневная бесплатная партия с умной шульмовкой</div>
+          </div>
+          <div class="routine-action-controls">
+            <button class="btn btn-secondary btn-sm btn-routine-action" data-target="katala">Сыграть партию</button>
+            <div class="auto-toggle-wrap" title="Авто-игра 1 раз в сутки (строго без траты сахара/рублей)">
+              <span class="auto-toggle-label">Авто</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_katala">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Посылки / Подарки -->
         <div class="routine-action-row">
           <div class="routine-action-info">
             <div class="routine-action-title">🎁 Входящие посылки</div>
@@ -916,18 +1013,19 @@
             <button class="btn btn-secondary btn-sm btn-routine-action" data-target="gifts">Забрать подарки</button>
             <div class="auto-toggle-wrap">
               <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
+              <label class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_gifts">
                 <span class="toggle-slider"></span>
-              </div>
+              </label>
             </div>
           </div>
         </div>
 
-        <!-- 5. Кольщик -->
+        <!-- 6. Кольщик -->
         <div class="routine-action-row">
           <div class="routine-action-info">
-            <div class="routine-action-title"><img src="/static/assets/icons/kolsik.webp" class="game-icon-sm" alt="Кольщик"> Кольщик</div>
+            <div class="routine-action-title"><img src="/static/assets/icons/kolsik.webp" class="game-icon-sm"
+                alt="Кольщик"> Кольщик</div>
             <div class="routine-action-desc">Наколка за туалетную бумагу или рубли</div>
             <div class="kolsik-currency-select">
               <label class="kolsik-currency-option">
@@ -944,15 +1042,15 @@
             <button id="btn-kolsik-roll" class="btn btn-primary btn-sm">Набить сейчас</button>
             <div class="auto-toggle-wrap">
               <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
+              <label class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_kolsik">
                 <span class="toggle-slider"></span>
-              </div>
+              </label>
             </div>
           </div>
         </div>
 
-        <!-- 6. Месячные делюги -->
+        <!-- 7. Месячные делюги -->
         <div class="routine-action-row" style="border-bottom: none;">
           <div class="routine-action-info">
             <div class="routine-action-title">📅 Месячные делюги</div>
@@ -963,12 +1061,12 @@
           </div>
           <div class="routine-action-controls">
             <button class="btn btn-secondary btn-sm btn-routine-action" data-target="monthly">Забрать награды</button>
-            <div class="auto-toggle-wrap">
+            <div class="auto-toggle-wrap" title="Авто-прохождение и сбор наград этапов">
               <span class="auto-toggle-label">Авто</span>
-              <div class="toggle-switch">
-                <input type="checkbox" id="cfg-auto_events">
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_monthly_tasks">
                 <span class="toggle-slider"></span>
-              </div>
+              </label>
             </div>
           </div>
         </div>
@@ -1035,7 +1133,8 @@
 
         <!-- Sources Conversion Table -->
         <div style="margin-top: 12px; border-top: 1px solid var(--border-color, #383838); padding-top: 10px;">
-          <div style="font-size: 12px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+          <div
+            style="font-size: 12px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
             <span>📊 Аналитика конверсии источников</span>
             <span id="friends-sources-count" class="text-xs text-muted"></span>
           </div>
@@ -1051,7 +1150,9 @@
                 </tr>
               </thead>
               <tbody id="friends-conversion-table-body">
-                <tr><td colspan="5" style="text-align: center; color: var(--muted-foreground);">Загрузка аналитики...</td></tr>
+                <tr>
+                  <td colspan="5" style="text-align: center; color: var(--muted-foreground);">Загрузка аналитики...</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1070,10 +1171,10 @@
             <span class="switch-title">Авто-прием заявок</span>
             <span class="switch-desc">Включить автоматическую обработку входящих заявок</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-auto_friends_sec">
             <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
 
         <label class="switch-label">
@@ -1081,10 +1182,10 @@
             <span class="switch-title">Принимать всех подряд</span>
             <span class="switch-desc">Игнорировать минимальные требования по урону и талантам</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-friend_accept_all">
             <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
 
         <label class="switch-label">
@@ -1092,42 +1193,51 @@
             <span class="switch-title" style="color: var(--destructive);">Авто-отклонение слабых</span>
             <span class="switch-desc">Сразу отклонять заявки, не подходящие под фильтр</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-friend_auto_decline_below">
             <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
 
         <!-- Segmented Mode: AND / OR -->
         <div style="margin-top: 10px; margin-bottom: 10px;">
-          <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Логика применения порогов:</div>
+          <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Логика применения порогов:
+          </div>
           <div class="segment-tabs" style="display: flex; gap: 6px;">
-            <button type="button" class="btn btn-sm segment-btn active" id="btn-filter-mode-and" data-mode="and">Все пороги (И)</button>
-            <button type="button" class="btn btn-sm segment-btn" id="btn-filter-mode-or" data-mode="or">Любой порог (ИЛИ)</button>
+            <button type="button" class="btn btn-sm segment-btn active" id="btn-filter-mode-and" data-mode="and">Все
+              пороги (И)</button>
+            <button type="button" class="btn btn-sm segment-btn" id="btn-filter-mode-or" data-mode="or">Любой порог
+              (ИЛИ)</button>
           </div>
         </div>
 
         <!-- Filter Thresholds Grid -->
-        <div id="friend-filters-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px;">
+        <div id="friend-filters-grid"
+          style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px;">
           <div>
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Мин. талантов:</div>
-            <input type="number" id="cfg-friend_min_talents" min="0" value="0" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-friend_min_talents" min="0" value="0" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
           <div>
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Мин. урон ядом:</div>
-            <input type="number" id="cfg-friend_min_poison_damage" min="0" value="0" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-friend_min_poison_damage" min="0" value="0" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
           <div>
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Мин. уровень:</div>
-            <input type="number" id="cfg-friend_min_level" min="0" value="0" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-friend_min_level" min="0" value="0" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
           <div>
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Мин. авторитет:</div>
-            <input type="number" id="cfg-friend_min_authority" min="0" value="0" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-friend_min_authority" min="0" value="0" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
           <div>
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Мин. бицуха:</div>
-            <input type="number" id="cfg-friend_min_biceps" min="0" value="0" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-friend_min_biceps" min="0" value="0" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
         </div>
       </div>
@@ -1149,62 +1259,74 @@
           <div class="card-title">🛡️ Аудит урона и чистка корешей</div>
           <div style="display: flex; gap: 6px; align-items: center;">
             <div class="segment-tabs" style="display: flex; gap: 4px;">
-              <button type="button" class="btn btn-xs segment-btn active" id="btn-audit-tab-top" data-sort="damage_7d">Топ помощников (7д)</button>
-              <button type="button" class="btn btn-xs segment-btn" id="btn-audit-tab-inactive" data-sort="inactive">Неактивные (кик)</button>
+              <button type="button" class="btn btn-xs segment-btn active" id="btn-audit-tab-top"
+                data-sort="damage_7d">Топ помощников (7д)</button>
+              <button type="button" class="btn btn-xs segment-btn" id="btn-audit-tab-inactive"
+                data-sort="inactive">Неактивные (кик)</button>
             </div>
             <button id="btn-refresh-audit" class="btn btn-secondary btn-sm" title="Обновить список">🔄</button>
           </div>
         </div>
 
         <!-- Cleanup Settings Panel -->
-        <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 10px; margin-bottom: 12px; border: 1px solid var(--border-color, #383838);">
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end;">
+        <div
+          style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 10px; margin-bottom: 12px; border: 1px solid var(--border-color, #383838);">
+          <div
+            style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end;">
             <label class="switch-label" style="margin: 0; padding: 0;">
               <div class="switch-info">
                 <span class="switch-title" style="font-size: 12px;">Авточистка</span>
                 <span class="switch-desc" style="font-size: 10px;">Фоновый кик неактивных</span>
               </div>
-              <div class="toggle-switch">
+              <span class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_friend_cleanup">
                 <span class="toggle-slider"></span>
-              </div>
+              </span>
             </label>
             <div>
               <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Дней неактивности:</div>
-              <input type="number" id="cfg-friend_cleanup_inactive_days" min="1" max="365" value="14" class="btn btn-secondary" style="width: 100%; text-align: left;">
+              <input type="number" id="cfg-friend_cleanup_inactive_days" min="1" max="365" value="14"
+                class="btn btn-secondary" style="width: 100%; text-align: left;">
             </div>
             <div>
-              <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Лимит удалений/сутки:</div>
-              <input type="number" id="cfg-friend_cleanup_daily_limit" min="1" max="50" value="5" class="btn btn-secondary" style="width: 100%; text-align: left;">
+              <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px;">Лимит удалений/сутки:
+              </div>
+              <input type="number" id="cfg-friend_cleanup_daily_limit" min="1" max="50" value="5"
+                class="btn btn-secondary" style="width: 100%; text-align: left;">
             </div>
             <div style="display: flex; gap: 6px;">
-              <button id="btn-preview-cleanup" class="btn btn-secondary btn-sm" style="flex: 1;">🔍 Предпросмотр</button>
+              <button id="btn-preview-cleanup" class="btn btn-secondary btn-sm" style="flex: 1;">🔍
+                Предпросмотр</button>
               <button id="btn-run-cleanup" class="btn btn-danger btn-sm" style="flex: 1;">🗑️ Удалить</button>
             </div>
           </div>
-          <div id="cleanup-preview-info" style="display: none; margin-top: 8px; font-size: 11px; color: var(--muted-foreground);">
+          <div id="cleanup-preview-info"
+            style="display: none; margin-top: 8px; font-size: 11px; color: var(--muted-foreground);">
             <!-- Rendered by JS -->
           </div>
         </div>
 
         <!-- Audit Friends List -->
-        <div id="friends-audit-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto;">
+        <div id="friends-audit-list"
+          style="display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto;">
           <!-- Rendered by JS -->
         </div>
       </div>
     </section>
 
-        <!-- Section: Рейды и Новости -->
-        <section id="sec-raids" class="section-pane">
+    <!-- Section: Рейды и Новости -->
+    <section id="sec-raids" class="section-pane">
       <!-- Safety Indicator Bar -->
       <div class="raids-safety-bar">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 15px;">🛡️</span>
-          <span id="raids-safety-limit-text" style="font-weight: 600;">Лимит за 24ч: 0 / 25</span>
+          <span id="raids-safety-limit-text" style="font-weight: 600;">Лимит за 24ч: 0 / 50</span>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span id="raids-safety-circuit-badge" class="raids-safety-status-badge safety-status-ok">Защита: Активна (OK)</span>
-          <button id="btn-refresh-safety" class="btn btn-secondary btn-sm" style="padding: 2px 6px;" title="Обновить статус защиты">🔄</button>
+          <span id="raids-safety-circuit-badge" class="raids-safety-status-badge safety-status-ok">Защита: Активна
+            (OK)</span>
+          <button id="btn-refresh-safety" class="btn btn-secondary btn-sm" style="padding: 2px 6px;"
+            title="Обновить статус защиты">🔄</button>
         </div>
       </div>
 
@@ -1230,7 +1352,8 @@
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">
               <button id="btn-scan-channels" class="btn btn-primary btn-sm" title="Проверить каналы">
-                🔍 Проверить каналы <span id="badge-tg-cooldown" style="display: none; font-size: 10px; margin-left: 4px;"></span>
+                🔍 Проверить каналы <span id="badge-tg-cooldown"
+                  style="display: none; font-size: 10px; margin-left: 4px;"></span>
               </button>
             </div>
           </div>
@@ -1238,7 +1361,8 @@
             <!-- Rendered by JS -->
           </div>
           <div style="display: flex; gap: 6px; margin-top: 6px;">
-            <input type="text" id="input-new-tg-channel" class="text-input text-input-sm" style="flex: 1;" placeholder="@username или t.me/channel">
+            <input type="text" id="input-new-tg-channel" class="text-input text-input-sm" style="flex: 1;"
+              placeholder="@username или t.me/channel">
             <button id="btn-add-tg-channel" class="btn btn-secondary btn-sm">+ Добавить</button>
           </div>
         </div>
@@ -1247,7 +1371,8 @@
           <div class="raids-banner-icon">🔒</div>
           <div class="raids-banner-content">
             <div class="raids-banner-title" id="raids-banner-title">Источник ProPrisonBot: 403 Paywall</div>
-            <div class="raids-banner-desc" id="raids-banner-desc">Требуется платная подписка. Доступен радар игроков из игры и TG-рейды.</div>
+            <div class="raids-banner-desc" id="raids-banner-desc">Требуется платная подписка. Доступен радар игроков из
+              игры и TG-рейды.</div>
           </div>
           <button id="btn-raids-goto-radar" class="btn btn-primary btn-sm">Открыть радар</button>
         </div>
@@ -1282,23 +1407,27 @@
               <div class="card-subtitle" id="radar-db-stats">База: 0 кандидатов (0 активных)</div>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <button id="btn-sync-top" class="btn btn-secondary btn-sm" title="Обновить еженедельный топ и достижения">🏆 Обновить Топ</button>
-              <button id="btn-scan-news" class="btn btn-secondary btn-sm" title="Спарсить свежие посты новостей">📰 Парсить Новости</button>
+              <button id="btn-sync-top" class="btn btn-secondary btn-sm"
+                title="Обновить еженедельный топ и достижения">🏆 Обновить Топ</button>
+              <button id="btn-scan-news" class="btn btn-secondary btn-sm" title="Спарсить свежие посты новостей">📰
+                Парсить Новости</button>
               <button id="btn-scan-guilds" class="btn btn-primary btn-sm">
-                🔍 Сканировать бригады <span id="badge-guild-cooldown" style="display: none; font-size: 10px; margin-left: 4px;"></span>
+                🔍 Сканировать бригады <span id="badge-guild-cooldown"
+                  style="display: none; font-size: 10px; margin-left: 4px;"></span>
               </button>
               <button id="btn-refresh-radar" class="btn btn-secondary btn-sm" title="Обновить радар">🔄</button>
             </div>
           </div>
           <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
-            <label class="switch-label" style="margin: 0; padding: 0; display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <label class="switch-label"
+              style="margin: 0; padding: 0; display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
               <div class="switch-info" style="margin-right: 4px;">
                 <span class="switch-title" style="font-size: 11px;">Автопарсинг новостей</span>
               </div>
-              <div class="toggle-switch">
+              <span class="toggle-switch">
                 <input type="checkbox" id="cfg-auto_parse_news_raids">
                 <span class="toggle-slider"></span>
-              </div>
+              </span>
             </label>
           </div>
           <div class="radar-filters-bar">
@@ -1322,7 +1451,8 @@
             </div>
             <div class="radar-filter-group">
               <label class="radar-filter-label">Макс. урон:</label>
-              <input type="number" id="radar-filter-max-dmg" placeholder="Любой" class="text-input text-input-sm" style="width: 85px;">
+              <input type="number" id="radar-filter-max-dmg" placeholder="Любой" class="text-input text-input-sm"
+                style="width: 85px;">
             </div>
             <div class="radar-filter-group">
               <label class="radar-filter-label">Лимит:</label>
@@ -1334,7 +1464,8 @@
             </div>
             <div class="radar-filter-group" style="display: flex; align-items: center; gap: 6px;">
               <input type="checkbox" id="radar-filter-exclude-friends" checked>
-              <label for="radar-filter-exclude-friends" class="radar-filter-label" style="cursor: pointer;">Скрыть друзей</label>
+              <label for="radar-filter-exclude-friends" class="radar-filter-label" style="cursor: pointer;">Скрыть
+                друзей</label>
             </div>
           </div>
 
@@ -1350,9 +1481,11 @@
             </div>
             <div class="outreach-accordion-body" id="radar-outreach-accordion-body">
               <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 10px;">
-                Фоновый воркер отправляет 2-3 заявки за 30-минутный цикл проверенным кандидатам, не превышая суточный лимит и соблюдая ночной сон.
+                Фоновый воркер отправляет 2-3 заявки за 30-минутный цикл проверенным кандидатам, не превышая суточный
+                лимит и соблюдая ночной сон.
               </div>
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px;">
+              <div
+                style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px;">
                 <div>
                   <label class="form-label" style="font-size: 11px;">Включить авто-набор:</label>
                   <label class="switch-control" style="margin-top: 4px;">
@@ -1361,30 +1494,37 @@
                   </label>
                 </div>
                 <div>
-                  <label class="form-label" style="font-size: 11px;">Суточный лимит заявок (1-50):</label>
-                  <input type="number" id="cfg-friend-outreach-daily-limit" min="1" max="50" class="text-input text-input-sm" style="width: 100%;" value="25">
+                  <label class="form-label" style="font-size: 11px;">Суточный лимит заявок (1-500):</label>
+                  <input type="number" id="cfg-friend-outreach-daily-limit" min="1" max="500"
+                    class="text-input text-input-sm" style="width: 100%;" value="50">
                 </div>
                 <div>
                   <label class="form-label" style="font-size: 11px;">Мин. урон кандидата:</label>
-                  <input type="number" id="cfg-friend-outreach-min-damage" min="0" class="text-input text-input-sm" style="width: 100%;" placeholder="0">
+                  <input type="number" id="cfg-friend-outreach-min-damage" min="0" class="text-input text-input-sm"
+                    style="width: 100%;" placeholder="0">
                 </div>
                 <div>
                   <label class="form-label" style="font-size: 11px;">Макс. урон (0 = без макс):</label>
-                  <input type="number" id="cfg-friend-outreach-max-damage" min="0" class="text-input text-input-sm" style="width: 100%;" placeholder="0">
+                  <input type="number" id="cfg-friend-outreach-max-damage" min="0" class="text-input text-input-sm"
+                    style="width: 100%;" placeholder="0">
                 </div>
               </div>
               <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                 <input type="checkbox" id="cfg-friend-outreach-only-active" checked>
-                <label for="cfg-friend-outreach-only-active" class="form-label" style="font-size: 11px; cursor: pointer;">Только с подтвержденной активностью (рост авторитета за 24ч)</label>
+                <label for="cfg-friend-outreach-only-active" class="form-label"
+                  style="font-size: 11px; cursor: pointer;">Только с подтвержденной активностью (рост авторитета за
+                  24ч)</label>
               </div>
               <div style="display: flex; justify-content: flex-end;">
-                <button id="btn-save-outreach-cfg" class="btn btn-primary btn-sm">💾 Сохранить настройки авто-набора</button>
+                <button id="btn-save-outreach-cfg" class="btn btn-primary btn-sm">💾 Сохранить настройки
+                  авто-набора</button>
               </div>
             </div>
           </div>
 
           <!-- Batch actions bar -->
-          <div class="radar-batch-bar" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-color, #383838);">
+          <div class="radar-batch-bar"
+            style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-color, #383838);">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
               <div id="radar-stats-text" class="text-xs text-muted">Загрузка дамагеров...</div>
               <div style="display: flex; gap: 8px;">
@@ -1397,7 +1537,8 @@
               <div class="progress-bar-track">
                 <div id="radar-batch-progress-fill" class="progress-bar-fill" style="width: 0%;"></div>
               </div>
-              <div id="radar-batch-progress-label" class="text-xs text-muted" style="margin-top: 4px; text-align: center;">Отправка 0/0...</div>
+              <div id="radar-batch-progress-label" class="text-xs text-muted"
+                style="margin-top: 4px; text-align: center;">Отправка 0/0...</div>
             </div>
           </div>
         </div>
@@ -1412,9 +1553,11 @@
         <div class="card" style="padding: 12px; margin-bottom: 12px;">
           <div class="card-title" style="margin-bottom: 8px;">📋 Импорт списка рейда из Telegram</div>
           <div class="text-xs text-muted" style="margin-bottom: 10px;">
-            Скопируйте и вставьте текст поста рейда бригады с перечнем участников и ID. Парсер автоматически распознает 64-битные игровые ID, заявленный урон и сформирует карточку с кнопками добавления.
+            Скопируйте и вставьте текст поста рейда бригады с перечнем участников и ID. Парсер автоматически распознает
+            64-битные игровые ID, заявленный урон и сформирует карточку с кнопками добавления.
           </div>
-          <textarea id="import-raid-text" class="text-area-input" rows="5" placeholder="Вставьте текст рейда сюда, например:&#10;Рейд ОПГ ХМАО&#10;1. 9000000000141538 Барс 600кк&#10;2. 9000000000466709 Дым 500кк&#10;vk.com/id437225657 1ккк"></textarea>
+          <textarea id="import-raid-text" class="text-area-input" rows="5"
+            placeholder="Вставьте текст рейда сюда, например:&#10;Рейд ОПГ ХМАО&#10;1. 9000000000141538 Барс 600кк&#10;2. 9000000000466709 Дым 500кк&#10;vk.com/id437225657 1ккк"></textarea>
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
             <button id="btn-parse-raid-text" class="btn btn-primary btn-sm">🔍 Распознать участников</button>
           </div>
@@ -1445,7 +1588,8 @@
 
         <div style="display: flex; gap: 8px; justify-content: flex-end;">
           <button id="btn-read-all-notifs" class="btn btn-secondary btn-sm">✓ Прочитать все</button>
-          <button id="btn-clear-notifs" class="btn btn-secondary btn-sm" style="color: var(--destructive);">🗑 Очистить</button>
+          <button id="btn-clear-notifs" class="btn btn-secondary btn-sm" style="color: var(--destructive);">🗑
+            Очистить</button>
         </div>
       </div>
 
@@ -1471,10 +1615,10 @@
             <span class="switch-title">⏸ Глобальная пауза планировщика</span>
             <span class="switch-desc">Полная приостановка фоновых циклов воркеров</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-is_paused">
             <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
 
         <!-- Sleep Mode -->
@@ -1483,20 +1627,23 @@
             <span class="switch-title">🌙 Ночной режим сна (МСК)</span>
             <span class="switch-desc">Воркеры засыпают в указанный интервал часов</span>
           </div>
-          <div class="toggle-switch">
+          <span class="toggle-switch">
             <input type="checkbox" id="cfg-sleep_mode_enabled">
             <span class="toggle-slider"></span>
-          </div>
+          </span>
         </label>
 
         <div style="display: flex; gap: 10px; margin-top: 8px; margin-bottom: 12px;">
           <div style="flex: 1;">
-            <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Начало сна (час МСК):</div>
-            <input type="number" id="cfg-sleep_start_hour" min="0" max="23" value="2" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Начало сна (час МСК):
+            </div>
+            <input type="number" id="cfg-sleep_start_hour" min="0" max="23" value="2" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
           <div style="flex: 1;">
             <div style="font-size: 11px; color: var(--muted-foreground); margin-bottom: 4px;">Конец сна (час МСК):</div>
-            <input type="number" id="cfg-sleep_end_hour" min="0" max="23" value="7" class="btn btn-secondary" style="width: 100%; text-align: left;">
+            <input type="number" id="cfg-sleep_end_hour" min="0" max="23" value="7" class="btn btn-secondary"
+              style="width: 100%; text-align: left;">
           </div>
         </div>
 
@@ -1515,7 +1662,8 @@
           <div class="card-subtitle">WEB_ADMIN_TOKEN для работы через веб-браузер</div>
         </div>
         <div style="display: flex; gap: 8px;">
-          <input type="password" id="input-admin-token" placeholder="Введите токен..." class="btn btn-secondary" style="flex: 1; text-align: left;">
+          <input type="password" id="input-admin-token" placeholder="Введите токен..." class="btn btn-secondary"
+            style="flex: 1; text-align: left;">
           <button id="btn-save-token" class="btn btn-primary">Сохранить</button>
         </div>
       </div>
@@ -1533,7 +1681,8 @@
             <span style="display: inline-flex; align-items: center; gap: 6px;">
               <img src="/static/assets/icons/boss.webp" class="game-icon-sm" alt="Боссы"> Меню боссов
             </span>
-            <span id="boss-menu-header-badge" class="badge" style="background: var(--primary); color: #000; font-size: 11px;">В очереди: 0</span>
+            <span id="boss-menu-header-badge" class="badge"
+              style="background: var(--primary); color: #000; font-size: 11px;">В очереди: 0</span>
           </div>
           <div class="card-subtitle">Выбор боссов, режимов, лимитов побед и приоритета автоатаки</div>
         </div>
@@ -1542,9 +1691,11 @@
 
       <!-- Search & Category Filters -->
       <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-        <input type="text" id="boss-menu-search" placeholder="Поиск босса по имени..." class="btn btn-secondary" style="flex: 1; text-align: left; font-size: 12px; padding: 6px 10px;">
+        <input type="text" id="boss-menu-search" placeholder="Поиск босса по имени..." class="btn btn-secondary"
+          style="flex: 1; text-align: left; font-size: 12px; padding: 6px 10px;">
       </div>
-      <div class="boss-category-tabs" id="boss-category-tabs" style="display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto;">
+      <div class="boss-category-tabs" id="boss-category-tabs"
+        style="display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto;">
         <button class="filter-pill active" data-bcat="all">Все</button>
         <button class="filter-pill" data-bcat="1">Беспредельщики</button>
         <button class="filter-pill" data-bcat="2">Надзиратели</button>
@@ -1552,13 +1703,16 @@
       </div>
 
       <!-- Bosses List Scroll Area -->
-      <div id="boss-menu-list" class="boss-menu-list" style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;">
+      <div id="boss-menu-list" class="boss-menu-list"
+        style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;">
         <!-- Rendered by JS -->
       </div>
 
       <!-- Modal Footer -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
-        <button id="btn-clear-boss-queue" class="btn btn-secondary btn-sm" style="color: var(--destructive);">Очистить очередь</button>
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+        <button id="btn-clear-boss-queue" class="btn btn-secondary btn-sm" style="color: var(--destructive);">Очистить
+          очередь</button>
         <button id="btn-save-boss-queue" class="btn btn-primary btn-sm">Готово</button>
       </div>
     </div>
@@ -1575,7 +1729,8 @@
             <span style="display: inline-flex; align-items: center; gap: 6px;">
               <img src="/static/assets/icons/boss.webp" class="game-icon-sm" alt="Атака"> Атака босса
             </span>
-            <span id="single-boss-selected-badge" class="badge" style="background: var(--primary); color: #000; font-size: 11px;">Выберите босса</span>
+            <span id="single-boss-selected-badge" class="badge"
+              style="background: var(--primary); color: #000; font-size: 11px;">Выберите босса</span>
           </div>
           <div class="card-subtitle">Одиночный бой: выбор босса, режима (включая «В одного») и немедленная атака</div>
         </div>
@@ -1584,9 +1739,11 @@
 
       <!-- Search & Category Filters -->
       <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-        <input type="text" id="single-boss-search" placeholder="Поиск босса по имени..." class="btn btn-secondary" style="flex: 1; text-align: left; font-size: 12px; padding: 6px 10px;">
+        <input type="text" id="single-boss-search" placeholder="Поиск босса по имени..." class="btn btn-secondary"
+          style="flex: 1; text-align: left; font-size: 12px; padding: 6px 10px;">
       </div>
-      <div class="boss-category-tabs" id="single-boss-category-tabs" style="display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto;">
+      <div class="boss-category-tabs" id="single-boss-category-tabs"
+        style="display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto;">
         <button class="filter-pill active" data-sbcat="all">Все</button>
         <button class="filter-pill" data-sbcat="1">Беспредельщики</button>
         <button class="filter-pill" data-sbcat="2">Надзиратели</button>
@@ -1594,14 +1751,17 @@
       </div>
 
       <!-- Bosses List Scroll Area -->
-      <div id="single-boss-list" class="boss-menu-list" style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;">
+      <div id="single-boss-list" class="boss-menu-list"
+        style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;">
         <!-- Rendered by JS -->
       </div>
 
       <!-- Modal Footer -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
         <button id="btn-cancel-single-boss-attack" class="btn btn-secondary btn-sm">Отмена</button>
-        <button id="btn-execute-single-boss-attack" class="btn btn-primary btn-sm" disabled style="display: flex; align-items: center; gap: 6px;">
+        <button id="btn-execute-single-boss-attack" class="btn btn-primary btn-sm" disabled
+          style="display: flex; align-items: center; gap: 6px;">
           <span>⚔️ Атаковать</span>
         </button>
       </div>
@@ -1622,14 +1782,21 @@
       </div>
 
       <div style="margin-bottom: 12px;">
-        <label style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); display: block; margin-bottom: 4px;">Название пресета</label>
-        <input type="text" id="preset-input-name" class="btn btn-secondary" placeholder="Например: Утренний фарм ключей" style="width: 100%; text-align: left; padding: 8px 10px; font-size: 13px;">
+        <label
+          style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); display: block; margin-bottom: 4px;">Название
+          пресета</label>
+        <input type="text" id="preset-input-name" class="btn btn-secondary" placeholder="Например: Утренний фарм ключей"
+          style="width: 100%; text-align: left; padding: 8px 10px; font-size: 13px;">
       </div>
 
-      <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);">
+      <div
+        style="display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);">
         <div style="flex: 1; min-width: 130px;">
-          <label style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); display: block; margin-bottom: 4px;">⏰ Время атаки (МСК)</label>
-          <input type="time" id="preset-input-time" class="btn btn-secondary" value="09:00" style="padding: 6px 10px; font-size: 13px; font-weight: 700; width: 100%; text-align: center;">
+          <label
+            style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); display: block; margin-bottom: 4px;">⏰
+            Время атаки (МСК)</label>
+          <input type="time" id="preset-input-time" class="btn btn-secondary" value="09:00"
+            style="padding: 6px 10px; font-size: 13px; font-weight: 700; width: 100%; text-align: center;">
         </div>
         <div style="display: flex; align-items: center; gap: 10px; margin-top: 16px;">
           <label class="toggle-switch">
@@ -1642,16 +1809,19 @@
 
       <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 12px; font-weight: 700;">Очередь шагов пресета:</span>
-        <button id="btn-preset-add-step" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px;">
+        <button id="btn-preset-add-step" class="btn btn-primary btn-sm"
+          style="display: flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px;">
           <span>+ Добавить шаг</span>
         </button>
       </div>
 
-      <div id="preset-steps-container" style="display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: rgba(0,0,0,0.15);">
+      <div id="preset-steps-container"
+        style="display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: rgba(0,0,0,0.15);">
         <!-- Step items rendered by JS -->
       </div>
 
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px;">
+      <div
+        style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px;">
         <button id="btn-cancel-preset" class="btn btn-secondary btn-sm">Отмена</button>
         <button id="btn-save-preset" class="btn btn-primary btn-sm">Сохранить пресет</button>
       </div>
@@ -1666,8 +1836,10 @@
       <div class="card-header-row" style="margin-bottom: 8px;">
         <div style="min-width: 0; flex: 1;">
           <div class="card-title">
-            <span style="display: inline-flex; align-items: center; gap: 6px;"><img src="/static/assets/icons/kolsik.webp" class="game-icon-sm" alt="Примерочная"> Примерочная</span>
-            <span id="fitting-item-badge" class="badge" style="background: var(--primary); color: #000; font-size: 11px;">Мой персонаж</span>
+            <span style="display: inline-flex; align-items: center; gap: 6px;"><img
+                src="/static/assets/icons/kolsik.webp" class="game-icon-sm" alt="Примерочная"> Примерочная</span>
+            <span id="fitting-item-badge" class="badge"
+              style="background: var(--primary); color: #000; font-size: 11px;">Мой персонаж</span>
           </div>
           <div class="card-subtitle" id="fitting-item-desc">Визуальный предпросмотр одежды и татуировок</div>
         </div>
@@ -1677,7 +1849,8 @@
       <!-- Stage Frame -->
       <div class="fitting-stage" id="fitting-stage">
         <!-- Rendered by JS layers -->
-        <button id="btn-fitting-rotate" class="btn-fitting-rotate" title="Развернуть персонажа (перед / спина)" aria-label="Развернуть персонажа">
+        <button id="btn-fitting-rotate" class="btn-fitting-rotate" title="Развернуть персонажа (перед / спина)"
+          aria-label="Развернуть персонажа">
           <img src="/static/assets/icons/back_poworot.webp" alt="Развернуть" draggable="false" />
         </button>
         <div id="fitting-loading-overlay" class="fitting-loading-overlay" style="display: none;">
@@ -1697,13 +1870,15 @@
   <!-- ========================================================================
        AUTH MODAL (If 401/403)
        ======================================================================== -->
-  <div id="auth-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; align-items: center; justify-content: center; padding: 16px;">
+  <div id="auth-modal"
+    style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; align-items: center; justify-content: center; padding: 16px;">
     <div class="card" style="max-width: 380px; width: 100%;">
       <div class="card-title" style="margin-bottom: 8px;">🔒 Требуется авторизация</div>
       <p style="font-size: 12px; color: var(--muted-foreground); margin-bottom: 12px;">
         Для доступа к API управления PrisonBot введите секретный WEB_ADMIN_TOKEN или откройте Mini App внутри Telegram.
       </p>
-      <input type="password" id="auth-modal-token" placeholder="Токен администратора..." class="btn btn-secondary" style="width: 100%; text-align: left; margin-bottom: 10px;">
+      <input type="password" id="auth-modal-token" placeholder="Токен администратора..." class="btn btn-secondary"
+        style="width: 100%; text-align: left; margin-bottom: 10px;">
       <button id="btn-auth-modal-submit" class="btn btn-primary" style="width: 100%;">Войти</button>
     </div>
   </div>
@@ -1711,6 +1886,10 @@
   <!-- Toast Notification Container -->
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="app.js?v=20261123_01"></script>
+  <script src="vendor/bundle-codec.js?v=20261124_03"></script>
+  <script src="vendor/spine-runtime.js?v=20261124_03"></script>
+  <script src="spine_room_player.js?v=20261124_03"></script>
+  <script src="app.js?v=20261124_03"></script>
 </body>
+
 </html>
