@@ -685,8 +685,10 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
         should_wake_routine = bool(updates.get("auto_monthly_tasks") or updates.get("auto_business") or updates.get("auto_toilet_paper"))
         if should_wake_boss:
-            if updates.get("boss_auto_melee") and bot_context.boss_worker is not None and not updates.get("auto_boss_enabled"):
-                asyncio.create_task(bot_context.boss_worker.trigger_auto_melee())
+            if updates.get("boss_auto_melee") and bot_context.boss_worker is not None:
+                asyncio.create_task(bot_context.boss_worker.execute_ready_melee_hits(config=cfg))
+                if updates.get("auto_boss_enabled") and ctrl is not None:
+                    ctrl.trigger_boss_now(force_manual=False)
             elif ctrl is not None:
                 ctrl.trigger_boss_now(force_manual=False)
             elif bot_context.boss_worker is not None:

@@ -338,7 +338,24 @@ class DropParser:
 
     _collection_item_map: Dict[str, str] = {}
     _collection_image_map: Dict[str, str] = {}
+    _collection_catalog_loaded: bool = False
     _last_prune_ts: float = 0.0
+
+    @classmethod
+    def load_collection_catalog(cls, path: str = "storage/collections_catalog.json") -> None:
+        """Загружает локальный каталог коллекций из JSON-файла при холодном старте."""
+        if cls._collection_catalog_loaded:
+            return
+        cls._collection_catalog_loaded = True
+        try:
+            import json
+            from pathlib import Path
+            p = Path(path)
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                cls.update_collection_cache(data)
+        except Exception as e:
+            logger.debug("Не удалось загрузить каталог коллекций %s: %s", path, e)
 
     @classmethod
     def update_collection_cache(cls, payload: Any) -> None:
@@ -424,6 +441,8 @@ class DropParser:
         if payload.get("collectionDrop"):
             if collection_catalog is not None:
                 cls.update_collection_cache(collection_catalog)
+            elif not cls._collection_item_map:
+                cls.load_collection_catalog()
             c_drop = payload["collectionDrop"]
             if not isinstance(c_drop, dict):
                 c_drop = {"title": str(c_drop)}

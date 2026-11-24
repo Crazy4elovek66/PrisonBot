@@ -75,6 +75,7 @@ class BossWorker:
         self.on_melee_reschedule = on_melee_reschedule
         self.is_paused: bool = False
         self._cycle_lock = asyncio.Lock()
+        self.melee_ready_at: Dict[str, float] = {w: 0.0 for w in MELEE_CONFIG}
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -548,8 +549,9 @@ class BossWorker:
         equipped_slots = weapons_data.get("equippedSlots") or []
         weapon_stats_effective = bootstrap.get("weaponStatsEffective") or {}
         now_utc = datetime.now(timezone.utc)
+        now_ts = now_utc.timestamp()
 
-        available_melee = [w for w in MELEE_CONFIG if w in equipped_slots]
+        available_melee = [w for w in MELEE_CONFIG if w in equipped_slots] if equipped_slots else list(MELEE_CONFIG.keys())
         ready_hits: List[str] = []
         earliest_ready_dt: Optional[datetime] = None
         for w in available_melee:
@@ -558,9 +560,14 @@ class BossWorker:
             last_dt = parse_iso_utc(last_raw)
             cooldown_sec = float(weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"]))
             if last_dt is None or now_utc >= (last_dt + timedelta(seconds=cooldown_sec)):
+                self.melee_ready_at[w] = 0.0
                 ready_hits.append(w)
+                logger.info(f"Авто-рукопашка: удар {w} ГОТОВ (last={last_raw}, cd={cooldown_sec}s)")
             else:
                 ready_dt = last_dt + timedelta(seconds=cooldown_sec)
+                self.melee_ready_at[w] = ready_dt.timestamp()
+                rem_sec = max(0.0, (ready_dt - now_utc).total_seconds())
+                logger.info(f"Авто-рукопашка: удар {w} на КД (осталось {rem_sec:.1f}s)")
                 if earliest_ready_dt is None or ready_dt < earliest_ready_dt:
                     earliest_ready_dt = ready_dt
 
@@ -593,9 +600,11 @@ class BossWorker:
                     True,
                     {"weapon": weapon_name, "response": hit_res},
                 )
-                # Обновим локальную метку времени последнего удара для state_hub
+                # Обновим локальную метку времени последнего удара для state_hub и melee_ready_at
                 last_key = MELEE_CONFIG[weapon_name]["last_time_key"]
                 weapons_data[last_key] = now_iso
+                cd_sec = float(weapon_stats_effective.get(MELEE_CONFIG[weapon_name]["cooldown_key"], MELEE_CONFIG[weapon_name]["default_cooldown"]))
+                self.melee_ready_at[weapon_name] = datetime.now(timezone.utc).timestamp() + cd_sec
 
                 hit_state = str(hit_res.get("state") or "").lower()
                 if (new_hp is not None and int(new_hp) <= 0) or hit_res.get("bossDefeated") or hit_state in ("reward", "reward_processing"):
