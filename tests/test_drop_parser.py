@@ -105,3 +105,27 @@ async def test_save_notification_in_db(drop_setup):
         assert saved.is_read is False
         assert len(saved.rewards) == 1
         assert len(saved.drops) == 1
+
+
+def test_parse_boss_defeat_and_prison_day_stage_meta():
+    """Проверка parse_boss_defeat (HP прогресс) и parse_prison_work с этапом и кликами."""
+    defeat = DropParser.parse_boss_defeat(boss_name="Махно", mode="blotnoy", remaining_hp=3200, max_hp=10000)
+    assert defeat["category"] == "bosses"
+    assert "Махно" in defeat["title"]
+    assert defeat["meta_json"]["type"] == "boss_defeat"
+    assert defeat["meta_json"]["outcome"] == "defeat"
+    assert defeat["meta_json"]["remaining_hp"] == 3200
+    assert defeat["meta_json"]["max_hp"] == 10000
+
+    p_work = DropParser.parse_prison_work(
+        {"rewardCigarettes": 15, "respect": 20},
+        prison_name="Кресты",
+        works_count=1,
+        is_day=True,
+        stage_num=5,
+        prison_id=4,
+    )
+    assert p_work["title"] == "Кресты: День 5"
+    assert p_work["subtitle"] == "Кликов: 1"
+    assert p_work["meta_json"]["clicks"] == 1
+    assert any(r["currency"] == "respect" and r["amount"] == 20 for r in p_work["rewards"])

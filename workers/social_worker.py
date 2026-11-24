@@ -605,6 +605,9 @@ class SocialWorker:
                         max_guilds=6,
                         delay_range=(1.5, 3.0) if self.enable_jitter else (0.0, 0.0),
                         force=False,
+                        tier=getattr(config, "friends_parser_tier", "accessible") or "accessible",
+                        min_authority=int(getattr(config, "friends_parser_min_authority", 0) or 0),
+                        max_authority=int(getattr(config, "friends_parser_max_authority", 0) or 0),
                     )
                     self._last_bg_guild_scan = now_ts
                 except Exception as ge:
@@ -648,6 +651,9 @@ class SocialWorker:
                         max_damage=max_dmg,
                         limit=15,
                         exclude_friends=True,
+                        tier=getattr(config, "friends_parser_tier", None),
+                        min_authority=int(getattr(config, "friends_parser_min_authority", 0) or 0),
+                        max_authority=int(getattr(config, "friends_parser_max_authority", 0) or 0),
                     )
 
                     # Точечное обогащение топ-кандидатов перед отправкой

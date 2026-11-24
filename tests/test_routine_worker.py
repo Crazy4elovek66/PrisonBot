@@ -428,3 +428,68 @@ async def test_toilet_paper_reset_info_and_scheduled_claim(worker_setup):
     assert r2["status"] == "already_claimed"
     assert len(tp_posts) == 1
 
+
+@pytest.mark.asyncio
+async def test_routine_worker_monthly_negative_quests_weakest_first(worker_setup):
+    """Тест process_monthly_quests: сортирует друзей по возрастанию authority, бьет ровно remaining и проверяет папиросы."""
+    import json as _json
+    from client.api.social import SocialAPI
+
+    engine, acc_id = worker_setup
+    interactions = []
+    claimed_tiers = []
+
+    def mock_handler(request: httpx.Request):
+        if request.url.path == "/api/monthly/state":
+            return httpx.Response(200, json={
+                "active": True,
+                "global": {"days": [{"dayId": 24, "action": "StressVictim", "mode": "Count", "target": 5, "title": "Напряги терпилу"}]},
+                "user": {
+                    "activeDayId": 24,
+                    "days": {"24": {"progress": 3, "completed": False, "expired": False}},
+                    "claimableTiers": [10] if len(interactions) >= 2 else [],
+                },
+            })
+        elif request.url.path == "/api/player/init":
+            return httpx.Response(200, json={"userId": 999, "currencies": {"cigarettes": 500}})
+        elif request.url.path == "/api/friendship/profiles":
+            return httpx.Response(200, json={
+                "profiles": [
+                    {"userId": 103, "authority": 500000},
+                    {"userId": 101, "authority": 100},
+                    {"userId": 102, "authority": 2000},
+                ],
+                "total": 3,
+            })
+        elif request.url.path == "/api/interaction/perform":
+            body = _json.loads(request.content)
+            interactions.append(body)
+            return httpx.Response(200, json={"success": True})
+        elif request.url.path == "/api/monthly/claim":
+            body = _json.loads(request.content)
+            claimed_tiers.append(body.get("Tier"))
+            return httpx.Response(200, json={"success": True})
+        return httpx.Response(200, json={})
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    player_api = PlayerAPI(http_client=http_client)
+    social_api = SocialAPI(http_client=http_client)
+
+    worker = RoutineWorker(
+        account_id=acc_id,
+        player_api=player_api,
+        social_api=social_api,
+        db_engine=engine,
+        enable_jitter=False,
+    )
+
+    res = await worker.process_monthly_quests()
+    # remaining = 5 - 3 = 2, слабейшие: 101 (100), затем 102 (2000)
+    assert res["actions_performed"] == 2
+    assert len(interactions) == 2
+    assert [i["toUserId"] for i in interactions] == [101, 102]
+    assert all(i["type"] == "Fight" and i["fromUserId"] == 999 for i in interactions)
+    assert claimed_tiers == [10]
+

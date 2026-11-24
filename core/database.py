@@ -127,6 +127,10 @@ def _migrate_bot_configs(connection) -> None:
         ("auto_podogrev_send", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_katala", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_monthly_tasks", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("boss_auto_melee", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("friends_parser_tier", "VARCHAR(20) DEFAULT 'accessible' NOT NULL"),
+        ("friends_parser_min_authority", "BIGINT DEFAULT 0 NOT NULL"),
+        ("friends_parser_max_authority", "BIGINT DEFAULT 0 NOT NULL"),
     ]
 
     for col_name, col_type in col_defs:
@@ -150,6 +154,8 @@ def _migrate_notifications(connection) -> None:
     if "event_key" not in existing_cols:
         connection.execute(text("ALTER TABLE notifications ADD COLUMN event_key VARCHAR(128);"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_notifications_event_key ON notifications (event_key);"))
+    if "meta_json" not in existing_cols:
+        connection.execute(text("ALTER TABLE notifications ADD COLUMN meta_json JSON DEFAULT '{}' NOT NULL;"))
 
 
 def _migrate_tracked_candidates(connection) -> None:

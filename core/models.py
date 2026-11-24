@@ -118,6 +118,7 @@ class BotConfig(Base):
     auto_boss_enabled = Column(Boolean, default=False, nullable=False)
     auto_boss_hits = Column(Boolean, default=False, nullable=False)
     auto_boss_summon = Column(Boolean, default=False, nullable=False)
+    boss_auto_melee = Column(Boolean, default=False, nullable=False)
     boss_allow_paid_weapons = Column(Boolean, default=False, nullable=False)
     boss_targets = Column(JSON, default=list, nullable=False)
 
@@ -152,6 +153,9 @@ class BotConfig(Base):
     friend_outreach_min_damage = Column(BigInteger, default=0, nullable=False)
     friend_outreach_max_damage = Column(BigInteger, default=0, nullable=False)
     friend_outreach_only_active = Column(Boolean, default=True, nullable=False)
+    friends_parser_tier = Column(String(20), default="accessible", nullable=False)
+    friends_parser_min_authority = Column(BigInteger, default=0, nullable=False)
+    friends_parser_max_authority = Column(BigInteger, default=0, nullable=False)
     raid_tg_channels = Column(JSON, default=list, nullable=False)
     guild_scan_cursor = Column(Integer, default=0, nullable=False)
 
@@ -176,6 +180,7 @@ class Notification(Base):
     subtitle = Column(String(255), nullable=True)
     rewards = Column(JSON, default=list, nullable=False)
     drops = Column(JSON, default=list, nullable=False)
+    meta_json = Column(JSON, default=dict, nullable=False)
     is_read = Column(Boolean, default=False, index=True, nullable=False)
     event_key = Column(String(128), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)

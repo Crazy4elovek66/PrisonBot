@@ -46,6 +46,25 @@ class SliceEntry:
     source_tag: Optional[str] = None
 
 
+@dataclass
+class PresetRunState:
+    preset_id: int
+    current_step: int = 0
+    total_steps: int = 0
+    active_boss_id: Optional[int] = None
+    status: str = "idle"  # idle | running | completed | stopped | failed
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "presetId": self.preset_id,
+            "currentStep": self.current_step,
+            "totalSteps": self.total_steps,
+            "activeBossId": self.active_boss_id,
+            "status": self.status,
+            "isRunning": self.status == "running",
+        }
+
+
 class LiveStateHub:
     """
     Центральное потокобезопасное (asyncio) хранилище актуального live-состояния по аккаунтам и срезам:
@@ -59,6 +78,7 @@ class LiveStateHub:
         "profile",
         "state",
         "boss",
+        "presets",
         "prisons",
         "friends",
         "friend_requests",
@@ -74,15 +94,61 @@ class LiveStateHub:
         self._subscribers: Dict[int, Set[asyncio.Queue]] = {}
         self._in_flight: Dict[str, asyncio.Task] = {}
         self._versions_global: Dict[int, int] = {}
+        self._preset_runs: Dict[int, PresetRunState] = {}
 
     def clear(self, account_id: Optional[int] = None) -> None:
         """Очищает кэш срезов (используется при сбросе состояния в тестах или смене аккаунта)."""
         if account_id is None:
             self._slices.clear()
             self._versions_global.clear()
+            self._preset_runs.clear()
         else:
             self._slices.pop(account_id, None)
             self._versions_global.pop(account_id, None)
+            self._preset_runs.pop(account_id, None)
+
+    def get_preset_state(self, account_id: int) -> Optional[PresetRunState]:
+        return self._preset_runs.get(account_id)
+
+    def set_preset_state(
+        self,
+        account_id: int,
+        preset_id: Optional[int],
+        *,
+        current_step: int = 0,
+        total_steps: int = 0,
+        active_boss_id: Optional[int] = None,
+        status: str = "idle",
+        presets_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[PresetRunState]:
+        """Обновляет runtime-состояние активного пресета и транслирует срез presets подписчикам."""
+        if preset_id is None or status == "idle":
+            self._preset_runs.pop(account_id, None)
+            state_obj: Optional[PresetRunState] = None
+        else:
+            state_obj = PresetRunState(
+                preset_id=int(preset_id),
+                current_step=int(current_step),
+                total_steps=int(total_steps),
+                active_boss_id=active_boss_id,
+                status=status,
+            )
+            self._preset_runs[account_id] = state_obj
+
+        if presets_list is not None:
+            self.update_slice(
+                account_id,
+                "presets",
+                {
+                    "success": True,
+                    "activeRun": state_obj.to_dict() if state_obj else None,
+                    "presets": presets_list,
+                },
+            )
+        return state_obj
+
+    def clear_preset_state(self, account_id: int) -> None:
+        self._preset_runs.pop(account_id, None)
 
     def get_slice(
         self,

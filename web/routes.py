@@ -150,10 +150,12 @@ _asset_client: Optional[Any] = None
 
 def _get_asset_client() -> Any:
     global _asset_client
+    import importlib.util
     import httpx
     if _asset_client is None or _asset_client.is_closed:
+        use_http2 = importlib.util.find_spec("h2") is not None
         _asset_client = httpx.AsyncClient(
-            http2=True,
+            http2=use_http2,
             limits=httpx.Limits(max_connections=60, max_keepalive_connections=30, keepalive_expiry=120.0),
             timeout=httpx.Timeout(15.0, connect=4.0),
         )
@@ -535,7 +537,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     allowed_fields = {
         "is_paused", "sleep_mode_enabled", "sleep_start_hour", "sleep_end_hour",
         "auto_toilet_paper", "auto_business", "auto_beard", "auto_podogrev",
-        "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_allow_paid_weapons", "boss_targets",
+        "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee", "boss_allow_paid_weapons", "boss_targets",
         "auto_prison", "prison_target_id", "prison_prefer_night", "prison_min_energy",
         "auto_masters", "master_target_id", "auto_gifts", "auto_friends", "auto_events",
         "friend_accept_all", "friend_min_level", "friend_min_authority", "friend_min_biceps",
@@ -543,6 +545,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         "auto_kolsik", "kolsik_currency",
         "auto_friend_outreach", "friend_outreach_daily_limit", "friend_outreach_min_damage",
         "friend_outreach_max_damage", "friend_outreach_only_active", "raid_tg_channels",
+        "friends_parser_tier", "friends_parser_min_authority", "friends_parser_max_authority",
         "friend_filter_mode", "auto_parse_news_raids", "auto_friend_cleanup",
         "friend_cleanup_inactive_days", "friend_cleanup_daily_limit", "friend_cleanup_trigger_threshold",
         "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
@@ -616,6 +619,22 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     if "auto_friend_cleanup" in updates:
         updates["auto_friend_cleanup"] = bool(updates["auto_friend_cleanup"])
 
+    if "boss_auto_melee" in updates:
+        updates["boss_auto_melee"] = bool(updates["boss_auto_melee"])
+
+    if "friends_parser_tier" in updates:
+        tier_val = str(updates["friends_parser_tier"]).lower().strip()
+        if tier_val not in ("accessible", "mid", "top", "custom"):
+            raise HTTPException(status_code=400, detail="friends_parser_tier must be accessible, mid, top, or custom")
+        updates["friends_parser_tier"] = tier_val
+
+    for auth_k in ("friends_parser_min_authority", "friends_parser_max_authority"):
+        if auth_k in updates:
+            try:
+                updates[auth_k] = max(0, int(updates[auth_k] or 0))
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail=f"{auth_k} must be a non-negative integer")
+
     async with get_session(engine) as session:
         stmt = select(BotConfig).where(BotConfig.account_id == account_id)
         res = await session.execute(stmt)
@@ -642,13 +661,20 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     hub = _get_hub()
     hub.update_slice(account_id, "config", cfg_dict, source_tag=_hub_source_tag())
 
-    # Мгновенное пробуждение воркеров при активации авто-боссов или тюрем
+    # Мгновенное пробуждение воркеров при активации авто-боссов, авто-рукопашной или тюрем
     if not getattr(cfg, "is_paused", False):
         ctrl = getattr(bot_context, "scheduler_controller", None)
-        should_wake_boss = bool(updates.get("auto_boss_enabled") or updates.get("auto_boss_summon") or ("boss_targets" in updates and cfg.auto_boss_enabled))
+        should_wake_boss = bool(
+            updates.get("auto_boss_enabled")
+            or updates.get("auto_boss_summon")
+            or updates.get("boss_auto_melee")
+            or ("boss_targets" in updates and cfg.auto_boss_enabled)
+        )
         should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
         if should_wake_boss:
-            if ctrl is not None:
+            if updates.get("boss_auto_melee") and bot_context.boss_worker is not None and not updates.get("auto_boss_enabled"):
+                asyncio.create_task(bot_context.boss_worker.trigger_auto_melee())
+            elif ctrl is not None:
                 ctrl.trigger_boss_now(force_manual=False)
             elif bot_context.boss_worker is not None:
                 asyncio.create_task(bot_context.boss_worker.run_cycle())
@@ -705,6 +731,7 @@ async def get_notifications(
             "subtitle": n.subtitle,
             "rewards": n.rewards or [],
             "drops": n.drops or [],
+            "meta_json": getattr(n, "meta_json", None) or {},
             "is_read": n.is_read,
             "created_at": n.created_at.isoformat() if n.created_at else None,
         }
@@ -1060,7 +1087,22 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
 
     currencies = player_data.get("currencies", {})
     can_claim_paper = bool(player_data.get("canClaimToiletPaper", False))
-    last_collect = str(player_data.get("lastBusinessCollectTime", ""))
+    last_collect = str(
+        (businesses_data.get("lastCollectTime") if isinstance(businesses_data, dict) else "")
+        or player_data.get("lastBusinessCollectTime")
+        or ""
+    )
+
+    from workers.routine_worker import parse_iso_utc
+    business_cooldown_total = 8 * 3600
+    last_collect_dt = parse_iso_utc(last_collect)
+    next_collect_at = ""
+    business_cooldown_sec = 0
+    if last_collect_dt is not None:
+        from datetime import timedelta as _td, timezone as _tz
+        next_dt = last_collect_dt + _td(seconds=business_cooldown_total)
+        next_collect_at = next_dt.isoformat()
+        business_cooldown_sec = max(0, int((next_dt - datetime.now(_tz.utc)).total_seconds()))
 
     # Сохраняем свежий снимок в SQLite
     engine = bot_context.db_engine
@@ -1190,6 +1232,10 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
         "businesses": result_biz,
         "pendingResources": pending_resources,
         "lastBusinessCollectTime": last_collect,
+        "lastCollectTime": last_collect,
+        "nextBusinessCollectAt": next_collect_at,
+        "businessCooldownSec": business_cooldown_sec,
+        "businessCooldownTotalSec": business_cooldown_total,
         "characterLayers": _build_character_layers(player_data),
     }
     hub.update_slice(account_id, "profile", payload, source_tag=tag)
@@ -1357,6 +1403,7 @@ async def get_boss_presets(account_id: int = 1) -> Dict[str, Any]:
                     "id": p.id,
                     "name": p.name,
                     "items": p.items or [],
+                    "totalSteps": sum(max(1, int(it.get("count") or 1)) for it in (p.items or []) if isinstance(it, dict)),
                     "daily_enabled": bool(p.daily_enabled),
                     "schedule_time_msk": p.schedule_time_msk,
                     "last_run_date_msk": p.last_run_date_msk,
@@ -1573,7 +1620,19 @@ async def run_boss_preset(preset_id: int, account_id: int = 1) -> Dict[str, Any]
         asyncio.create_task(bot_context.boss_worker.run_cycle(force_manual=True))
 
     _flight_cache.invalidate(f"boss:{account_id}")
-    _schedule_hub_refresh(account_id, "boss")
+    total_steps = sum(max(1, int(it.get("count") or 1)) for it in (preset.items or []) if isinstance(it, dict))
+    hub = _get_hub()
+    if hasattr(hub, "set_preset_state"):
+        presets_res = await get_boss_presets(account_id=account_id)
+        hub.set_preset_state(
+            account_id,
+            preset.id,
+            current_step=preset.current_step_index,
+            total_steps=total_steps,
+            status="running",
+            presets_list=presets_res.get("presets", []),
+        )
+    _schedule_hub_refresh(account_id, "boss", "presets")
 
     return {
         "success": True,
@@ -1582,6 +1641,7 @@ async def run_boss_preset(preset_id: int, account_id: int = 1) -> Dict[str, Any]
             "id": preset.id,
             "name": preset.name,
             "items": preset.items,
+            "totalSteps": total_steps,
             "daily_enabled": preset.daily_enabled,
             "schedule_time_msk": preset.schedule_time_msk,
             "is_running": preset.is_running,
@@ -1608,6 +1668,18 @@ async def stop_boss_preset(preset_id: int, account_id: int = 1) -> Dict[str, Any
         session.add(preset)
         await session.commit()
         await session.refresh(preset)
+
+    _flight_cache.invalidate(f"boss:{account_id}")
+    hub = _get_hub()
+    if hasattr(hub, "set_preset_state"):
+        presets_res = await get_boss_presets(account_id=account_id)
+        hub.set_preset_state(
+            account_id,
+            None,
+            status="stopped",
+            presets_list=presets_res.get("presets", []),
+        )
+    _schedule_hub_refresh(account_id, "boss", "presets")
 
     return {
         "success": True,
@@ -1650,14 +1722,25 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
 
     async def _safe_state(tid: int):
         try:
-            return await prison_api.get_prison_state(tid)
+            res = await prison_api.get_prison_state(tid)
+            if isinstance(res, dict) and isinstance(res.get("data"), dict):
+                return res["data"]
+            return res if isinstance(res, dict) else {}
         except Exception:
             return {}
 
     async def _safe_checkpoints(tid: int):
         try:
             cp = await prison_api.get_checkpoints(tid, is_day)
-            return cp.get("checkpoints", []) if isinstance(cp, dict) else cp
+            if isinstance(cp, dict):
+                data_cp = cp.get("data")
+                if isinstance(data_cp, list):
+                    return data_cp
+                fallback_cp = cp.get("checkpoints")
+                if isinstance(fallback_cp, list):
+                    return fallback_cp
+                return []
+            return cp if isinstance(cp, list) else []
         except Exception:
             return []
 
@@ -1666,22 +1749,92 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
         raw_prisons = prisons_res.get("prisons", []) if isinstance(prisons_res, dict) else prisons_res
         masters = masters_res.get("masters", []) if isinstance(masters_res, dict) else masters_res
 
+        if not isinstance(raw_prisons, list):
+            raw_prisons = []
+
         target_id = getattr(cfg, "prison_target_id", None)
         if not target_id and raw_prisons:
             unlocked = [p.get("id") for p in raw_prisons if isinstance(p, dict) and p.get("isUnlocked", True)]
             target_id = max(unlocked) if unlocked else raw_prisons[0].get("id", 1)
         target_id = target_id or 1
 
-        state_data, checkpoints = await asyncio.gather(_safe_state(target_id), _safe_checkpoints(target_id))
+        # Fetch states for all unlocked prisons (for accurate dayRuns / nightRuns on every card)
+        unlocked_ids = [
+            int(p["id"]) for p in raw_prisons
+            if isinstance(p, dict) and p.get("id") is not None and p.get("isUnlocked", True)
+        ]
+        if target_id not in unlocked_ids:
+            unlocked_ids.append(int(target_id))
+
+        sem = asyncio.Semaphore(6)
+        async def _fetch_pstate(pid: int):
+            async with sem:
+                return pid, await _safe_state(pid)
+
+        state_pairs, checkpoints = await asyncio.gather(
+            asyncio.gather(*(_fetch_pstate(pid) for pid in unlocked_ids)),
+            _safe_checkpoints(target_id),
+        )
+        states_by_id = {pid: st for pid, st in state_pairs}
+        state_data = states_by_id.get(int(target_id), {})
+
+        enriched_prisons = []
+        for p in raw_prisons:
+            if not isinstance(p, dict):
+                continue
+            p_copy = dict(p)
+            pid = p_copy.get("id")
+            st = states_by_id.get(int(pid)) if pid is not None else None
+            if isinstance(st, dict):
+                p_copy["dayRuns"] = int(st.get("dayRuns", p_copy.get("dayRuns", 0)) or 0)
+                p_copy["nightRuns"] = int(st.get("nightRuns", p_copy.get("nightRuns", 0)) or 0)
+            else:
+                p_copy.setdefault("dayRuns", 0)
+                p_copy.setdefault("nightRuns", 0)
+            enriched_prisons.append(p_copy)
+
+        completed_cps = int(
+            (state_data.get("dayCurrentCheckpoint") if is_day else state_data.get("nightCurrentCheckpoint"))
+            or 0
+        ) if isinstance(state_data, dict) else 0
+        current_clicks = int(
+            (state_data.get("dayClicksInCheckpoint") if is_day else state_data.get("nightClicksInCheckpoint"))
+            or 0
+        ) if isinstance(state_data, dict) else 0
+        total_cps = len(checkpoints) if isinstance(checkpoints, list) else 0
+        active_cp = None
+        if total_cps > 0:
+            active_idx = min(max(completed_cps, 0), total_cps - 1)
+            active_cp = checkpoints[active_idx] if isinstance(checkpoints[active_idx], dict) else {}
+        req_clicks = int((active_cp or {}).get("clicksRequired") or 1)
+        energy_cost = int((active_cp or {}).get("energyCost") or 5)
+        total_progress = 0.0
+        if total_cps > 0:
+            if completed_cps >= total_cps:
+                total_progress = 100.0
+            else:
+                total_progress = min(
+                    100.0,
+                    max(0.0, ((completed_cps + (current_clicks / max(req_clicks, 1))) / max(total_cps, 1)) * 100.0),
+                )
 
         return {
             "success": True,
-            "prisons": raw_prisons,
+            "prisons": enriched_prisons,
             "targetId": target_id,
             "isDay": is_day,
             "state": state_data,
             "checkpoints": checkpoints,
             "masters": masters,
+            "progressInfo": {
+                "completedCheckpoints": completed_cps,
+                "currentStageNumber": min(total_cps, completed_cps + 1) if total_cps > 0 else 0,
+                "totalCheckpoints": total_cps,
+                "currentClicks": current_clicks,
+                "requiredClicks": req_clicks,
+                "energyCost": energy_cost,
+                "progressPercent": round(total_progress, 1),
+            },
         }
 
     target_cfg = getattr(cfg, "prison_target_id", None)
@@ -1803,6 +1956,11 @@ async def action_boss_start(payload: Dict[str, Any] = Body(...), account_id: int
         await _log_action(account_id, "manual_boss_start", "/api/boss/start-attack", 200, True, {
             "bossId": boss_id, "mode": mode, "result": res
         })
+        engine = bot_context.db_engine
+        if engine and bot_context.boss_worker:
+            cfg = await get_or_create_config(account_id, engine)
+            if getattr(cfg, "boss_auto_melee", False) and not getattr(cfg, "is_paused", False):
+                asyncio.create_task(bot_context.boss_worker.trigger_auto_melee())
         return {"success": True, "result": res}
     except Exception as e:
         await _log_action(account_id, "manual_boss_start", "/api/boss/start-attack", 500, False, {
@@ -1822,9 +1980,19 @@ async def action_boss_claim(payload: Optional[Dict[str, Any]] = Body(None), acco
         raise HTTPException(status_code=503, detail="BossAPI not available")
 
     claim_id = payload.get("claimId") if payload else None
+    boss_name = payload.get("bossName") if payload else None
+    mode = payload.get("mode") if payload else None
     try:
+        if not boss_name:
+            try:
+                bs = await boss_api.get_bootstrap()
+                b_obj = (bs.get("session") or bs.get("currentBattle") or bs.get("activeBoss") or {}) if isinstance(bs, dict) else {}
+                boss_name = b_obj.get("bossName") or b_obj.get("title") or bs.get("title")
+                mode = mode or b_obj.get("mode")
+            except Exception:
+                pass
         res = await boss_api.claim_reward(claim_id)
-        parsed = DropParser.parse_boss_claim(res)
+        parsed = DropParser.parse_boss_claim(res, boss_name=boss_name, mode=mode)
         engine = bot_context.db_engine
         if engine:
             await DropParser.save_notification(account_id, parsed, engine)
@@ -1933,12 +2101,43 @@ async def action_prison_work(payload: Dict[str, Any] = Body(...), account_id: in
         for k, v in rewards_map.items()
     ]
 
+    prison_name = payload.get("prisonName")
+    stage_num = payload.get("stageNum")
+    if not prison_name:
+        try:
+            p_res = await prison_api.get_all_prisons()
+            plist = p_res.get("prisons", []) if isinstance(p_res, dict) else p_res
+            for p_item in (plist or []):
+                if isinstance(p_item, dict) and str(p_item.get("id")) == str(prison_id):
+                    prison_name = p_item.get("name")
+                    break
+        except Exception:
+            pass
+    if stage_num is None:
+        try:
+            st = await prison_api.get_prison_state(int(prison_id))
+            st_in = st.get("data", st) if isinstance(st, dict) else {}
+            cp_v = int((st_in.get("dayCurrentCheckpoint" if is_day else "nightCurrentCheckpoint")) or 0)
+            stage_num = cp_v + 1 if cp_v >= 0 else None
+        except Exception:
+            pass
+
+    p_title_name = prison_name or f"Тюрьма #{prison_id}"
+    shift_word = "День" if is_day else "Ночь"
     parsed = {
         "category": "prisons",
-        "title": f"Ходки: Тюрьма #{prison_id}",
-        "subtitle": f"Выполнено ходок: {completed}",
+        "title": f"{p_title_name}: {shift_word} {stage_num}" if stage_num else f"{p_title_name}: {shift_word}",
+        "subtitle": f"Кликов: {completed}",
         "rewards": rewards_list,
         "drops": drops_list,
+        "meta_json": {
+            "type": "prison_action",
+            "prison_id": int(prison_id),
+            "prison_name": p_title_name,
+            "is_day": is_day,
+            "stage": stage_num,
+            "clicks": completed,
+        },
     }
 
     engine = bot_context.db_engine
@@ -3017,6 +3216,27 @@ async def get_wardrobe_overview() -> Dict[str, Any]:
             )
 
             init_data = init_res if isinstance(init_res, dict) else {}
+            if not init_data:
+                cached_p = _last_live_player_data.get(1)
+                if isinstance(cached_p, dict) and cached_p:
+                    init_data = cached_p
+                elif bot_context.db_engine:
+                    try:
+                        async with get_session(bot_context.db_engine) as _s:
+                            snap_stmt = (
+                                select(PlayerSnapshot)
+                                .where(PlayerSnapshot.account_id == 1)
+                                .order_by(PlayerSnapshot.id.desc())
+                                .limit(1)
+                            )
+                            snap_row = (await _s.execute(snap_stmt)).scalar_one_or_none()
+                            if snap_row and isinstance(snap_row.raw_payload, dict) and snap_row.raw_payload:
+                                init_data = snap_row.raw_payload
+                    except Exception:
+                        pass
+            else:
+                _last_live_player_data[1] = init_data
+
             inv_data = inv_res if isinstance(inv_res, dict) else {}
             cam_data = cam_res if isinstance(cam_res, dict) else {}
             tattoos_raw = tattoos_cat if isinstance(tattoos_cat, list) else []
@@ -3820,6 +4040,9 @@ async def get_active_players(
     source: str = Query("all"),
     minDamage: int = Query(0),
     maxDamage: int = Query(0),
+    minAuthority: int = Query(0),
+    maxAuthority: int = Query(0),
+    tier: Optional[str] = Query(None),
     limit: int = Query(50),
     excludeFriends: bool = Query(False),
     account_id: int = 1,
@@ -3831,7 +4054,11 @@ async def get_active_players(
     if not social_api:
         raise HTTPException(status_code=503, detail="SocialAPI not available")
 
-    is_default_radar = (source == "all" and minDamage == 0 and maxDamage == 0 and not excludeFriends and limit == 50)
+    is_default_radar = (
+        source == "all" and minDamage == 0 and maxDamage == 0
+        and minAuthority == 0 and maxAuthority == 0 and tier is None
+        and not excludeFriends and limit == 50
+    )
     hub = _get_hub()
     tag = _hub_source_tag()
     if is_default_radar and not force:
@@ -3890,6 +4117,9 @@ async def get_active_players(
         max_damage=maxDamage,
         limit=limit,
         exclude_friends=excludeFriends,
+        tier=tier,
+        min_authority=minAuthority,
+        max_authority=maxAuthority,
     )
     for p in players:
         if p.get("photoUrl"):
@@ -3925,6 +4155,10 @@ async def scan_guilds_endpoint(
 
     force = bool(payload.get("force", False))
     max_guilds = int(payload.get("maxGuilds", 8))
+    cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
+    tier = str(payload.get("tier") or getattr(cfg, "friends_parser_tier", "accessible") or "accessible")
+    min_auth = int(payload.get("minAuthority") if payload.get("minAuthority") is not None else (getattr(cfg, "friends_parser_min_authority", 0) or 0))
+    max_auth = int(payload.get("maxAuthority") if payload.get("maxAuthority") is not None else (getattr(cfg, "friends_parser_max_authority", 0) or 0))
 
     res = await _raids_api.scan_active_guilds(
         social_api=social_api,
@@ -3933,6 +4167,9 @@ async def scan_guilds_endpoint(
         max_guilds=max_guilds,
         delay_range=(1.5, 3.0),
         force=force,
+        tier=tier,
+        min_authority=min_auth,
+        max_authority=max_auth,
     )
     return res
 
@@ -4742,6 +4979,10 @@ async def refresh_hub_slice(account_id: int = 1, slice_name: str = "profile", fo
             return await get_state(account_id=account_id, force=force)
         elif slice_name == "boss":
             return await get_live_boss(account_id=account_id, force=force)
+        elif slice_name == "presets":
+            res_p = await get_boss_presets(account_id=account_id)
+            hub.update_slice(account_id, "presets", res_p, source_tag=tag)
+            return res_p
         elif slice_name == "prisons":
             return await get_live_prisons(account_id=account_id, force=force)
         elif slice_name == "friends":

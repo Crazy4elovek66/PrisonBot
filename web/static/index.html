@@ -224,13 +224,6 @@
               <span class="currency-name">Мыло</span>
             </div>
           </div>
-          <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/keys.webp" class="game-icon" alt="Ключи"></span>
-            <div class="currency-details">
-              <span id="cur-keys" class="currency-value" style="color: #fbbf24;">-</span>
-              <span class="currency-name">Ключи</span>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -376,9 +369,18 @@
 
       <!-- Melee Attacks (4 attacks) -->
       <div class="card">
-        <div class="card-header-row">
-          <div class="card-title">🥊 Рукопашные удары</div>
-          <div class="card-subtitle">Бесплатные атаки с таймером отката</div>
+        <div class="card-header-row" style="align-items: center;">
+          <div>
+            <div class="card-title">🥊 Рукопашные удары</div>
+            <div class="card-subtitle">Бесплатные атаки с таймером отката</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; color: var(--muted-foreground); font-weight: 600;">Авто</span>
+            <label class="toggle-switch" title="Автоматически выполнять рукопашные удары в бою с боссом">
+              <input type="checkbox" id="cfg-boss_auto_melee">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
         </div>
         <div class="attacks-grid">
           <div class="attack-card">
@@ -598,7 +600,7 @@
 
         <!-- Action Buttons -->
         <div style="display: flex; gap: 8px;">
-          <button id="btn-prison-work-one" class="btn btn-primary" style="flex: 1;">Сделать 1 ходку</button>
+          <button id="btn-prison-work-one" class="btn btn-primary" style="flex: 1;">Выполнить 1 действие (⚡ 5)</button>
           <button id="btn-prison-work-all" class="btn btn-secondary" style="flex: 1;">⚡️ Слить всю энергию</button>
         </div>
       </div>
@@ -857,7 +859,7 @@
          ---------------------------------------------------------------------- -->
     <section id="sec-routine" class="section-pane">
       <!-- Businesses Card -->
-      <div class="card card-accent">
+      <div class="card card-accent" id="biz-collect-card">
         <div class="card-header-row">
           <div>
             <div class="card-title">🏬 Прибыль с бизнесов</div>
@@ -1453,6 +1455,25 @@
               <label class="radar-filter-label">Макс. урон:</label>
               <input type="number" id="radar-filter-max-dmg" placeholder="Любой" class="text-input text-input-sm"
                 style="width: 85px;">
+            </div>
+            <div class="radar-filter-group">
+              <label class="radar-filter-label">Уровень / Тир:</label>
+              <select id="radar-filter-tier" class="select-input select-input-sm">
+                <option value="accessible" selected>Доступные</option>
+                <option value="mid">Средние</option>
+                <option value="top">Топ</option>
+                <option value="custom">Свой</option>
+              </select>
+            </div>
+            <div class="radar-filter-group">
+              <label class="radar-filter-label">Мин. авторитет:</label>
+              <input type="number" id="radar-filter-min-auth" placeholder="0" class="text-input text-input-sm"
+                style="width: 90px;" min="0">
+            </div>
+            <div class="radar-filter-group">
+              <label class="radar-filter-label">Макс. авторитет:</label>
+              <input type="number" id="radar-filter-max-auth" placeholder="Любой" class="text-input text-input-sm"
+                style="width: 90px;" min="0">
             </div>
             <div class="radar-filter-group">
               <label class="radar-filter-label">Лимит:</label>

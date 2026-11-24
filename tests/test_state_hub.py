@@ -75,3 +75,30 @@ async def test_live_state_hub_single_flight():
     )
     assert calls == 1
     assert r1 == r2 == r3
+
+
+def test_preset_run_state_sync_and_clear():
+    """Проверка PresetRunState и трансляции среза presets в LiveStateHub."""
+    from core.state_hub import LiveStateHub
+
+    hub = LiveStateHub()
+    st = hub.set_preset_state(
+        1,
+        7,
+        current_step=1,
+        total_steps=5,
+        active_boss_id=3,
+        status="running",
+        presets_list=[{"id": 7, "is_running": True, "current_step_index": 1, "totalSteps": 5}],
+    )
+    assert st is not None
+    assert st.preset_id == 7
+    assert hub.get_preset_state(1).status == "running"
+
+    sl = hub.get_slice(1, "presets")
+    assert sl is not None
+    assert sl.data["activeRun"]["isRunning"] is True
+
+    hub.set_preset_state(1, None, status="stopped", presets_list=[{"id": 7, "is_running": False}])
+    assert hub.get_preset_state(1) is None
+    assert hub.get_slice(1, "presets").data["activeRun"] is None

@@ -388,12 +388,13 @@ async def test_post_action_boss_claim_and_prison_work(web_setup):
     assert res_work.status_code == 200
     assert res_work.json()["completed"] == 2
 
-    # Проверяем агрегированное уведомление
+    # Проверяем агрегированное уведомление (новый формат Кликов: 2)
     async with get_session(engine) as session:
         stmt = select(Notification).where(Notification.category == "prisons").order_by(Notification.id.desc())
         p_notif = (await session.execute(stmt)).scalars().first()
         assert p_notif is not None
-        assert p_notif.subtitle == "Выполнено ходок: 2"
+        assert p_notif.subtitle == "Кликов: 2"
+        assert p_notif.meta_json.get("type") == "prison_action"
         # 100 * 2 = 200 авторитета
         auth_rew = next((r for r in p_notif.rewards if r["currency"] == "authority"), None)
         assert auth_rew is not None
@@ -2821,6 +2822,98 @@ def test_normalize_db_url_resolves_to_storage():
     assert normalize_db_url("sqlite+aiosqlite:///storage/prison_bot.db") == f"sqlite+aiosqlite:///{expected_path}"
     assert normalize_db_url("sqlite+aiosqlite:///prison_bot.db") == f"sqlite+aiosqlite:///{expected_path}"
     assert normalize_db_url("sqlite+aiosqlite:///:memory:") == "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.mark.asyncio
+async def test_new_dashboard_contracts_prisons_business_config_and_assets(web_setup):
+    """Проверка /live/prisons (progressInfo + dayRuns/nightRuns), /live/profile (cooldown бизнесов), config и _get_asset_client."""
+    from unittest.mock import AsyncMock
+    from datetime import datetime, timedelta, timezone
+    from web.routes import _get_asset_client, close_asset_client, _flight_cache, _get_hub
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+    _flight_cache.invalidate()
+    _get_hub().clear()
+
+    # 1. Config: boss_auto_melee + friends_parser_*
+    r_cfg = await client.patch(
+        "/api/v1/config",
+        json={
+            "boss_auto_melee": True,
+            "friends_parser_tier": "mid",
+            "friends_parser_min_authority": 200000,
+            "friends_parser_max_authority": 15000000,
+        },
+        headers=headers,
+    )
+    assert r_cfg.status_code == 200
+    cfg_d = r_cfg.json()["config"]
+    assert cfg_d["boss_auto_melee"] is True
+    assert cfg_d["friends_parser_tier"] == "mid"
+    assert cfg_d["friends_parser_min_authority"] == 200000
+
+    # 2. /live/prisons: data checkpoints + dayRuns/nightRuns on all unlocked prisons
+    mock_prison_api = AsyncMock()
+    mock_prison_api.get_all_prisons.return_value = {
+        "prisons": [
+            {"id": 1, "name": "Бутырка", "isUnlocked": True},
+            {"id": 4, "name": "Кресты", "isUnlocked": True},
+        ]
+    }
+    mock_prison_api.get_masters.return_value = {"masters": []}
+    mock_prison_api.get_prison_state.side_effect = lambda pid: {
+        "data": {
+            "prisonId": pid,
+            "dayCurrentCheckpoint": 4 if pid == 4 else 1,
+            "dayClicksInCheckpoint": 7 if pid == 4 else 0,
+            "dayRuns": 3 if pid == 1 else 2,
+            "nightRuns": 1 if pid == 1 else 4,
+        }
+    }
+    mock_prison_api.get_checkpoints.return_value = {
+        "data": [{"checkpointId": i + 1, "clicksRequired": 11 if i == 4 else 7, "energyCost": 5} for i in range(7)]
+    }
+    bot_context.prison_api = mock_prison_api
+
+    await client.patch("/api/v1/config", json={"prison_target_id": 4, "prison_prefer_night": False}, headers=headers)
+    _flight_cache.invalidate()
+    _get_hub().clear()
+
+    r_pr = await client.get("/api/v1/live/prisons?force=1", headers=headers)
+    assert r_pr.status_code == 200
+    pr_json = r_pr.json()
+    p_info = pr_json["progressInfo"]
+    assert p_info["totalCheckpoints"] == 7
+    assert p_info["completedCheckpoints"] == 4
+    assert p_info["currentClicks"] == 7
+    assert p_info["requiredClicks"] == 11
+    assert p_info["energyCost"] == 5
+    # ((4 + 7/11) / 7) * 100 = 66.2%
+    assert 65.5 <= p_info["progressPercent"] <= 66.9
+    kresty = next(p for p in pr_json["prisons"] if p["id"] == 4)
+    assert kresty["dayRuns"] == 2
+    assert kresty["nightRuns"] == 4
+
+    # 3. /live/profile exposes nextBusinessCollectAt & businessCooldownSec from businesses_data.lastCollectTime
+    recent_collect = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    mock_player_api = AsyncMock()
+    mock_player_api.init_player.return_value = {"id": 1, "nickname": "Test", "energy": 50, "maxEnergy": 50, "currencies": {}}
+    mock_player_api.get_businesses.return_value = {"lastCollectTime": recent_collect, "businesses": [], "playerBusinesses": []}
+    bot_context.player_api = mock_player_api
+    _flight_cache.invalidate()
+    _get_hub().clear()
+
+    r_prof = await client.get("/api/v1/live/profile?force=1", headers=headers)
+    assert r_prof.status_code == 200
+    prof_j = r_prof.json()
+    assert prof_j["nextBusinessCollectAt"]
+    assert 5 * 3600 < prof_j["businessCooldownSec"] <= 6 * 3600
+
+    # 4. _get_asset_client does not crash even without h2 installed
+    ac = _get_asset_client()
+    assert ac is not None
+    await close_asset_client()
 
 
 

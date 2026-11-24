@@ -17,6 +17,8 @@ const GAME_ICONS = {
   gunshot: "/static/assets/icons/gunshot.webp",
   energy: "/static/assets/icons/energy.webp",
   authority: "/static/assets/icons/authority.webp",
+  respect: "/static/assets/icons/respect.webp",
+  rating: "/static/assets/icons/respect.webp",
   biceps: "/static/assets/icons/biceps.webp",
   keys: "/static/assets/icons/keys.webp",
   talents: "/static/assets/icons/talents.webp",
@@ -36,6 +38,66 @@ function gameIcon(key, alt = "", cls = "game-icon") {
   const src = GAME_ICONS[key];
   if (!src) return alt ? `<span>${alt}</span>` : "";
   return `<img src="${src}" class="${cls}" alt="${alt}" onerror="this.onerror=null;this.replaceWith('${alt || ''}')">`;
+}
+
+// Unified Resource Icon Map (Делюги -> Список предприятий & Центр уведомлений)
+const RESOURCE_ICON_MAP = {
+  authority: { src: "/static/assets/icons/authority.webp", label: "Авторитет" },
+  respect: { src: "/static/assets/icons/respect.webp", label: "Уважение" },
+  rating: { src: "/static/assets/icons/respect.webp", label: "Уважение" },
+  cigarettes: { src: "/static/assets/icons/cigarettes.webp", label: "Папиросы" },
+  cigs: { src: "/static/assets/icons/cigarettes.webp", label: "Папиросы" },
+  rubles: { src: "/static/assets/icons/rubles.webp", label: "Рубли" },
+  coins: { src: "/static/assets/icons/rubles.webp", label: "Рубли" },
+  sugar: { src: "/static/assets/icons/sugar.webp", label: "Сахар" },
+  paper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
+  toiletpaper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
+  toilet_paper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
+  soap: { src: "/static/assets/icons/soap.webp", label: "Мыло" },
+  energy: { src: "/static/assets/icons/energy.webp", label: "Энергия" },
+  biceps: { src: "/static/assets/icons/biceps.webp", label: "Бицепс" },
+  talents: { src: "/static/assets/icons/talents.webp", label: "Таланты" },
+  intellect: { src: "/static/assets/icons/talents.webp", label: "Интеллект" },
+  keys: { src: "/static/assets/icons/keys.webp", label: "Ключи" },
+  stash: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
+  stashes: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
+  signet: { src: "/static/assets/icons/signet.webp", label: "Перстень" },
+  ore_signet: { src: "/static/assets/icons/ore_signet.webp", label: "Перстень рудный" },
+  knife: { src: "/static/assets/icons/knife.webp", label: "Финка" },
+  poison: { src: "/static/assets/icons/poison.webp", label: "Яд" },
+  gunshot: { src: "/static/assets/icons/gunshot.webp", label: "Самопал" },
+};
+
+function resolveResourceMeta(key, fallbackLabel = "") {
+  const norm = String(key || "").trim().toLowerCase();
+  if (RESOURCE_ICON_MAP[norm]) return RESOURCE_ICON_MAP[norm];
+  const noPrefix = norm.replace(/^reward/, "");
+  if (RESOURCE_ICON_MAP[noPrefix]) return RESOURCE_ICON_MAP[noPrefix];
+  return { src: null, label: fallbackLabel || key || "Ресурс" };
+}
+
+function renderResourceIcon(key, cls = "res-icon", fallbackLabel = "") {
+  const meta = resolveResourceMeta(key, fallbackLabel);
+  if (!meta.src) {
+    return `<span class="res-fallback-label" title="${meta.label}">${meta.label}</span>`;
+  }
+  return `<img src="${meta.src}" class="${cls}" title="${meta.label}" alt="${meta.label}" onerror="this.onerror=null;this.replaceWith('${meta.label}')">`;
+}
+
+function renderResourceBadge(reward) {
+  if (!reward) return "";
+  const rawKey = reward.currency || reward.type || reward.rewardType || "";
+  const meta = resolveResourceMeta(rawKey, reward.label || rawKey);
+  const amt = Number(reward.amount ?? reward.value ?? 0);
+  const iconHtml = meta.src
+    ? `<img src="${meta.src}" class="res-icon" title="${meta.label}" alt="${meta.label}">`
+    : `<span style="color: var(--muted-foreground); font-size: 10px;">${meta.label}</span>`;
+  return `
+    <span class="res-badge" title="${meta.label}">
+      ${iconHtml}
+      <span class="res-amt">+${formatNum(amt)}</span>
+    </span>
+  `;
 }
 
 // Global App State
@@ -594,7 +656,6 @@ function renderProfileData(data) {
   setTextIfChanged(document.getElementById("cur-rubles"), formatNum(cur.rubles));
   setTextIfChanged(document.getElementById("cur-paper"), formatNum(cur.paper));
   setTextIfChanged(document.getElementById("cur-soap"), formatNum(cur.soap));
-  setTextIfChanged(document.getElementById("cur-keys"), formatNum(cur.keys));
 
   setTextIfChanged(document.getElementById("inv-poison-count"), `${wep.poisonCount || 0} шт.`);
   setTextIfChanged(document.getElementById("inv-gunshot-count"), `${wep.gunshotCount || 0} шт.`);
@@ -881,17 +942,51 @@ function renderPrisonsData(data) {
   setTextIfChanged(document.getElementById("current-prison-name"), `⛓️ ${pName}`);
 
   const cps = data.checkpoints || [];
-  const totalCps = cps.length;
-  let completedCps = 0;
-  cps.forEach(c => {
-    if (c.isClaimed || c.isPassed) completedCps++;
-  });
+  const stateObj = (data.state && typeof data.state === "object" && data.state.data) ? data.state.data : (data.state || {});
+  const pInfo = data.progressInfo || null;
 
-  const cpText = totalCps > 0 ? `${completedCps} / ${totalCps}` : "1 / 1";
-  const cpPct = totalCps > 0 ? Math.round((completedCps / totalCps) * 100) : 100;
+  const totalCps = pInfo ? Number(pInfo.totalCheckpoints || 0) : cps.length;
+  const completedCps = pInfo
+    ? Number(pInfo.completedCheckpoints || 0)
+    : Number((currentIsDay ? stateObj.dayCurrentCheckpoint : stateObj.nightCurrentCheckpoint) || 0);
+  const currentClicks = pInfo
+    ? Number(pInfo.currentClicks || 0)
+    : Number((currentIsDay ? stateObj.dayClicksInCheckpoint : stateObj.nightClicksInCheckpoint) || 0);
+
+  let reqClicks = pInfo ? Number(pInfo.requiredClicks || 1) : 1;
+  let energyCost = pInfo ? Number(pInfo.energyCost || 5) : 5;
+  if (!pInfo && totalCps > 0) {
+    const activeIdx = Math.min(Math.max(completedCps, 0), totalCps - 1);
+    const activeCp = cps[activeIdx] || {};
+    reqClicks = Number(activeCp.clicksRequired || 1);
+    energyCost = Number(activeCp.energyCost || 5);
+  }
+
+  let cpPct = 0;
+  let cpText = "0 / 0";
+  if (pInfo && typeof pInfo.progressPercent === "number") {
+    cpPct = Math.max(0, Math.min(100, Math.round(pInfo.progressPercent * 10) / 10));
+  } else if (totalCps > 0) {
+    if (completedCps >= totalCps) {
+      cpPct = 100;
+    } else {
+      cpPct = Math.max(0, Math.min(100, Math.round(((completedCps + (currentClicks / Math.max(reqClicks, 1))) / totalCps) * 1000) / 10));
+    }
+  }
+  if (totalCps > 0) {
+    const curStage = Math.min(totalCps, completedCps + 1);
+    const shiftWord = currentIsDay ? "День" : "Ночь";
+    cpText = `${shiftWord} ${curStage} / ${totalCps} (шаг ${currentClicks}/${reqClicks})`;
+  }
+
   setTextIfChanged(document.getElementById("prison-checkpoint-text"), cpText);
   setTextIfChanged(document.getElementById("prison-checkpoint-percent"), `${cpPct}%`);
   setWidthIfChanged(document.getElementById("prison-checkpoint-fill"), `${cpPct}%`);
+
+  const workOneBtn = document.getElementById("btn-prison-work-one");
+  if (workOneBtn) {
+    setTextIfChanged(workOneBtn, `Выполнить 1 действие (⚡ ${energyCost})`);
+  }
 
   renderPrisonsGrid(data.prisons || []);
   renderMastersSelect(data.masters || []);
@@ -918,7 +1013,9 @@ function renderPrisonsGrid(prisons) {
     tile.setAttribute("data-prison-id", String(p.id));
     setTextIfChanged(tile.querySelector(".prison-tile-name"), p.name || `Тюрьма #${p.id}`);
     setTextIfChanged(tile.querySelector(".prison-tile-lock"), isUnlocked ? "🔓" : "🔒");
-    const runsInfo = p.dayRuns !== undefined ? `Дн: ${p.dayRuns || 0} · Ночь: ${p.nightRuns || 0}` : `Ур. ${p.requiredLevel || 1}`;
+    const runsInfo = isUnlocked
+      ? `☀️ День: ${p.dayRuns || 0}  |  🌙 Ночь: ${p.nightRuns || 0}`
+      : `🔒 Требуется ур. ${p.requiredLevel || 1}`;
     setTextIfChanged(tile.querySelector(".prison-tile-meta"), runsInfo);
   };
 
@@ -1067,18 +1164,17 @@ function renderBusinesses() {
   // 1. Pending rewards pills in accordion header
   if (pillsContainer) {
     const pending = playerProfile.pendingResources || {};
-    let pills = [];
-    if (pending.cigarettes) {
-      pills.push(`<span class="biz-pending-pill">🚬 +${formatNum(pending.cigarettes)} Папирос</span>`);
+    const orderedKeys = ["cigarettes", "rubles", "authority", "respect", "rating", "sugar"];
+    const pills = [];
+    for (const key of orderedKeys) {
+      if (pending[key]) {
+        pills.push(`<span class="biz-pending-pill">${renderResourceBadge({ currency: key, amount: pending[key] })}</span>`);
+      }
     }
-    if (pending.rubles) {
-      pills.push(`<span class="biz-pending-pill" style="color: #34d399;">💵 +${formatNum(pending.rubles)} Рублей</span>`);
-    }
-    if (pending.authority) {
-      pills.push(`<span class="biz-pending-pill" style="color: #fbbf24;">👑 +${formatNum(pending.authority)} Авторитет</span>`);
-    }
-    if (pending.sugar) {
-      pills.push(`<span class="biz-pending-pill">🍬 +${formatNum(pending.sugar)} Сахар</span>`);
+    for (const [key, val] of Object.entries(pending)) {
+      if (val && !orderedKeys.includes(key)) {
+        pills.push(`<span class="biz-pending-pill">${renderResourceBadge({ currency: key, amount: val })}</span>`);
+      }
     }
     if (pills.length === 0) {
       pills.push('<span class="biz-pending-pill">0 ресурсов</span>');
@@ -1093,9 +1189,14 @@ function renderBusinesses() {
 
   if (!container) return;
   const patchBiz = (item, b) => {
-    const rewardInfo = b.rewardPerLevel ? `+${b.rewardPerLevel * (b.level || 1)} / 8ч` : "";
+    const rewardAmount = b.rewardPerLevel ? b.rewardPerLevel * (b.level || 1) : (b.currentReward || 0);
+    const rewardInfo = rewardAmount ? `+${formatNum(rewardAmount)} / 8ч` : "";
     setTextIfChanged(item.querySelector(".biz-title"), b.title || b.name || `Бизнес #${b.businessId || ''}`);
-    setTextIfChanged(item.querySelector(".biz-sub"), `${b.rewardType ? b.rewardType.toUpperCase() : 'ДОХОД'}: ${rewardInfo}`);
+    const subEl = item.querySelector(".biz-sub");
+    if (subEl) {
+      const html = `${renderResourceIcon(b.rewardType || 'cigarettes', 'res-icon')} <span>${rewardInfo || 'Доход'}</span>`;
+      if (subEl.innerHTML !== html) subEl.innerHTML = html;
+    }
     setTextIfChanged(item.querySelector(".biz-lvl"), `Ур. ${b.level || 0}/${b.maxLevel || 8}`);
   };
 
@@ -1178,26 +1279,40 @@ async function loadRoutine() {
 
 function updateBusinessCountdown() {
   const el = document.getElementById("biz-countdown");
+  const card = document.getElementById("biz-collect-card");
+  const collectBtn = document.getElementById("btn-collect-business");
   if (!el) return;
 
-  const lastCollectStr = playerProfile.lastBusinessCollectTime;
-  if (!lastCollectStr) {
-    el.textContent = "Готово!";
-    el.style.color = "#34d399";
-    return;
+  let diff = 0;
+  const nextAtStr = playerProfile.nextBusinessCollectAt;
+  const lastCollectStr = playerProfile.lastBusinessCollectTime || playerProfile.lastCollectTime;
+
+  if (nextAtStr && !isNaN(Date.parse(nextAtStr))) {
+    diff = (Date.parse(nextAtStr) - Date.now()) / 1000;
+  } else if (lastCollectStr && !isNaN(Date.parse(lastCollectStr))) {
+    const lastSec = Date.parse(lastCollectStr) / 1000;
+    const nowSec = Date.now() / 1000;
+    const cdSec = Number(playerProfile.businessCooldownTotalSec || 8 * 3600);
+    diff = (lastSec + cdSec) - nowSec;
   }
 
-  const lastSec = new Date(lastCollectStr).getTime() / 1000;
-  const nowSec = Date.now() / 1000;
-  const cdSec = 8 * 3600; // 8 hours
-  const diff = (lastSec + cdSec) - nowSec;
-
-  if (diff <= 0) {
+  if (!diff || diff <= 0) {
     el.textContent = "Готово!";
     el.style.color = "#34d399";
+    if (card) card.classList.remove("business-cooldown-locked");
+    if (collectBtn) {
+      collectBtn.disabled = false;
+      setTextIfChanged(collectBtn, "💰 Собрать прибыль сейчас");
+    }
   } else {
-    el.textContent = formatCountdown(diff);
+    const cdStr = formatCountdown(diff);
+    el.textContent = cdStr;
     el.style.color = "#fbbf24";
+    if (card) card.classList.add("business-cooldown-locked");
+    if (collectBtn) {
+      collectBtn.disabled = true;
+      setTextIfChanged(collectBtn, `⏳ Доступно через ${cdStr}`);
+    }
   }
 }
 
@@ -1259,32 +1374,59 @@ async function loadNotifications(category = "all") {
 
     notifs.forEach(n => {
       const card = document.createElement("div");
-      card.className = `notif-card notif-${n.category || 'other'}`;
+      const meta = n.meta_json || {};
+      const isDefeat = meta.type === "boss_defeat" || meta.outcome === "defeat";
+      card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}`;
 
       let rewardsHtml = "";
       if (Array.isArray(n.rewards) && n.rewards.length > 0) {
         rewardsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
-            ${n.rewards.map(r => `
-              <span class="reward-pill">
-                <span>+${formatNum(r.amount)}</span>
-                <span style="color: var(--muted-foreground);">${r.label}</span>
-              </span>
-            `).join("")}
+            ${n.rewards.map(r => renderResourceBadge(r)).join("")}
           </div>
         `;
       }
 
+      let defeatBarHtml = "";
+      if (isDefeat && meta.max_hp) {
+        const remHp = Math.max(0, Number(meta.remaining_hp || 0));
+        const maxHp = Math.max(1, Number(meta.max_hp || 1));
+        const hpPct = Math.max(0, Math.min(100, Math.round((remHp / maxHp) * 1000) / 10));
+        defeatBarHtml = `
+          <div class="defeat-hp-wrap">
+            <div class="defeat-hp-label">
+              <span>Осталось HP: ${formatNum(remHp)} / ${formatNum(maxHp)}</span>
+              <span>${hpPct}%</span>
+            </div>
+            <div class="defeat-hp-bar">
+              <div class="defeat-hp-fill" style="width: ${hpPct}%;"></div>
+            </div>
+          </div>
+        `;
+      }
+
+      const rawDrops = Array.isArray(n.drops) && n.drops.length > 0
+        ? n.drops
+        : (Array.isArray(meta.cosmetic_drops) ? meta.cosmetic_drops : []);
+
       let dropsHtml = "";
-      if (Array.isArray(n.drops) && n.drops.length > 0) {
+      const clickableDrops = [];
+      if (rawDrops.length > 0) {
         dropsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
-            ${n.drops.map(d => `
-              <span class="drop-pill">
-                <span>🎁 ${d.title}</span>
-                ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.8;">(${d.subtitle})</span>` : ''}
-              </span>
-            `).join("")}
+            ${rawDrops.map((d, idx) => {
+              const isCosmetic = ["tattoo", "clothing", "room", "camera", "item"].includes(String(d.type || d.kind || "").toLowerCase())
+                && (d.itemId || d.setId || d.imageUrl || String(d.kind) === "tattoo" || String(d.kind) === "clothing" || String(d.type) === "room");
+              if (isCosmetic) {
+                clickableDrops.push({ idx, drop: d });
+              }
+              return `
+                <span class="drop-pill ${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
+                  <span>${isCosmetic ? '👕 ' : '🎁 '}${d.title || d.name || 'Дроп'}</span>
+                  ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.8;">(${d.subtitle})</span>` : ''}
+                </span>
+              `;
+            }).join("")}
           </div>
         `;
       }
@@ -1299,9 +1441,25 @@ async function loadNotifications(category = "all") {
           </div>
           <span style="font-size: 10px; color: var(--muted-foreground);">${timeStr}</span>
         </div>
+        ${defeatBarHtml}
         ${rewardsHtml}
         ${dropsHtml}
       `;
+
+      clickableDrops.forEach(({ idx, drop }) => {
+        const pillEl = card.querySelector(`.drop-pill-clickable[data-drop-idx="${idx}"]`);
+        pillEl?.addEventListener("click", () => {
+          openItemPreviewModal({
+            type: drop.type || drop.kind || "tattoo",
+            itemId: drop.itemId || drop.id || null,
+            setId: drop.setId || null,
+            name: drop.name || drop.title || "",
+            imageUrl: drop.imageUrl || drop.previewUrl || "",
+            zone: drop.zone || 1,
+          });
+        });
+      });
+
       container.appendChild(card);
     });
   } catch (err) {
@@ -2588,7 +2746,7 @@ document.getElementById("btn-scan-news")?.addEventListener("click", async () => 
 const autoConfigKeys = [
   "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
   "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
-  "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
+  "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
   "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
   "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
   "auto_kolsik"
@@ -3280,24 +3438,24 @@ const _canvasImgCache = new Map();
 function proxyAssetUrl(url) {
   if (!url) return "";
   let clean = String(url).trim();
-  if (clean.startsWith("/api/v1/assets/proxy") || clean.startsWith("/static")) {
+  if (clean.startsWith(`${API_BASE}/assets/proxy`) || clean.startsWith("/api/v1/assets/proxy") || clean.startsWith("/static")) {
     return clean;
   }
   const cdnMarker = "/assets/";
   const idx = clean.indexOf(cdnMarker);
   if (idx !== -1) {
     const relPath = "assets/" + clean.substring(idx + cdnMarker.length);
-    return `/api/v1/assets/proxy?path=${encodeURIComponent(relPath)}`;
+    return `${API_BASE}/assets/proxy?path=${encodeURIComponent(relPath)}`;
   }
   if (clean.startsWith("http://") || clean.startsWith("https://")) {
     try {
       const parsed = new URL(clean);
       const p = parsed.pathname.replace(/^\/+/, "");
-      return `/api/v1/assets/proxy?path=${encodeURIComponent(p)}`;
+      return `${API_BASE}/assets/proxy?path=${encodeURIComponent(p)}`;
     } catch (e) { }
   }
   const p = clean.replace(/^\/+/, "");
-  return `/api/v1/assets/proxy?path=${encodeURIComponent(p)}`;
+  return `${API_BASE}/assets/proxy?path=${encodeURIComponent(p)}`;
 }
 
 function extractRawAssetPath(url) {
@@ -3346,7 +3504,7 @@ async function batchLoadAssets(urls) {
   }
   if (uncached.length >= 3) {
     try {
-      const resp = await fetch("/api/v1/assets/batch", {
+      const resp = await fetch(`${API_BASE}/assets/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paths: uncached.slice(0, 50) }),
@@ -4419,6 +4577,103 @@ function closeFittingRoom() {
   fittingRoomPreview = null;
 }
 
+/**
+ * Единый метод открытия модального окна Примерочной с предпросмотром вещи/сета/хаты.
+ * Используется и в разделе "Тату и Шмот", и при клике на дроп в Уведомлениях.
+ */
+async function openItemPreviewModal(opts = {}) {
+  const { type = "tattoo", itemId = null, setId = null, name = "", imageUrl = "", kind = "", zone = 1, set = null } = opts || {};
+  if (!wardrobeData) {
+    try {
+      const ov = await apiFetch("/wardrobe/overview");
+      if (ov && ov.success) {
+        wardrobeData = ov;
+        window.wardrobeData = ov;
+      }
+    } catch (e) {
+      console.debug("Could not preload wardrobe overview for preview modal:", e);
+    }
+  }
+
+  const normType = String(type || kind || "").toLowerCase();
+  if (normType === "room" || normType === "camera") {
+    const cams = wardrobeData?.cameras || [];
+    const matchedCam = cams.find(c => (itemId != null && String(c.id) === String(itemId)) || (name && c.name === name));
+    openFittingRoom({
+      type: "camera",
+      camera: matchedCam || { id: itemId || 1, name: name || "Камера", imageUrl: proxyAssetUrl(imageUrl), owned: false, price: 0, currency: "" },
+    });
+    return;
+  }
+
+  const subKind = normType.includes("cloth") ? "clothing" : "tattoos";
+  const allSets = [
+    ...(wardrobeData?.sets?.regular?.[subKind] || []),
+    ...(wardrobeData?.sets?.blind_kolsik?.[subKind] || []),
+    ...(wardrobeData?.sets?.regular?.tattoos || []),
+    ...(wardrobeData?.sets?.regular?.clothing || []),
+    ...(wardrobeData?.sets?.blind_kolsik?.tattoos || []),
+    ...(wardrobeData?.sets?.blind_kolsik?.clothing || []),
+  ];
+
+  // Try matching by set object or setId / setName first
+  if (set && Array.isArray(set.parts)) {
+    openFittingRoom({ type: "set", set, kind: subKind });
+    return;
+  }
+  if (setId || (!itemId && name)) {
+    const normTarget = normalizeSetName(name || String(setId || ""));
+    const matchedSet = allSets.find(s =>
+      (setId != null && (String(s.id) === String(setId) || String(s.setName) === String(setId)))
+      || (normTarget && normalizeSetName(s.setName) === normTarget)
+    );
+    if (matchedSet) {
+      const resolvedKind = (wardrobeData?.sets?.regular?.clothing || []).includes(matchedSet) || (wardrobeData?.sets?.blind_kolsik?.clothing || []).includes(matchedSet)
+        ? "clothing"
+        : "tattoos";
+      openFittingRoom({ type: "set", set: matchedSet, kind: resolvedKind });
+      return;
+    }
+  }
+
+  // Try matching individual part across sets
+  let matchedPart = null;
+  let matchedKind = subKind;
+  for (const s of allSets) {
+    const found = (s.parts || []).find(p =>
+      (itemId != null && String(p.id) === String(itemId))
+      || (name && String(p.name || "").toLowerCase() === String(name).toLowerCase())
+    );
+    if (found) {
+      matchedPart = found;
+      matchedKind = ((wardrobeData?.sets?.regular?.clothing || []).includes(s) || (wardrobeData?.sets?.blind_kolsik?.clothing || []).includes(s))
+        ? "clothing"
+        : "tattoos";
+      break;
+    }
+  }
+
+  if (matchedPart) {
+    openFittingRoom({ type: "item", item: matchedPart, kind: matchedKind });
+    return;
+  }
+
+  // Fallback direct loot/item preview using provided metadata
+  openFittingRoom({
+    type: "loot",
+    item: {
+      id: itemId,
+      name: name || "Предмет",
+      kind: normType.includes("cloth") ? (normType.includes("set") ? "clothing_set" : "clothing") : (normType.includes("set") ? "tattoo_set" : "tattoo"),
+      zone: Number(zone) || 1,
+      previewUrl: proxyAssetUrl(imageUrl),
+      bonusText: "Дроп / награда",
+    },
+    boss: { name: "" },
+  });
+}
+window.openItemPreviewModal = openItemPreviewModal;
+
 async function drawFittingRoomStage(currentToken = null) {
   const stage = document.getElementById("fitting-stage");
   if (!stage) return;
@@ -4733,7 +4988,10 @@ const liveSyncClient = (() => {
       botConfig = data;
       updateConfigUI(botConfig);
     } else if (slice === "boss") renderBossData(data);
-    else if (slice === "prisons") renderPrisonsData(data);
+    else if (slice === "presets" && data && Array.isArray(data.presets)) {
+      bossPresets = data.presets;
+      renderBossPresets();
+    } else if (slice === "prisons") renderPrisonsData(data);
     else if (slice === "friends") renderFriendsSummaryData(data);
     else if (slice === "friend_requests") renderFriendRequestsData(data);
     else if (slice === "friends_stats") renderFriendsAuditData(data);
@@ -5685,24 +5943,30 @@ function renderBossPresets() {
   const buildInnerHtml = preset => {
     const items = Array.isArray(preset.items) ? preset.items : [];
     const isRunning = Boolean(preset.is_running);
-    const curIdx = preset.current_step_index || 0;
+    const curIdx = Number(preset.current_step_index || 0);
+    const totalSteps = Number(preset.totalSteps || preset.total_steps) || items.reduce((acc, s) => acc + Math.max(1, Number(s.count) || 1), 0) || items.length;
+    let runningOffset = 0;
     const stepsChipsHtml = items.map((step, idx) => {
       const bId = step.bossId !== undefined ? step.bossId : step.boss_id;
-      const bName = bossCatalogMap?.get(String(bId)) || (bossCatalog || []).find(b => String(b.id) === String(bId))?.name || `Босс #${bId}`;
+      const bName = bossCatalogMap?.get(String(bId)) || (bossCatalog || []).find(b => String(b.id) === String(bId))?.name || step.bossName || `Босс #${bId}`;
       const mLabel = modeLabels[step.mode] || step.mode || "Пацанский";
-      const count = step.count || 1;
-      const isCurrentStep = isRunning && curIdx === idx;
+      const count = Math.max(1, Number(step.count) || 1);
+      const stepStart = runningOffset;
+      const stepEnd = stepStart + count;
+      runningOffset = stepEnd;
+      const isCurrentStep = isRunning && curIdx >= stepStart && curIdx < stepEnd;
       return `<span class="preset-step-chip ${isCurrentStep ? 'active' : ''}">${idx + 1}. ${bName} (${mLabel}) × ${count}</span>`;
     }).join("");
 
+    const displayStep = Math.min(totalSteps, curIdx + 1);
     return `
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <span style="font-weight: 700; font-size: 13px; color: #fff;">${preset.name || 'Без названия'}</span>
           <span class="preset-time-badge">⏰ ${preset.schedule_time_msk || '09:00'} МСК</span>
           ${preset.daily_enabled ? `<span class="badge" style="background: rgba(52, 211, 153, 0.15); color: #34d399; font-size: 10px;">Ежедневно</span>` : '<span class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--muted-foreground); font-size: 10px;">По вызову</span>'}
-          ${isRunning ? `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; font-size: 10px; font-weight: 700;">⚔️ В процессе (${curIdx + 1}/${items.length})</span>` : ''}
-          ${preset.last_status ? `<span style="font-size: 10px; color: var(--muted-foreground); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${preset.last_status}">${preset.last_status}</span>` : ''}
+          ${isRunning ? `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; font-size: 10px; font-weight: 700;">⚔️ В процессе (${displayStep}/${totalSteps})</span>` : ''}
+          ${preset.last_status ? `<span style="font-size: 10px; color: var(--muted-foreground); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${preset.last_status}">${preset.last_status}</span>` : ''}
         </div>
         <div style="display: flex; gap: 6px; align-items: center;">
           ${isRunning ? `
@@ -6059,7 +6323,13 @@ function initRaidsSection() {
     const oldText = btn.innerHTML;
     btn.innerHTML = '<div class="spinner-sm" style="display:inline-block; vertical-align:middle; margin-right:4px;"></div> Сканирование...';
     try {
-      const res = await apiFetch("/raids/scan-guilds", { method: "POST", body: JSON.stringify({}) });
+      const tier = document.getElementById("radar-filter-tier")?.value || "accessible";
+      const minAuth = Number(document.getElementById("radar-filter-min-auth")?.value || 0);
+      const maxAuth = Number(document.getElementById("radar-filter-max-auth")?.value || 0);
+      const res = await apiFetch("/raids/scan-guilds", {
+        method: "POST",
+        body: JSON.stringify({ tier, minAuthority: minAuth, maxAuthority: maxAuth }),
+      });
       if (res.status === "cooldown") {
         showToast(res.message, "warning");
         if (res.cooldownSeconds) startGuildCooldownCountdown(res.cooldownSeconds);
@@ -6159,6 +6429,52 @@ function initRaidsSection() {
   document.getElementById("radar-filter-source")?.addEventListener("change", () => {
     loadActivePlayersRadar();
   });
+
+  document.getElementById("radar-filter-tier")?.addEventListener("change", async (e) => {
+    const tier = e.target.value || "accessible";
+    const minEl = document.getElementById("radar-filter-min-auth");
+    const maxEl = document.getElementById("radar-filter-max-auth");
+    const presets = {
+      accessible: [0, 2000000],
+      mid: [200000, 15000000],
+      top: [15000000, 0],
+    };
+    if (presets[tier]) {
+      if (minEl) minEl.value = presets[tier][0] > 0 ? String(presets[tier][0]) : "";
+      if (maxEl) maxEl.value = presets[tier][1] > 0 ? String(presets[tier][1]) : "";
+    }
+    try {
+      await apiFetch("/config", {
+        method: "PATCH",
+        body: JSON.stringify({
+          friends_parser_tier: tier,
+          friends_parser_min_authority: Number(minEl?.value || 0),
+          friends_parser_max_authority: Number(maxEl?.value || 0),
+        }),
+      });
+    } catch (err) { }
+    loadActivePlayersRadar();
+  });
+
+  const onAuthFilterChange = async () => {
+    const tierEl = document.getElementById("radar-filter-tier");
+    if (tierEl) tierEl.value = "custom";
+    const minA = Number(document.getElementById("radar-filter-min-auth")?.value || 0);
+    const maxA = Number(document.getElementById("radar-filter-max-auth")?.value || 0);
+    try {
+      await apiFetch("/config", {
+        method: "PATCH",
+        body: JSON.stringify({
+          friends_parser_tier: "custom",
+          friends_parser_min_authority: minA,
+          friends_parser_max_authority: maxA,
+        }),
+      });
+    } catch (err) { }
+    loadActivePlayersRadar();
+  };
+  document.getElementById("radar-filter-min-auth")?.addEventListener("change", onAuthFilterChange);
+  document.getElementById("radar-filter-max-auth")?.addEventListener("change", onAuthFilterChange);
 
   document.getElementById("radar-filter-min-dmg")?.addEventListener("change", () => {
     loadActivePlayersRadar();
@@ -6766,14 +7082,27 @@ async function loadActivePlayersRadar(opts = {}) {
   }
 
   const source = document.getElementById("radar-filter-source")?.value || "all";
+  const tier = document.getElementById("radar-filter-tier")?.value || "";
   const minDmg = document.getElementById("radar-filter-min-dmg")?.value || "0";
   const maxDmg = document.getElementById("radar-filter-max-dmg")?.value || "0";
+  const minAuth = document.getElementById("radar-filter-min-auth")?.value || "0";
+  const maxAuth = document.getElementById("radar-filter-max-auth")?.value || "0";
   const limit = document.getElementById("radar-filter-limit")?.value || "30";
   const excludeFriends = Boolean(document.getElementById("radar-filter-exclude-friends")?.checked);
 
   try {
     await loadOutreachConfig();
-    const res = await apiFetch(`/raids/active-players?source=${source}&minDamage=${minDmg}&maxDamage=${maxDmg}&limit=${limit}&excludeFriends=${excludeFriends}`);
+    const qs = new URLSearchParams({
+      source,
+      minDamage: minDmg || "0",
+      maxDamage: maxDmg || "0",
+      minAuthority: minAuth || "0",
+      maxAuthority: maxAuth || "0",
+      limit,
+      excludeFriends: String(excludeFriends),
+    });
+    if (tier) qs.set("tier", tier);
+    const res = await apiFetch(`/raids/active-players?${qs.toString()}`);
     if (seq !== _radarFetchSeq) return;
     renderActivePlayersRadarFromData(res);
   } catch (err) {

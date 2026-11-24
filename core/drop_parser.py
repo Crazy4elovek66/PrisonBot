@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 CURRENCY_LABELS = {
     "authority": "Авторитет",
+    "respect": "Уважение",
     "cigarettes": "Сигареты",
     "sugar": "Сахар",
     "rubles": "Рубли",
@@ -17,6 +18,7 @@ CURRENCY_LABELS = {
     "biceps": "Бицуха",
     "intellect": "Интеллект",
     "rating": "Уважение",
+    "stash": "Нычка",
 }
 
 
@@ -27,17 +29,46 @@ class DropParser:
     """
 
     @staticmethod
+    def _resolve_boss_name(payload: Dict[str, Any], boss_name: Optional[str] = None) -> str:
+        if boss_name and str(boss_name).strip() and str(boss_name).strip().lower() != "босс":
+            return str(boss_name).strip()
+        boss_obj = payload.get("boss") if isinstance(payload.get("boss"), dict) else {}
+        for cand in (
+            payload.get("bossName"),
+            payload.get("title"),
+            boss_obj.get("name"),
+            boss_obj.get("title"),
+        ):
+            if cand and str(cand).strip() and str(cand).strip().lower() != "босс":
+                return str(cand).strip()
+        bid = payload.get("bossId") or boss_obj.get("id")
+        if bid is not None:
+            try:
+                from client.api.boss import _load_bosses_catalog, FALLBACK_BOSSES
+                for item in (_load_bosses_catalog() or FALLBACK_BOSSES):
+                    if str(item.get("id")) == str(bid):
+                        nm = item.get("name") or item.get("title")
+                        if nm:
+                            return str(nm)
+            except Exception:
+                pass
+            return f"Босс #{bid}"
+        return "Босс"
+
+    @staticmethod
     def _normalize_currency(key: str) -> Optional[str]:
         k = key.lower().strip()
         if k.startswith("reward"):
             k = k[6:].strip()
         if k in ("authority", "auth"):
             return "authority"
+        if k in ("respect",):
+            return "respect"
         if k in ("cigarettes", "cigs"):
             return "cigarettes"
         if k in ("sugar",):
             return "sugar"
-        if k in ("rubles", "rub"):
+        if k in ("rubles", "rub", "coins"):
             return "rubles"
         if k in ("paper", "toiletpaper"):
             return "paper"
@@ -126,7 +157,8 @@ class DropParser:
                             "amount": int(v),
                         })
 
-        # 4. Разбор дропов татуировок и сетов (rewardSets, soloSetReward, tattoo)
+        # 4. Разбор дропов татуировок и сетов (rewardSets, soloSetReward, tattoo, clothing, room)
+        cosmetic_drops: List[Dict[str, Any]] = []
         reward_sets = payload.get("rewardSets") or (raw_rewards.get("rewardSets") if isinstance(raw_rewards, dict) else None)
         if isinstance(reward_sets, list):
             for r_set in reward_sets:
@@ -135,17 +167,30 @@ class DropParser:
                     tattoo_name = r_set.get("tattoo") or r_set.get("item") or "Элемент тату"
                     owned = r_set.get("owned", 1)
                     total = r_set.get("total", 20)
-                    drops.append({
-                        "kind": "tattoo",
+                    r_kind = str(r_set.get("kind") or r_set.get("type") or "tattoo")
+                    c_item = {
+                        "kind": r_kind,
+                        "type": "clothing" if "cloth" in r_kind.lower() else ("room" if "room" in r_kind.lower() or "cam" in r_kind.lower() else "tattoo"),
+                        "itemId": r_set.get("itemId") or r_set.get("id"),
+                        "setId": r_set.get("setId") or title,
+                        "name": tattoo_name if tattoo_name != "Элемент тату" else title,
+                        "imageUrl": r_set.get("imageUrl") or r_set.get("previewUrl") or "",
                         "title": title if title.startswith("Комплект") else f'Комплект "{title}"',
                         "subtitle": f"{tattoo_name} ({owned}/{total} сета)",
-                    })
+                    }
+                    drops.append(c_item)
+                    cosmetic_drops.append(c_item)
                 elif isinstance(r_set, str):
-                    drops.append({
+                    c_item = {
                         "kind": "tattoo",
+                        "type": "tattoo",
+                        "setId": r_set,
+                        "name": r_set,
                         "title": r_set,
                         "subtitle": "Новая татуировка",
-                    })
+                    }
+                    drops.append(c_item)
+                    cosmetic_drops.append(c_item)
 
         solo_set = payload.get("soloSetReward") or (raw_rewards.get("soloSetReward") if isinstance(raw_rewards, dict) else None)
         if isinstance(solo_set, dict):
@@ -153,27 +198,67 @@ class DropParser:
             tattoo_name = solo_set.get("tattoo") or solo_set.get("item") or "Элемент сета"
             owned = solo_set.get("owned", 1)
             total = solo_set.get("total", 20)
-            drops.append({
+            c_item = {
                 "kind": "tattoo",
+                "type": "tattoo",
+                "itemId": solo_set.get("itemId") or solo_set.get("id"),
+                "setId": solo_set.get("setId") or title,
+                "name": tattoo_name if tattoo_name != "Элемент сета" else title,
+                "imageUrl": solo_set.get("imageUrl") or solo_set.get("previewUrl") or "",
                 "title": title if title.startswith("Комплект") else f'Комплект "{title}"',
                 "subtitle": f"{tattoo_name} ({owned}/{total} сета)",
-            })
+            }
+            drops.append(c_item)
+            cosmetic_drops.append(c_item)
 
         tattoo_item = payload.get("tattoo") or (raw_rewards.get("tattoo") if isinstance(raw_rewards, dict) else None)
         if isinstance(tattoo_item, dict):
             t_title = tattoo_item.get("set") or tattoo_item.get("title") or 'Комплект "Биомеханика"'
             t_name = tattoo_item.get("name") or "Татуировка"
-            drops.append({
+            c_item = {
                 "kind": "tattoo",
+                "type": "tattoo",
+                "itemId": tattoo_item.get("id") or tattoo_item.get("tattooId"),
+                "setId": tattoo_item.get("setId") or t_title,
+                "name": t_name,
+                "imageUrl": tattoo_item.get("imageUrl") or tattoo_item.get("previewUrl") or "",
                 "title": t_title if t_title.startswith("Комплект") else f'Комплект "{t_title}"',
                 "subtitle": t_name,
-            })
+            }
+            drops.append(c_item)
+            cosmetic_drops.append(c_item)
         elif isinstance(tattoo_item, str):
-            drops.append({
+            c_item = {
                 "kind": "tattoo",
+                "type": "tattoo",
+                "setId": tattoo_item,
+                "name": tattoo_item,
                 "title": tattoo_item if tattoo_item.startswith("Комплект") else f'Комплект "{tattoo_item}"',
                 "subtitle": "Татуировка",
-            })
+            }
+            drops.append(c_item)
+            cosmetic_drops.append(c_item)
+
+        for cos_key, cos_type, cos_label in (
+            ("clothing", "clothing", "Шмот"),
+            ("room", "room", "Хата"),
+            ("camera", "room", "Хата"),
+        ):
+            cos_obj = payload.get(cos_key) or (raw_rewards.get(cos_key) if isinstance(raw_rewards, dict) else None)
+            if isinstance(cos_obj, dict):
+                nm = cos_obj.get("name") or cos_obj.get("title") or cos_label
+                c_item = {
+                    "kind": cos_type,
+                    "type": cos_type,
+                    "itemId": cos_obj.get("id"),
+                    "setId": cos_obj.get("setName") or cos_obj.get("setId"),
+                    "name": nm,
+                    "imageUrl": cos_obj.get("imageUrl") or cos_obj.get("previewUrl") or "",
+                    "title": nm,
+                    "subtitle": cos_label,
+                }
+                drops.append(c_item)
+                cosmetic_drops.append(c_item)
 
         # Ключи за победу
         keys_won = payload.get("keys") or (raw_rewards.get("keys") if isinstance(raw_rewards, dict) else None)
@@ -190,9 +275,12 @@ class DropParser:
             "pacansky": "Пацанский",
             "blotnoy": "Блатной",
             "avtoritetny": "Авторитетный",
+            "vorovskoy": "Воровской",
+            "odin": "В одного",
+            "brigade": "Бригадный",
         }
         mode_str = mode_titles.get(mode, mode) if mode else ""
-        b_name = boss_name or "Босс"
+        b_name = cls._resolve_boss_name(payload, boss_name)
         title = f"Босс повержен: {b_name}" + (f" - {mode_str}" if mode_str else "")
 
         return {
@@ -201,6 +289,51 @@ class DropParser:
             "subtitle": "Победа в бою",
             "rewards": rewards,
             "drops": drops,
+            "meta_json": {
+                "type": "boss_victory",
+                "outcome": "victory",
+                "boss_name": b_name,
+                "mode": mode_str or mode,
+                "cosmetic_drops": cosmetic_drops,
+            },
+        }
+
+    @classmethod
+    def parse_boss_defeat(
+        cls,
+        boss_name: Optional[str] = None,
+        mode: Optional[str] = None,
+        remaining_hp: int = 0,
+        max_hp: int = 1,
+    ) -> Dict[str, Any]:
+        """Формирует структурированное уведомление о поражении от босса с полоской остатка HP."""
+        mode_titles = {
+            "pacansky": "Пацанский",
+            "blotnoy": "Блатной",
+            "avtoritetny": "Авторитетный",
+            "vorovskoy": "Воровской",
+            "odin": "В одного",
+            "brigade": "Бригадный",
+        }
+        mode_str = mode_titles.get(mode, mode) if mode else ""
+        b_name = boss_name.strip() if boss_name and boss_name.strip() else "Босс"
+        title = f"Поражение от босса: {b_name}" + (f" - {mode_str}" if mode_str else "")
+        rem = max(0, int(remaining_hp or 0))
+        mx = max(1, int(max_hp or rem or 1))
+        return {
+            "category": "bosses",
+            "title": title,
+            "subtitle": "Бой завершен без победы",
+            "rewards": [],
+            "drops": [],
+            "meta_json": {
+                "type": "boss_defeat",
+                "outcome": "defeat",
+                "boss_name": b_name,
+                "mode": mode_str or mode,
+                "remaining_hp": rem,
+                "max_hp": mx,
+            },
         }
 
     @classmethod
@@ -209,6 +342,9 @@ class DropParser:
         payload: Dict[str, Any],
         prison_name: Optional[str] = None,
         works_count: int = 1,
+        is_day: bool = True,
+        stage_num: Optional[int] = None,
+        prison_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Парсинг ответа выполнения ходки в тюрьме (POST /api/player/prison/{id}/work)."""
         rewards: List[Dict[str, Any]] = []
@@ -230,12 +366,20 @@ class DropParser:
                 "amount": int(auth),
             })
 
-        rating = payload.get("rewardRating") or payload.get("rating") or 0
+        rating = payload.get("rewardRating") or payload.get("rating") or payload.get("respect") or 0
         if rating > 0:
             rewards.append({
-                "currency": "rating",
+                "currency": "respect" if payload.get("respect") else "rating",
                 "label": "Уважение",
                 "amount": int(rating),
+            })
+
+        rubles = payload.get("rewardRubles") or payload.get("rubles") or 0
+        if rubles > 0:
+            rewards.append({
+                "currency": "rubles",
+                "label": "Рубли",
+                "amount": int(rubles),
             })
 
         # Дропы нычек и предметов
@@ -265,12 +409,22 @@ class DropParser:
             })
 
         p_name = prison_name or "Тюрьма"
+        shift_word = "День" if is_day else "Ночь"
+        title = f"{p_name}: {shift_word} {stage_num}" if stage_num else f"{p_name}: {shift_word}"
         return {
             "category": "prisons",
-            "title": f"Ходки: {p_name}",
+            "title": title,
             "subtitle": f"Кликов: {works_count}",
             "rewards": rewards,
             "drops": drops,
+            "meta_json": {
+                "type": "prison_action",
+                "prison_id": prison_id,
+                "prison_name": p_name,
+                "is_day": bool(is_day),
+                "stage": stage_num,
+                "clicks": int(works_count),
+            },
         }
 
     @classmethod
@@ -409,6 +563,7 @@ class DropParser:
                 subtitle=parsed_data.get("subtitle"),
                 rewards=parsed_data.get("rewards", []),
                 drops=parsed_data.get("drops", []),
+                meta_json=parsed_data.get("meta_json") or {},
                 event_key=event_key,
                 is_read=False,
             )

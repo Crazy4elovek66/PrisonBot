@@ -891,3 +891,101 @@ async def test_boss_worker_prisons_data_unlocks_boss(boss_setup):
     assert res["boss_active"] is True
 
 
+@pytest.mark.asyncio
+async def test_boss_worker_auto_melee_and_preset_defeat_reset(boss_setup):
+    """Проверка авто-рукопашной (boss_auto_melee) и сброса пресета на поражении + очистки в state_hub."""
+    from core.models import BossPreset, Notification
+    from core.state_hub import LiveStateHub
+
+    engine, acc_id = boss_setup
+    hits = []
+    hub = LiveStateHub()
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == acc_id))).scalar_one()
+        cfg.boss_auto_melee = True
+        cfg.auto_boss_hits = False
+        preset = BossPreset(
+            account_id=acc_id,
+            name="Defeat Test",
+            items=[{"bossId": 1, "bossName": "Кирпич", "mode": "pacansky", "count": 2}],
+            is_running=True,
+            current_step_index=0,
+            last_status="В процессе",
+        )
+        session.add(preset)
+        await session.commit()
+        await session.refresh(preset)
+        preset_id = preset.id
+
+    def mock_handler(request: httpx.Request):
+        import json as _json
+        if request.url.path == "/api/boss/bootstrap":
+            return httpx.Response(200, json={
+                "success": True,
+                "state": "active",
+                "session": {"sessionId": "s_melee", "bossId": 1, "bossName": "Кирпич", "mode": "pacansky", "currentHp": 5000, "maxHp": 10000},
+                "weaponStatsEffective": {"punchChestCooldownSec": 28800},
+            })
+        elif request.url.path == "/api/boss/weapons":
+            return httpx.Response(200, json={
+                "equippedSlots": ["punchChest", "kickBalls"],
+                "lastPunchChestTime": None,
+                "lastKickBallsTime": "2020-01-01T00:00:00Z",
+            })
+        elif request.url.path == "/api/boss/use-weapon":
+            body = _json.loads(request.content)
+            hits.append(body.get("weapon"))
+            return httpx.Response(200, json={"success": True, "currentHp": 4000})
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    worker = BossWorker(
+        account_id=acc_id,
+        boss_api=BossAPI(http_client=http_client),
+        db_engine=engine,
+        enable_jitter=False,
+        state_hub=hub,
+    )
+
+    hub.update_slice(acc_id, "boss", {"meleeTimestamps": {}, "session": {"currentHp": 5000}})
+    melee_res = await worker.trigger_auto_melee()
+    assert len(hits) == 2
+    assert set(hits) == {"punchChest", "kickBalls"}
+    assert melee_res["boss_hp_remaining"] == 4000
+
+    # Проверяем сброс пресета и сохранение уведомления при поражении
+    async with get_session(engine) as session:
+        p_loaded = await session.get(BossPreset, preset_id)
+
+    await worker.on_boss_fight_finished(
+        {
+            "outcome": "defeat",
+            "bossName": "Кирпич",
+            "mode": "pacansky",
+            "remainingHp": 4000,
+            "maxHp": 10000,
+            "sessionId": "s_melee",
+        },
+        active_preset=p_loaded,
+        preset_steps=[{"bossId": 1, "bossName": "Кирпич", "mode": "pacansky"}] * 2,
+    )
+
+    async with get_session(engine) as session:
+        p_after = await session.get(BossPreset, preset_id)
+        assert p_after.is_running is False
+        assert "поражение" in (p_after.last_status or "").lower()
+        defeat_notif = (
+            await session.execute(select(Notification).where(Notification.title.like("%Поражение%")))
+        ).scalar_one_or_none()
+        assert defeat_notif is not None
+        assert defeat_notif.meta_json["outcome"] == "defeat"
+        assert defeat_notif.meta_json["remaining_hp"] == 4000
+        assert defeat_notif.meta_json["max_hp"] == 10000
+    presets_slice = hub.get_slice(acc_id, "presets")
+    assert presets_slice is not None
+    assert presets_slice.data["activeRun"] is None
+
+

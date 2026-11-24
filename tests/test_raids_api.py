@@ -690,3 +690,54 @@ async def test_radar_weapon_damage_calculation_from_wearables_and_migration():
         assert row.enriched_at is None
 
 
+@pytest.mark.asyncio
+async def test_multi_tier_guild_scan_and_authority_bounds():
+    """Проверка фильтрации бригад по доступным/средним тирам и ограничения по авторитету."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import init_db
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    await init_db(test_engine)
+
+    raids_api = RaidsAPI()
+    mock_social = MagicMock(spec=SocialAPI)
+    mock_social.get_recruitment_list = AsyncMock(return_value={
+        "items": [
+            {"guildId": 1, "name": "Top50Full", "level": 50, "memberCount": 80, "maxMembers": 80},
+            {"guildId": 2, "name": "Accessible10", "level": 10, "memberCount": 20, "maxMembers": 50},
+        ]
+    })
+
+    async def _get_members(gid):
+        if gid == 2:
+            return {
+                "members": [
+                    {"userId": 9001, "nickname": "LowAuth", "authority": 50000, "bossDamage": 100000},
+                    {"userId": 9002, "nickname": "MidAuth", "authority": 1500000, "bossDamage": 500000},
+                    {"userId": 9003, "nickname": "MegaWhale", "authority": 90000000, "bossDamage": 9000000},
+                ]
+            }
+        return {"members": []}
+
+    mock_social.get_guild_members = AsyncMock(side_effect=_get_members)
+    res_scan = await raids_api.scan_active_guilds(
+        mock_social, test_engine, account_id=1, max_guilds=1, delay_range=(0, 0), force=True, tier="accessible"
+    )
+    assert res_scan["success"] is True
+    # В accessible выбрана открытая низкоуровневая бригада (id=2), а не закрытый топ-50 (id=1)
+    mock_social.get_guild_members.assert_awaited_once_with(2)
+
+    mid_only = await raids_api.get_active_players_radar(
+        social_api=mock_social,
+        db_engine=test_engine,
+        account_id=1,
+        tier="accessible",
+        limit=10,
+    )
+    uids = {p["userId"] for p in mid_only}
+    assert 9001 in uids and 9002 in uids
+    assert 9003 not in uids  # > 2M отсечен доступным тиром
+
+    await test_engine.dispose()
+
+

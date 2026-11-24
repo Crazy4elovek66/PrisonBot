@@ -16,6 +16,24 @@ logger = logging.getLogger(__name__)
 
 MSK_TZ = timezone(timedelta(hours=3))
 
+NEGATIVE_QUEST_ACTIONS: Dict[str, Dict[str, Any]] = {
+    "StressVictim": {
+        "interaction_type": "Fight",
+        "cigs_cost": 100,
+        "title": "Наехать",
+    },
+    "SpitSoup": {
+        "interaction_type": "Harknut",
+        "cigs_cost": 0,
+        "title": "Харкнуть в баланду",
+    },
+    "AddYeast": {
+        "interaction_type": "TossDroj",
+        "cigs_cost": 0,
+        "title": "Подкинуть дрожжей",
+    },
+}
+
 
 def get_toilet_paper_reset_info(
     can_claim: bool,
@@ -71,6 +89,7 @@ class RoutineWorker:
         db_engine: Optional[Any] = None,
         enable_jitter: bool = True,
         prison_worker: Optional[Any] = None,
+        social_api: Optional[Any] = None,
     ):
         self.account_id = account_id
         self.api = player_api
@@ -78,6 +97,7 @@ class RoutineWorker:
         self.db_engine = db_engine
         self.enable_jitter = enable_jitter
         self.prison_worker = prison_worker
+        self.social_api = social_api
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -126,6 +146,7 @@ class RoutineWorker:
             "podogrev_sent": False,
             "katala_played": False,
             "monthly_tiers_claimed": 0,
+            "monthly_actions_done": 0,
             "kolsik_rolled": False,
             "errors": [],
         }
@@ -326,23 +347,15 @@ class RoutineWorker:
                 logger.warning(f"Ошибка при автоигре у Каталы: {e}")
                 results["errors"].append(f"katala_game: {str(e)}")
 
-        # 5.3. Месячные делюги — автосбор наград за выполненные тиры
+        # 5.3. Месячные делюги — выполнение дневного негативного квеста и автосбор тиров
         if getattr(config, "auto_monthly_tasks", False) or getattr(config, "auto_events", False):
-            try:
-                m_state = await self.api.get_monthly_state(track_open=True)
-                user_m = m_state.get("user", {}) if isinstance(m_state, dict) else {}
-                claimable_tiers = user_m.get("claimableTiers", []) or []
-                for tier in claimable_tiers:
-                    try:
-                        c_res = await self.api.claim_monthly_tier(tier)
-                        if c_res.get("success", True):
-                            results["monthly_tiers_claimed"] += 1
-                            await self._log_action("monthly_claim", "/api/monthly/claim", 200, True, c_res)
-                            logger.info(f"Собран тир {tier} месячных делюг: {c_res}")
-                    except Exception as te:
-                        logger.warning(f"Ошибка сбора тира {tier} месячных делюг: {te}")
-            except Exception as e:
-                logger.warning(f"Ошибка проверки месячных делюг: {e}")
+            mq_res = await self.process_monthly_quests(
+                config=config,
+                player_data=player_data if "player_data" in locals() and isinstance(player_data, dict) else None,
+            )
+            results["monthly_actions_done"] += int(mq_res.get("actions_performed", 0))
+            results["monthly_tiers_claimed"] += int(mq_res.get("tiers_claimed", 0))
+            results["errors"].extend(mq_res.get("errors") or [])
 
         await self._jitter()
 
@@ -400,6 +413,165 @@ class RoutineWorker:
 
         logger.info(f"=== [Аккаунт {self.account_id}] Цикл рутинных задач завершен ===")
         return results
+
+    async def _get_social_api(self) -> Optional[Any]:
+        if self.social_api is not None:
+            return self.social_api
+        http = getattr(self.api, "http", None)
+        if http is not None:
+            from client.api.social import SocialAPI
+            self.social_api = SocialAPI(http_client=http)
+            return self.social_api
+        return None
+
+    async def process_monthly_quests(
+        self,
+        config: Optional[Any] = None,
+        player_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Обрабатывает активное ежедневное задание Месячных делюг (в т.ч. негативные действия на друзьях:
+        StressVictim -> Fight, SpitSoup -> Harknut, AddYeast -> TossDroj) и собирает доступные тиры наград.
+        Друзья выбираются от самого низкого авторитета вверх; выполняется ровно remaining = target - current раз.
+        """
+        summary: Dict[str, Any] = {
+            "actions_performed": 0,
+            "tiers_claimed": 0,
+            "quest_action": None,
+            "errors": [],
+        }
+        try:
+            m_state = await self.api.get_monthly_state(track_open=True)
+        except Exception as e:
+            logger.warning(f"Ошибка проверки месячных делюг: {e}")
+            summary["errors"].append(f"monthly_state: {e}")
+            return summary
+
+        if not isinstance(m_state, dict):
+            return summary
+
+        user_m = m_state.get("user", {}) or {}
+        global_m = m_state.get("global", {}) or {}
+        active_day_id = user_m.get("activeDayId")
+        days_defs = global_m.get("days") or []
+        user_days = user_m.get("days") or {}
+
+        today_quest = next((d for d in days_defs if isinstance(d, dict) and d.get("dayId") == active_day_id), None)
+        if today_quest:
+            action_key = str(today_quest.get("action") or "")
+            summary["quest_action"] = action_key
+            day_prog = user_days.get(str(active_day_id)) or user_days.get(active_day_id) or {}
+            is_completed = bool(day_prog.get("completed", False))
+            current_prog = int(day_prog.get("progress") or 0)
+            target_cnt = int(today_quest.get("target") or 0)
+            remaining = max(0, target_cnt - current_prog)
+
+            if not is_completed and remaining > 0 and action_key in NEGATIVE_QUEST_ACTIONS:
+                spec = NEGATIVE_QUEST_ACTIONS[action_key]
+                cigs_cost = int(spec["cigs_cost"])
+                inter_type = str(spec["interaction_type"])
+
+                p_data = player_data
+                if not isinstance(p_data, dict) or not (p_data.get("userId") or p_data.get("id")):
+                    try:
+                        p_data = await self.api.init_player()
+                    except Exception as pe:
+                        logger.warning(f"Не удалось получить профиль для месячного квеста {action_key}: {pe}")
+                        p_data = {}
+
+                from_user_id = int(p_data.get("userId") or p_data.get("id") or 0)
+                cigs = int((p_data.get("currencies") or {}).get("cigarettes", 0))
+
+                if cigs_cost > 0 and cigs < cigs_cost:
+                    logger.info(
+                        "Пропуск месячного задания %s: недостаточно папирос (%s < %s).",
+                        action_key, cigs, cigs_cost,
+                    )
+                elif from_user_id > 0:
+                    s_api = await self._get_social_api()
+                    friends: list = []
+                    if s_api is not None:
+                        try:
+                            if hasattr(s_api, "get_all_friend_profiles"):
+                                friends = await s_api.get_all_friend_profiles()
+                            elif hasattr(s_api, "get_friends_list"):
+                                fl = await s_api.get_friends_list()
+                                friends = fl.get("friends", []) if isinstance(fl, dict) else (fl if isinstance(fl, list) else [])
+                        except Exception as fe:
+                            logger.warning(f"Ошибка загрузки списка друзей для месячного квеста: {fe}")
+
+                    # Сортируем от самых слабых (минимальный авторитет вверх)
+                    sorted_friends = sorted(
+                        [f for f in friends if isinstance(f, dict) and (f.get("userId") or f.get("id"))],
+                        key=lambda f: int(f.get("authority") or 0),
+                    )
+
+                    for fr in sorted_friends:
+                        if remaining <= 0:
+                            break
+                        if cigs_cost > 0 and cigs < cigs_cost:
+                            logger.info("Папиросы закончились (%s < %s) во время выполнения %s.", cigs, cigs_cost, action_key)
+                            break
+
+                        to_uid = int(fr.get("userId") or fr.get("id"))
+                        if to_uid == from_user_id:
+                            continue
+
+                        try:
+                            act_res = await s_api.perform_interaction(from_user_id, to_uid, inter_type)
+                            if isinstance(act_res, dict) and act_res.get("success", True):
+                                summary["actions_performed"] += 1
+                                remaining -= 1
+                                if cigs_cost > 0:
+                                    cigs -= cigs_cost
+                                await self._log_action(
+                                    "monthly_quest_action",
+                                    "/api/interaction/perform",
+                                    200,
+                                    True,
+                                    {
+                                        "quest": action_key,
+                                        "type": inter_type,
+                                        "toUserId": to_uid,
+                                        "remaining": remaining,
+                                    },
+                                )
+                                await self._jitter()
+                        except Exception as ie:
+                            # На дневном откате / ошибке у конкретного друга просто переходим к следующему слабому другу
+                            logger.debug("Не удалось применить %s к %s: %s", inter_type, to_uid, ie)
+                            continue
+
+                    if summary["actions_performed"] > 0:
+                        if self.db_engine:
+                            await DropParser.save_notification(
+                                self.account_id,
+                                DropParser.parse_other(
+                                    f"Месячная делюга: {spec['title']}",
+                                    f"Выполнено действий: {summary['actions_performed']} (день {active_day_id})",
+                                    rewards=[],
+                                ),
+                                self.db_engine,
+                            )
+                        try:
+                            m_state = await self.api.get_monthly_state(track_open=True)
+                            user_m = m_state.get("user", {}) or {}
+                        except Exception:
+                            pass
+
+        claimable_tiers = user_m.get("claimableTiers", []) or []
+        for tier in claimable_tiers:
+            try:
+                c_res = await self.api.claim_monthly_tier(tier)
+                if c_res.get("success", True):
+                    summary["tiers_claimed"] += 1
+                    await self._log_action("monthly_claim", "/api/monthly/claim", 200, True, c_res)
+                    logger.info(f"Собран тир {tier} месячных делюг: {c_res}")
+            except Exception as te:
+                logger.warning(f"Ошибка сбора тира {tier} месячных делюг: {te}")
+                summary["errors"].append(f"monthly_claim_{tier}: {te}")
+
+        return summary
 
     async def claim_daily_toilet_paper_if_ready(self) -> Dict[str, Any]:
         """

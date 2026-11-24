@@ -491,10 +491,20 @@ class PrisonWorker:
                     logger.debug("Ошибка переназначения расписания PrisonWorker: %s", e)
 
             if works_done > 0:
+                p_data = stage_info.get("prison_data") if isinstance(stage_info, dict) else {}
+                cp_idx = int((p_data.get("dayCurrentCheckpoint" if is_day else "nightCurrentCheckpoint")) or 0) if isinstance(p_data, dict) else 0
+                cur_stage = cp_idx + 1 if cp_idx >= 0 else None
+                merged_payload = dict(last_work_resp) if isinstance(last_work_resp, dict) else {}
+                for rk, rv in rewards_agg.items():
+                    if rv > 0 and rk not in merged_payload and f"reward{rk.capitalize()}" not in merged_payload:
+                        merged_payload[rk] = rv
                 parsed_work = DropParser.parse_prison_work(
-                    last_work_resp,
+                    merged_payload,
                     prison_name=pname,
                     works_count=works_done,
+                    is_day=is_day,
+                    stage_num=cur_stage,
+                    prison_id=pid,
                 )
                 await DropParser.save_notification(self.account_id, parsed_work, self.db_engine)
 

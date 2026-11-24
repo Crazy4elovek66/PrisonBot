@@ -44,6 +44,27 @@ def parse_damage_string(val_str: str) -> int:
     return 0
 
 
+# Реалистичные тиры авторитета для парсера кандидатов и бригад
+PARSER_TIER_PRESETS: Dict[str, tuple[int, int]] = {
+    "accessible": (0, 2_000_000),
+    "mid": (200_000, 15_000_000),
+    "top": (15_000_000, 0),
+    "custom": (0, 0),
+}
+
+
+def resolve_authority_bounds(
+    tier: Optional[str] = None,
+    min_authority: int = 0,
+    max_authority: int = 0,
+) -> tuple[int, int]:
+    """Разрешает границы авторитета из тира парсера и ручных порогов."""
+    t_norm = str(tier or "accessible").lower().strip()
+    if t_norm != "custom" and t_norm in PARSER_TIER_PRESETS and int(min_authority or 0) == 0 and int(max_authority or 0) == 0:
+        return PARSER_TIER_PRESETS[t_norm]
+    return max(0, int(min_authority or 0)), max(0, int(max_authority or 0))
+
+
 def compute_candidate_score(
     cand: TrackedCandidate,
     now: datetime,
@@ -389,12 +410,15 @@ class RaidsAPI:
         max_guilds: int = 8,
         delay_range: tuple[float, float] = (1.5, 3.0),
         force: bool = False,
+        tier: str = "accessible",
+        min_authority: int = 0,
+        max_authority: int = 0,
     ) -> Dict[str, Any]:
         """
         Автономный игровой сканер активных бригад:
         1. Проверяет кулдаун 300с.
-        2. Запрашивает список набора /api/guild/recruitment/list.
-        3. По ротации выбирает до max_guilds бригад.
+        2. Запрашивает список набора /api/guild/recruitment/list (не только топ-1, а все открытые бригады с ротацией).
+        3. По тиру (accessible / mid / top / custom) и ротации выбирает до max_guilds бригад.
         4. Запрашивает участников каждой бригады /api/guild/{id}/members.
         5. Сохраняет / обновляет кандидатов в TrackedCandidate с вычислением дельты за 6-24ч.
         """
@@ -406,6 +430,8 @@ class RaidsAPI:
                 "cooldownSeconds": rem_cd,
                 "message": f"Кулдаун сканирования бригад: подождите {rem_cd} сек перед повторным запуском.",
             }
+
+        auth_min, auth_max = resolve_authority_bounds(tier, min_authority, max_authority)
 
         try:
             rec_res = await social_api.get_recruitment_list(limit=100)
@@ -422,8 +448,16 @@ class RaidsAPI:
                 gid = g.get("guildId") or g.get("id")
                 gname = g.get("name") or g.get("guildName") or f"Бригада #{gid}"
                 m_count = int(g.get("membersCount") or g.get("memberCount") or g.get("members") or 0)
+                g_level = int(g.get("level") or (g.get("emblem") or {}).get("lvl") or 1)
+                max_members = int(g.get("maxMembers") or 50)
                 if gid:
-                    guild_items.append({"guildId": int(gid), "name": str(gname), "membersCount": m_count})
+                    guild_items.append({
+                        "guildId": int(gid),
+                        "name": str(gname),
+                        "membersCount": m_count,
+                        "level": g_level,
+                        "hasOpenSlots": m_count < max_members,
+                    })
 
         if not guild_items:
             return {
@@ -433,9 +467,21 @@ class RaidsAPI:
                 "message": "Бригады для сканирования не найдены в ответе игры.",
             }
 
-        # Сортируем по убыванию участников и отсекаем пустые (< 3)
-        guild_items.sort(key=lambda x: x["membersCount"], reverse=True)
-        valid_guilds = [g for g in guild_items if g["membersCount"] >= 3]
+        # Сортируем бригады в зависимости от тира, чтобы не упираться в один и тот же топ-1
+        t_norm = str(tier or "accessible").lower().strip()
+        if t_norm == "accessible":
+            # Предпочитаем доступные/средние открытые бригады (уровень 1..30) с активными слотами
+            tiered_guilds = [g for g in guild_items if g["membersCount"] >= 3 and g["level"] <= 35]
+            guild_items.sort(key=lambda x: (not x["hasOpenSlots"], x["level"], -x["membersCount"]))
+            valid_guilds = tiered_guilds if len(tiered_guilds) >= 3 else [g for g in guild_items if g["membersCount"] >= 3]
+        elif t_norm == "mid":
+            tiered_guilds = [g for g in guild_items if g["membersCount"] >= 3 and 10 <= g["level"] <= 45]
+            guild_items.sort(key=lambda x: (-x["level"], -x["membersCount"]))
+            valid_guilds = tiered_guilds if len(tiered_guilds) >= 3 else [g for g in guild_items if g["membersCount"] >= 3]
+        else:
+            guild_items.sort(key=lambda x: (-x["level"], -x["membersCount"]))
+            valid_guilds = [g for g in guild_items if g["membersCount"] >= 3]
+
         if not valid_guilds:
             valid_guilds = guild_items
 
@@ -635,16 +681,24 @@ class RaidsAPI:
         max_damage: int = 0,
         limit: int = 50,
         exclude_friends: bool = False,
+        tier: Optional[str] = None,
+        min_authority: int = 0,
+        max_authority: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Игровой радар активных дамагеров:
         1. Если доступна локальная база TrackedCandidate, выбирает игроков с учетом детектора активности.
         2. Если база пуста или не задана, запрашивает weekly-top напрямую и кэширует кандидатов.
-        3. Применяет фильтры min_damage, max_damage, source ('all', 'active', 'guild', 'weekly_top')
+        3. Применяет фильтры min_damage, max_damage, min_authority, max_authority, tier, source
            и вычисляет актуальный статус дружбы ('friend' | 'sent' | 'none').
         """
         friends = friend_ids or set()
         sent = sent_user_ids or set()
+        auth_min, auth_max = (
+            resolve_authority_bounds(tier, min_authority, max_authority)
+            if (tier is not None or min_authority > 0 or max_authority > 0)
+            else (0, 0)
+        )
 
         candidates: List[Dict[str, Any]] = []
 
@@ -669,6 +723,10 @@ class RaidsAPI:
                         stmt = stmt.where(TrackedCandidate.total_damage >= min_damage)
                     if max_damage > 0:
                         stmt = stmt.where(TrackedCandidate.total_damage <= max_damage)
+                    if auth_min > 0:
+                        stmt = stmt.where(TrackedCandidate.authority >= auth_min)
+                    if auth_max > 0:
+                        stmt = stmt.where(TrackedCandidate.authority <= auth_max)
 
                     stmt = stmt.order_by(
                         TrackedCandidate.score.desc(),
@@ -758,6 +816,10 @@ class RaidsAPI:
                 friend_status = "friend" if is_friend else "sent" if uid_int in sent else "none"
 
                 authority = int(entry.get("authority") or 0)
+                if auth_min > 0 and authority < auth_min:
+                    continue
+                if auth_max > 0 and authority > auth_max:
+                    continue
                 lvl = int(entry.get("level") or entry.get("lvl") or 0)
                 if lvl == 0 and authority > 0:
                     lvl = calculate_level_from_authority(authority)

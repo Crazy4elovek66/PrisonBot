@@ -35,6 +35,22 @@ async def lifespan(app: FastAPI):
     engine = get_engine()
     await init_db(engine)
 
+    # Очистка зависших активных пресетов после перезапуска процесса (stale PresetRunState guard)
+    try:
+        from sqlalchemy import update
+        from core.database import get_session
+        from core.models import BossPreset
+        async with get_session(engine) as session:
+            await session.execute(
+                update(BossPreset)
+                .where(BossPreset.is_running == True)
+                .values(is_running=False, last_status="Сброшен при перезапуске")
+            )
+            await session.commit()
+        state_hub.clear_preset_state(1)
+    except Exception as se:
+        logger.warning("Could not reset stale running boss presets on boot: %s", se)
+
     from bot.handlers import bot_context
     if bot_context.db_engine is None:
         bot_context.db_engine = engine
@@ -82,7 +98,12 @@ async def lifespan(app: FastAPI):
             prison_api = PrisonAPI(http_client=http_client)
             social_api = SocialAPI(http_client=http_client)
 
-            routine_worker = RoutineWorker(account_id=acc_id, player_api=player_api, db_engine=engine)
+            routine_worker = RoutineWorker(
+                account_id=acc_id,
+                player_api=player_api,
+                db_engine=engine,
+                social_api=social_api,
+            )
             boss_worker = BossWorker(
                 account_id=acc_id,
                 boss_api=boss_api,

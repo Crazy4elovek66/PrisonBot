@@ -90,6 +90,7 @@ async def run_bot(once_mode: bool = False) -> None:
         account_id=account.id,
         player_api=player_api,
         notifier=notifier,
+        social_api=social_api,
     )
     boss_worker = BossWorker(
         account_id=account.id,

@@ -737,3 +737,22 @@ class SocialAPI:
         resp = await self.http.post("/api/kolsik/roll-paper", json={})
         resp.raise_for_status()
         return resp.json()
+
+    async def perform_interaction(
+        self,
+        from_user_id: int,
+        to_user_id: int,
+        action_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Выполняет взаимодействие в камере друга (POST /api/interaction/perform).
+        action_type: 'Fight' | 'Harknut' | 'TossDroj' | 'UpgradeBiceps'.
+        """
+        payload = {
+            "fromUserId": int(from_user_id),
+            "toUserId": int(to_user_id),
+            "type": str(action_type),
+        }
+        resp = await self.http.post("/api/interaction/perform", json=payload)
+        resp.raise_for_status()
+        return resp.json()
