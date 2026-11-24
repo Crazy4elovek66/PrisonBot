@@ -146,6 +146,14 @@ STATIC_ROOM_FILES: Dict[str, Path] = {
 }
 
 _asset_client: Optional[Any] = None
+_asset_cdn_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_asset_cdn_sem() -> asyncio.Semaphore:
+    global _asset_cdn_sem
+    if _asset_cdn_sem is None:
+        _asset_cdn_sem = asyncio.Semaphore(16)
+    return _asset_cdn_sem
 
 
 def _get_asset_client() -> Any:
@@ -249,7 +257,8 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     target_url = f"{cdn_base}/{cdn_path}"
     client = _get_asset_client()
 
-    resp = await client.get(target_url)
+    async with _get_asset_cdn_sem():
+        resp = await client.get(target_url)
     if resp.status_code != 200:
         if resp.status_code in (403, 404):
             if ext == ".bundle":
@@ -280,11 +289,14 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
             content_type = "image/png"
     content_bytes = resp.content
 
-    # Сохранение на диск
+    # Сохранение на диск в фоновом потоке (не блокируя event loop)
     try:
-        tmp_file = ASSET_CACHE_DIR / f"{path_hash}.tmp_{random.randint(1000, 9999)}"
-        tmp_file.write_bytes(content_bytes)
-        tmp_file.replace(cached_file)
+        def _write_cache():
+            tmp_file = ASSET_CACHE_DIR / f"{path_hash}.tmp_{random.randint(1000, 9999)}"
+            tmp_file.write_bytes(content_bytes)
+            tmp_file.replace(cached_file)
+
+        await asyncio.to_thread(_write_cache)
     except Exception as e:
         logger.warning("Could not write asset cache for %s: %s", clean_path, e)
 
@@ -671,6 +683,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             or ("boss_targets" in updates and cfg.auto_boss_enabled)
         )
         should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
+        should_wake_routine = bool(updates.get("auto_monthly_tasks") or updates.get("auto_business") or updates.get("auto_toilet_paper"))
         if should_wake_boss:
             if updates.get("boss_auto_melee") and bot_context.boss_worker is not None and not updates.get("auto_boss_enabled"):
                 asyncio.create_task(bot_context.boss_worker.trigger_auto_melee())
@@ -683,6 +696,11 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
                 ctrl.trigger_prison_now()
             elif bot_context.prison_worker is not None:
                 asyncio.create_task(bot_context.prison_worker.run_cycle())
+        if should_wake_routine:
+            if ctrl is not None and hasattr(ctrl, "trigger_routine_now"):
+                ctrl.trigger_routine_now()
+            elif bot_context.routine_worker is not None:
+                asyncio.create_task(bot_context.routine_worker.run_cycle())
 
     return {
         "success": True,
@@ -700,7 +718,14 @@ async def get_notifications(
     engine = bot_context.db_engine
 
     async with get_session(engine) as session:
-        stmt = select(Notification).where(Notification.account_id == account_id)
+        from core.config import settings
+        from datetime import timedelta as _td, timezone as _tz
+        cutoff = datetime.now(_tz.utc) - _td(days=settings.NOTIFICATIONS_RETENTION_DAYS)
+        base_filter = (
+            Notification.account_id == account_id,
+            Notification.created_at >= cutoff,
+        )
+        stmt = select(Notification).where(*base_filter)
         if category == "unread":
             stmt = stmt.where(Notification.is_read.is_(False))
         elif category in ("bosses", "prisons", "business", "other"):
@@ -713,7 +738,7 @@ async def get_notifications(
         counts = {"all": 0, "unread": 0, "bosses": 0, "prisons": 0, "business": 0, "other": 0}
         cnt_stmt = (
             select(Notification.category, Notification.is_read, func.count(Notification.id))
-            .where(Notification.account_id == account_id)
+            .where(*base_filter)
             .group_by(Notification.category, Notification.is_read)
         )
         for cat, is_read, cnt in (await session.execute(cnt_stmt)).all():
@@ -1149,6 +1174,22 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
             player_biz_map[(b_id, p_id)] = pb
             player_biz_map[b_id] = pb
 
+    prison_names_map: Dict[int, str] = {}
+    prisons_slice = hub.get_slice(account_id, "prisons", max_age_seconds=3600.0, source_tag=tag)
+    if prisons_slice and isinstance(prisons_slice.data, dict):
+        for p_item in prisons_slice.data.get("prisons") or []:
+            if isinstance(p_item, dict) and p_item.get("id") is not None:
+                prison_names_map[int(p_item["id"])] = str(p_item.get("name") or f"Тюрьма #{p_item['id']}")
+    elif bot_context.prison_api is not None:
+        try:
+            p_res = await bot_context.prison_api.get_all_prisons()
+            p_list = p_res.get("prisons", []) if isinstance(p_res, dict) else (p_res if isinstance(p_res, list) else [])
+            for p_item in p_list:
+                if isinstance(p_item, dict) and p_item.get("id") is not None:
+                    prison_names_map[int(p_item["id"])] = str(p_item.get("name") or f"Тюрьма #{p_item['id']}")
+        except Exception:
+            pass
+
     merged_businesses = []
     pending_resources = {"authority": 0, "cigarettes": 0, "rubles": 0, "rating": 0}
 
@@ -1169,9 +1210,11 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
             norm_type = DropParser._normalize_currency(rew_type) or rew_type
             pending_resources[norm_type] = pending_resources.get(norm_type, 0) + cur_reward
 
+        p_name = prison_names_map.get(int(p_id)) if p_id is not None else None
         merged_businesses.append({
             "businessId": b_id,
             "prisonId": p_id,
+            "prisonName": p_name or f"Тюрьма #{p_id}",
             "title": b.get("title") or b.get("name") or f"Бизнес #{b_id}",
             "level": real_level,
             "maxLevel": b.get("maxLevel", 8),
@@ -1779,7 +1822,7 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
         state_data = states_by_id.get(int(target_id), {})
 
         enriched_prisons = []
-        for p in raw_prisons:
+        for idx, p in enumerate(raw_prisons):
             if not isinstance(p, dict):
                 continue
             p_copy = dict(p)
@@ -1791,6 +1834,16 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
             else:
                 p_copy.setdefault("dayRuns", 0)
                 p_copy.setdefault("nightRuns", 0)
+            if not p_copy.get("isUnlocked", True):
+                req_text = p_copy.get("unlockRequirement") or p_copy.get("unlock_requirement")
+                if not req_text and idx > 0 and isinstance(raw_prisons[idx - 1], dict):
+                    prev_p = raw_prisons[idx - 1]
+                    prev_name = prev_p.get("name") or f"Тюрьме #{prev_p.get('id')}"
+                    req_text = f"Пройдите ходку в «{prev_name}»"
+                if not req_text:
+                    req_text = "Пройдите предыдущую тюрьму"
+                p_copy["unlockRequirement"] = req_text
+                p_copy["unlock_requirement"] = req_text
             enriched_prisons.append(p_copy)
 
         completed_cps = int(
@@ -2441,6 +2494,30 @@ async def get_monthly_state(account_id: int = 1, force: bool = Query(False)) -> 
 
     try:
         st = await social_api.get_monthly_state()
+        if isinstance(st, dict):
+            user_m = st.get("user") or {}
+            global_m = st.get("global") or {}
+            active_day_id = user_m.get("activeDayId")
+            user_days = user_m.get("days") or {}
+            days_defs = global_m.get("days") or []
+            today_def = next((d for d in days_defs if isinstance(d, dict) and d.get("dayId") == active_day_id), None)
+            day_prog = user_days.get(str(active_day_id)) or user_days.get(active_day_id) or {}
+            today_cur = int(day_prog.get("progress") or 0)
+            today_tgt = int((today_def or {}).get("target") or 0)
+            today_obj = st.get("today")
+            if isinstance(today_obj, dict):
+                today_obj.setdefault("current", today_cur)
+                if today_tgt > 0:
+                    today_obj.setdefault("target", today_tgt)
+            elif today_def:
+                st["today"] = {
+                    "dayId": active_day_id,
+                    "title": today_def.get("title") or today_def.get("action") or "",
+                    "action": today_def.get("action") or "",
+                    "current": today_cur,
+                    "target": today_tgt,
+                    "completed": bool(day_prog.get("completed", False)),
+                }
         payload = {"success": True, "state": st}
         hub.update_slice(account_id, "monthly", payload, source_tag=tag)
         return payload

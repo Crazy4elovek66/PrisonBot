@@ -61,6 +61,7 @@ class BossWorker:
         player_api: Optional[Any] = None,
         state_hub: Optional[Any] = None,
         on_activity_change: Optional[Callable[[bool], Any]] = None,
+        on_melee_reschedule: Optional[Callable[[float], Any]] = None,
     ):
         self.account_id = account_id
         self.api = boss_api
@@ -71,6 +72,7 @@ class BossWorker:
         self.player_api = player_api
         self.state_hub = state_hub
         self.on_activity_change = on_activity_change
+        self.on_melee_reschedule = on_melee_reschedule
         self.is_paused: bool = False
         self._cycle_lock = asyncio.Lock()
 
@@ -524,6 +526,8 @@ class BossWorker:
             "rewards_claimed": 0,
             "killed": False,
             "boss_hp_remaining": None,
+            "next_melee_ready_at": None,
+            "next_melee_wait_sec": None,
             "errors": [],
         }
         try:
@@ -547,15 +551,30 @@ class BossWorker:
 
         available_melee = [w for w in MELEE_CONFIG if w in equipped_slots]
         ready_hits: List[str] = []
+        earliest_ready_dt: Optional[datetime] = None
         for w in available_melee:
             cfg = MELEE_CONFIG[w]
             last_raw = weapons_data.get(cfg["last_time_key"])
             last_dt = parse_iso_utc(last_raw)
-            cooldown_sec = weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"])
+            cooldown_sec = float(weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"]))
             if last_dt is None or now_utc >= (last_dt + timedelta(seconds=cooldown_sec)):
                 ready_hits.append(w)
+            else:
+                ready_dt = last_dt + timedelta(seconds=cooldown_sec)
+                if earliest_ready_dt is None or ready_dt < earliest_ready_dt:
+                    earliest_ready_dt = ready_dt
 
         if not ready_hits:
+            if earliest_ready_dt is not None:
+                wait_sec = max(1.0, (earliest_ready_dt - now_utc).total_seconds() + 0.5)
+                results["next_melee_ready_at"] = earliest_ready_dt.isoformat()
+                results["next_melee_wait_sec"] = wait_sec
+                if self.on_melee_reschedule is not None and not getattr(config, "is_paused", False):
+                    if config is None or getattr(config, "boss_auto_melee", False) or getattr(config, "auto_boss_enabled", False):
+                        try:
+                            self.on_melee_reschedule(wait_sec)
+                        except Exception:
+                            pass
             return results
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -628,7 +647,36 @@ class BossWorker:
                     patched["session"] = sess_copy
                 self.state_hub.update_slice(self.account_id, "boss", patched)
 
+        if (
+            not results["killed"]
+            and results["boss_hp_remaining"] is not None
+            and int(results["boss_hp_remaining"]) > 0
+            and available_melee
+        ):
+            after_utc = datetime.now(timezone.utc)
+            next_dt: Optional[datetime] = None
+            for w in available_melee:
+                cfg = MELEE_CONFIG[w]
+                last_dt = parse_iso_utc(weapons_data.get(cfg["last_time_key"]))
+                cooldown_sec = float(weapon_stats_effective.get(cfg["cooldown_key"], cfg["default_cooldown"]))
+                if last_dt is not None:
+                    cand = last_dt + timedelta(seconds=cooldown_sec)
+                    if next_dt is None or cand < next_dt:
+                        next_dt = cand
+            if next_dt is not None:
+                wait_sec = max(1.0, (next_dt - after_utc).total_seconds() + 0.5)
+                results["next_melee_ready_at"] = next_dt.isoformat()
+                results["next_melee_wait_sec"] = wait_sec
+                if self.on_melee_reschedule is not None and not getattr(config, "is_paused", False):
+                    if config is None or getattr(config, "boss_auto_melee", False) or getattr(config, "auto_boss_enabled", False):
+                        try:
+                            self.on_melee_reschedule(wait_sec)
+                        except Exception:
+                            pass
+
         return results
+
+    execute_ready_melee_hits = trigger_auto_melee
 
     async def _load_active_preset(self) -> Tuple[Optional[BossPreset], List[Dict[str, Any]]]:
         """Загружает запущенный BossPreset и разворачивает его шаги."""

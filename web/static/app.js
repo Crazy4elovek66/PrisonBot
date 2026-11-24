@@ -11,7 +11,7 @@ const GAME_ICONS = {
   soap: "/static/assets/icons/soap.webp",
   sugar: "/static/assets/icons/sugar.webp",
   cigarettes: "/static/assets/icons/cigarettes.webp",
-  paper: "/static/assets/icons/paper.webp",
+  paper: "/static/assets/icons/paper.webp?v=2",
   knife: "/static/assets/icons/knife.webp",
   poison: "/static/assets/icons/poison.webp",
   gunshot: "/static/assets/icons/gunshot.webp",
@@ -19,9 +19,9 @@ const GAME_ICONS = {
   authority: "/static/assets/icons/authority.webp",
   respect: "/static/assets/icons/respect.webp",
   rating: "/static/assets/icons/respect.webp",
-  biceps: "/static/assets/icons/biceps.webp",
+  biceps: "/static/assets/icons/biceps.webp?v=2",
   keys: "/static/assets/icons/keys.webp",
-  talents: "/static/assets/icons/talents.webp",
+  talents: "/static/assets/icons/talents.webp?v=2",
   boss: "/static/assets/icons/boss.webp",
   vote: "/static/assets/icons/vote.webp",
   punchChest: "/static/assets/icons/punchChest.webp",
@@ -55,9 +55,9 @@ const RESOURCE_ICON_MAP = {
   toilet_paper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
   soap: { src: "/static/assets/icons/soap.webp", label: "Мыло" },
   energy: { src: "/static/assets/icons/energy.webp", label: "Энергия" },
-  biceps: { src: "/static/assets/icons/biceps.webp", label: "Бицепс" },
-  talents: { src: "/static/assets/icons/talents.webp", label: "Таланты" },
-  intellect: { src: "/static/assets/icons/talents.webp", label: "Интеллект" },
+  biceps: { src: "/static/assets/icons/biceps.webp?v=2", label: "Бицепс" },
+  talents: { src: "/static/assets/icons/talents.webp?v=2", label: "Таланты" },
+  intellect: { src: "/static/assets/icons/talents.webp?v=2", label: "Интеллект" },
   keys: { src: "/static/assets/icons/keys.webp", label: "Ключи" },
   stash: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
   stashes: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
@@ -154,12 +154,9 @@ function getAuthHeaders() {
 }
 
 async function apiFetch(endpoint, options = {}) {
-  const start = performance.now();
   const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
   try {
     const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-    const ping = Math.round(performance.now() - start);
-    updatePing(ping);
 
     if (res.status === 401 || res.status === 403) {
       document.getElementById("auth-modal").style.display = "flex";
@@ -188,15 +185,49 @@ function updatePing(ms) {
   }
 }
 
+let _pingInFlight = false;
+let _pingAbort = null;
+let _pingTimerId = null;
+
 async function measurePing() {
+  if (_pingInFlight) return;
+  _pingInFlight = true;
+  if (_pingAbort) {
+    try { _pingAbort.abort(); } catch (e) { }
+  }
+  _pingAbort = new AbortController();
+  const timer = setTimeout(() => {
+    try { _pingAbort?.abort(); } catch (e) { }
+  }, 4000);
+  const t0 = performance.now();
   try {
-    const res = await apiFetch("/ping");
-    if (res && res.ok && typeof res.game_ping_ms === "number") {
-      updatePing(res.game_ping_ms);
+    const res = await fetch(`${API_BASE}/ping`, {
+      headers: getAuthHeaders(),
+      signal: _pingAbort.signal,
+    });
+    if (res.ok) {
+      const rtt = Math.round(performance.now() - t0);
+      const data = await res.json();
+      if (data && data.ok) {
+        updatePing(rtt);
+      }
     }
   } catch (e) {
     // silent fallback
+  } finally {
+    clearTimeout(timer);
+    _pingInFlight = false;
   }
+}
+
+function scheduleNextPing() {
+  if (_pingTimerId) clearTimeout(_pingTimerId);
+  _pingTimerId = setTimeout(async () => {
+    if (!document.hidden) {
+      await measurePing();
+    }
+    scheduleNextPing();
+  }, 15000);
 }
 
 function showToast(message, type = "info") {
@@ -550,7 +581,7 @@ function updateConfigUI(cfg) {
   const checkboxKeys = [
     "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
     "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
-    "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon",
+    "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
     "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
     "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
     "auto_kolsik"
@@ -1013,9 +1044,10 @@ function renderPrisonsGrid(prisons) {
     tile.setAttribute("data-prison-id", String(p.id));
     setTextIfChanged(tile.querySelector(".prison-tile-name"), p.name || `Тюрьма #${p.id}`);
     setTextIfChanged(tile.querySelector(".prison-tile-lock"), isUnlocked ? "🔓" : "🔒");
+    const unlockReq = p.unlockRequirement || p.unlock_requirement || (p.requiredLevel ? `Требуется ур. ${p.requiredLevel}` : "Пройдите предыдущую тюрьму");
     const runsInfo = isUnlocked
       ? `☀️ День: ${p.dayRuns || 0}  |  🌙 Ночь: ${p.nightRuns || 0}`
-      : `🔒 Требуется ур. ${p.requiredLevel || 1}`;
+      : `🔒 ${unlockReq}`;
     setTextIfChanged(tile.querySelector(".prison-tile-meta"), runsInfo);
   };
 
@@ -1023,7 +1055,7 @@ function renderPrisonsGrid(prisons) {
     container,
     prisons || [],
     p => p.id,
-    p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.requiredLevel || 1}|${p.dayRuns || 0}|${p.nightRuns || 0}`,
+    p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.unlockRequirement || p.unlock_requirement || p.requiredLevel || ''}|${p.dayRuns || 0}|${p.nightRuns || 0}`,
     p => {
       const tile = document.createElement("div");
       tile.setAttribute("data-prison-id", String(p.id));
@@ -1191,7 +1223,12 @@ function renderBusinesses() {
   const patchBiz = (item, b) => {
     const rewardAmount = b.rewardPerLevel ? b.rewardPerLevel * (b.level || 1) : (b.currentReward || 0);
     const rewardInfo = rewardAmount ? `+${formatNum(rewardAmount)} / 8ч` : "";
-    setTextIfChanged(item.querySelector(".biz-title"), b.title || b.name || `Бизнес #${b.businessId || ''}`);
+    const titleEl = item.querySelector(".biz-title");
+    if (titleEl) {
+      const zoneBadge = b.prisonName ? ` <span style="font-weight: 500; font-size: 10px; color: var(--muted-foreground);">· ${b.prisonName}</span>` : "";
+      const titleHtml = `${b.title || b.name || `Бизнес #${b.businessId || ''}`}${zoneBadge}`;
+      if (titleEl.innerHTML !== titleHtml) titleEl.innerHTML = titleHtml;
+    }
     const subEl = item.querySelector(".biz-sub");
     if (subEl) {
       const html = `${renderResourceIcon(b.rewardType || 'cigarettes', 'res-icon')} <span>${rewardInfo || 'Доход'}</span>`;
@@ -1204,7 +1241,7 @@ function renderBusinesses() {
     container,
     bizList,
     b => `${b.businessId}-${b.prisonId || 1}`,
-    b => `${b.businessId}|${b.prisonId}|${b.title}|${b.level}|${b.rewardPerLevel}`,
+    b => `${b.businessId}|${b.prisonId}|${b.prisonName || ''}|${b.title}|${b.level}|${b.rewardPerLevel}`,
     b => {
       const item = document.createElement("div");
       item.setAttribute("data-biz-id", String(b.businessId));
@@ -1253,7 +1290,10 @@ function renderMonthlyStateData(data) {
     const claimable = Array.isArray(st.user?.claimableTiers) ? st.user.claimableTiers.length : 0;
     let text = `Выполнено этапов: <b>${completed}</b> • Готово к сбору наград: <b>${claimable}</b>`;
     if (st.today?.title) {
-      text += ` • Сегодня: <i>${st.today.title}</i>`;
+      const cur = Number(st.today.current ?? st.today.progress ?? 0);
+      const tgt = Number(st.today.target ?? 0);
+      const progSuffix = tgt > 0 ? ` (${cur}/${tgt} выполнено)` : "";
+      text += ` • Сегодня: <i>${st.today.title}</i>${progSuffix}`;
     }
     if (el.innerHTML !== text) el.innerHTML = text;
   } else {
@@ -1376,7 +1416,7 @@ async function loadNotifications(category = "all") {
       const card = document.createElement("div");
       const meta = n.meta_json || {};
       const isDefeat = meta.type === "boss_defeat" || meta.outcome === "defeat";
-      card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}`;
+      card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}${n.is_read ? ' is-read' : ''}`;
 
       let rewardsHtml = "";
       if (Array.isArray(n.rewards) && n.rewards.length > 0) {
@@ -1479,6 +1519,7 @@ document.querySelectorAll(".filter-pill").forEach(pill => {
 
 document.getElementById("btn-read-all-notifs")?.addEventListener("click", async () => {
   await apiFetch("/notifications/read-all", { method: "POST" });
+  document.querySelectorAll("#notifications-list .notif-card").forEach(el => el.classList.add("is-read"));
   showToast("Все уведомления прочитаны", "info");
   loadNotifications(currentCatFilter);
 });
@@ -1488,6 +1529,23 @@ document.getElementById("btn-clear-notifs")?.addEventListener("click", async () 
   showToast("Прочитанные уведомления очищены", "info");
   loadNotifications(currentCatFilter);
 });
+
+const SOURCE_LABELS = {
+  radar: "📡 Радар",
+  radar_batch: "📡 Радар (пакет)",
+  guild: "🏰 Из бригад",
+  weekly_top: "🏆 Топ недели",
+  achievements: "🎖️ Достижения",
+  news_ad: "📰 Новости",
+  tg_channel: "📡 ТГ-каналы",
+  auto_outreach: "🤖 Авто-набор",
+  raid: "⚔️ Рейд",
+  import: "📋 Импорт",
+  manual: "✋ Вручную",
+  search: "🔍 Поиск",
+  top: "🏆 Топ",
+  accessible: "👥 Доступные",
+};
 
 // --- 4.8.1 Friends Summary (Счетчик, Дельта 24ч, Конверсия) ---
 function renderFriendsSummaryData(data) {
@@ -1531,14 +1589,7 @@ function renderFriendsSummaryData(data) {
       s => s.source,
       s => `${s.source}|${s.sent}|${s.accepted}|${s.conversionRate}|${s.avgDamage}`,
       s => {
-        let srcName = s.source;
-        if (s.source === "tg_channel") srcName = "📡 TG-каналы";
-        else if (s.source === "news_ad") srcName = "📰 Новости";
-        else if (s.source === "guild") srcName = "🏰 Бригады";
-        else if (s.source === "weekly_top") srcName = "🏆 Топ недели";
-        else if (s.source === "achievements") srcName = "🎖️ Достижения";
-        else if (s.source === "auto_outreach") srcName = "🤖 Авто-набор";
-        else if (s.source === "import") srcName = "📋 Импорт";
+        const srcName = SOURCE_LABELS[s.source] || s.source || "Неизвестно";
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="col-src" style="text-align: left; font-weight: 600;">${srcName}</td>
@@ -2544,19 +2595,6 @@ hudMasterSwitch?.addEventListener("change", async () => {
   });
   showToast(isPaused ? "Бот выключен (пауза)" : "Бот включен (активен)", "info");
   refreshState();
-});
-
-// --- 5.11 Friend Damage ---
-document.getElementById("btn-boss-friend-damage")?.addEventListener("click", async () => {
-  try {
-    const res = await apiFetch("/actions/boss/friend-damage", { method: "POST" });
-    if (res.success) {
-      showToast("Урон друзей успешно собран!", "success");
-      loadBoss();
-    }
-  } catch (e) {
-    showToast(`Ошибка сбора урона друзей: ${e.message}`, "error");
-  }
 });
 
 // --- 5.12 Business Accordion Toggle ---
@@ -3853,7 +3891,43 @@ function drawLayer(ctx, layer, timeMs) {
 
 let fittingRoomStaticCanvas = null;
 let fittingRoomStaticCtx = null;
+let fittingRoomTopStaticCanvas = null;
+let fittingRoomTopStaticCtx = null;
 let fittingRoomAnimLayers = [];
+
+function canRotateFittingPreview(previewData) {
+  if (!previewData) return true;
+  if (previewData.type === "camera" || previewData.type === "room") return false;
+  if (previewData.type === "item") {
+    const k = String(previewData.kind || previewData.item?.kind || "").toLowerCase();
+    if (k.includes("cloth") || k === "camera" || k === "room") return false;
+    return true;
+  }
+  if (previewData.type === "set") {
+    const k = String(previewData.kind || previewData.set?.kind || "").toLowerCase();
+    if (k.includes("cloth")) return false;
+    return true;
+  }
+  if (previewData.type === "loot") {
+    const itm = previewData.item || {};
+    const k = String(itm.kind || "").toLowerCase();
+    if (k.includes("cloth") || k === "camera" || k === "room") return false;
+    if (Array.isArray(itm.previewParts) && itm.previewParts.length > 0) {
+      return itm.previewParts.some(p => String(p.kind || "").toLowerCase().includes("tattoo"));
+    }
+    return k.includes("tattoo");
+  }
+  return true;
+}
+
+function formatFittingBonusesHtml(bonuses) {
+  if (!bonuses || typeof bonuses !== "object") return "";
+  const entries = Object.entries(bonuses).filter(([, v]) => Number(v) > 0);
+  if (entries.length === 0) return "";
+  return entries
+    .map(([k, v]) => `<span class="set-bonus-badge gold" style="margin-right:4px;">${gameIcon(k, '', 'game-icon-sm')} +${v}</span>`)
+    .join("");
+}
 
 function extractRoomFolderId(cameraUrl, fallbackId = "1") {
   const s = String(cameraUrl || "");
@@ -3964,6 +4038,11 @@ function startFittingRoomLoop() {
           }
         }
         ctx.restore();
+      }
+
+      // 4. Головные уборы и верхняя одежда (зоны 4, 8, 3) строго поверх EyesAnim
+      if (fittingRoomTopStaticCanvas) {
+        ctx.drawImage(fittingRoomTopStaticCanvas, 0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
       }
 
       // 4. Передний слой room.bundle (для хаты 54 — gameBirthday_back_front со столом, тортом, свечами и котом строго поверх персонажа)
@@ -4331,7 +4410,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
           const cImg = await getCanvasImage(cUrl);
           if (cImg) {
             const offset = FITTING_CONFIG.staticClothingOffsets[Number(z)] || { x: 0, y: 0, scale: 1 };
-            layers.push({ ...offset, img: cImg });
+            layers.push({ ...offset, img: cImg, overEyes: (z === "4" || z === "8") });
           }
         }
       }
@@ -4369,7 +4448,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
         const cImg = await getCanvasImage(cUrl);
         if (cImg) {
           const offset = FITTING_CONFIG.staticClothingOffsets[3] || { x: 0, y: 0, scale: 1 };
-          layers.push({ ...offset, img: cImg });
+          layers.push({ ...offset, img: cImg, overEyes: true });
         }
       }
     }
@@ -4380,7 +4459,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
       if (t14Url) {
         const t14Img = await getCanvasImage(t14Url);
         if (t14Img) {
-          layers.push({ ...FITTING_CONFIG.f, img: t14Img });
+          layers.push({ ...FITTING_CONFIG.f, img: t14Img, overEyes: true });
         }
       }
     }
@@ -4398,45 +4477,56 @@ async function prepareFittingRoomLayers(currentToken = null) {
     fittingRoomStaticCanvas.height = 1124;
     fittingRoomStaticCtx = fittingRoomStaticCanvas.getContext("2d");
   }
+  if (!fittingRoomTopStaticCanvas) {
+    fittingRoomTopStaticCanvas = document.createElement("canvas");
+    fittingRoomTopStaticCanvas.width = 1510;
+    fittingRoomTopStaticCanvas.height = 1124;
+    fittingRoomTopStaticCtx = fittingRoomTopStaticCanvas.getContext("2d");
+  }
 
   const staticLayers = [];
+  const topStaticLayers = [];
   const animLayers = [];
   for (const l of layers) {
     if (l.atlas) {
       animLayers.push(l);
+    } else if (l.overEyes) {
+      topStaticLayers.push(l);
     } else {
       staticLayers.push(l);
     }
   }
   fittingRoomAnimLayers = animLayers;
 
-  fittingRoomStaticCtx.save();
-  try {
-    fittingRoomStaticCtx.setTransform(2, 0, 0, 2, 0, 0);
-    fittingRoomStaticCtx.clearRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
+  const drawStaticBucket = (targetCtx, bucket) => {
+    targetCtx.save();
+    try {
+      targetCtx.setTransform(2, 0, 0, 2, 0, 0);
+      targetCtx.clearRect(0, 0, FITTING_CONFIG.U.w, FITTING_CONFIG.U.h);
+      targetCtx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
+      targetCtx.save();
+      targetCtx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y);
+      targetCtx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale);
 
-    fittingRoomStaticCtx.translate(-FITTING_CONFIG.U.x, -FITTING_CONFIG.U.y);
-
-    // Draw Static Character Layers onto transparent static composite buffer
-    fittingRoomStaticCtx.save();
-    fittingRoomStaticCtx.translate(FITTING_CONFIG.o.x, FITTING_CONFIG.o.y);
-    fittingRoomStaticCtx.scale(FITTING_CONFIG.o.scale, FITTING_CONFIG.o.scale);
-
-    for (const layer of staticLayers) {
-      if (layer.angle) {
-        fittingRoomStaticCtx.save();
-        fittingRoomStaticCtx.translate(layer.x, layer.y);
-        fittingRoomStaticCtx.rotate((layer.angle * Math.PI) / 180);
-        drawLayer(fittingRoomStaticCtx, { ...layer, x: 0, y: 0 }, 0);
-        fittingRoomStaticCtx.restore();
-      } else {
-        drawLayer(fittingRoomStaticCtx, layer, 0);
+      for (const layer of bucket) {
+        if (layer.angle) {
+          targetCtx.save();
+          targetCtx.translate(layer.x, layer.y);
+          targetCtx.rotate((layer.angle * Math.PI) / 180);
+          drawLayer(targetCtx, { ...layer, x: 0, y: 0 }, 0);
+          targetCtx.restore();
+        } else {
+          drawLayer(targetCtx, layer, 0);
+        }
       }
+      targetCtx.restore();
+    } finally {
+      targetCtx.restore();
     }
-    fittingRoomStaticCtx.restore();
-  } finally {
-    fittingRoomStaticCtx.restore();
-  }
+  };
+
+  drawStaticBucket(fittingRoomStaticCtx, staticLayers);
+  drawStaticBucket(fittingRoomTopStaticCtx, topStaticLayers);
 }
 
 function openFittingRoom(previewData = null) {
@@ -4500,7 +4590,9 @@ function openFittingRoom(previewData = null) {
     }
   }
 
-  if (hasBack && !hasFront) {
+  if (!canRotateFittingPreview(previewData)) {
+    fittingViewSide = "front";
+  } else if (hasBack && !hasFront) {
     fittingViewSide = "back";
   } else {
     fittingViewSide = "front";
@@ -4517,7 +4609,8 @@ function openFittingRoom(previewData = null) {
   if (previewData) {
     if (previewData.type === "item") {
       badgeEl.textContent = `Примерка: ${previewData.item.name}`;
-      descEl.textContent = `Зона: ${previewData.item.zone} | ${previewData.item.description || 'Часть сета'}`;
+      const bonusHtml = formatFittingBonusesHtml(previewData.item.bonuses);
+      descEl.innerHTML = `Зона: ${previewData.item.zone} ${bonusHtml ? `| ${bonusHtml}` : `| ${previewData.item.description || 'Часть сета'}`}`;
       if (applyBtn) {
         if (previewData.item.owned) {
           applyBtn.style.display = "block";
@@ -4531,14 +4624,17 @@ function openFittingRoom(previewData = null) {
       }
     } else if (previewData.type === "set") {
       badgeEl.textContent = `Примерка сета: ${previewData.set.setName}`;
-      descEl.textContent = `Всего частей: ${previewData.set.totalParts} | Собрано: ${previewData.set.ownedParts}`;
+      const bonusHtml = formatFittingBonusesHtml(previewData.set.maxBonus || previewData.set.bonuses);
+      descEl.innerHTML = `Всего частей: ${previewData.set.totalParts} | Собрано: ${previewData.set.ownedParts}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
       if (applyBtn) {
         applyBtn.style.display = "block";
         applyBtn.textContent = "Надеть сет в игре";
       }
     } else if (previewData.type === "camera") {
       badgeEl.textContent = `Примерка хаты: ${previewData.camera.name}`;
-      descEl.textContent = previewData.camera.owned ? "В наличии" : `Цена: ${previewData.camera.price} ${previewData.camera.currency}`;
+      const bonusHtml = formatFittingBonusesHtml(previewData.camera.bonuses);
+      const statusTxt = previewData.camera.owned ? "В наличии" : `Цена: ${previewData.camera.price} ${previewData.camera.currency}`;
+      descEl.innerHTML = `${statusTxt}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
       if (applyBtn) {
         applyBtn.style.display = "block";
         applyBtn.textContent = previewData.camera.owned ? "Выбрать хату" : "Купить хату";
@@ -4713,6 +4809,7 @@ async function drawFittingRoomStage(currentToken = null) {
       rotBtn.innerHTML = '<img src="/static/assets/icons/back_poworot.webp" alt="Развернуть" draggable="false" />';
     }
   }
+  rotBtn.style.display = canRotateFittingPreview(fittingRoomPreview) ? "flex" : "none";
   rotBtn.onclick = (e) => {
     e.stopPropagation();
     fittingViewSide = (fittingViewSide === "front" ? "back" : "front");
@@ -5143,11 +5240,8 @@ setInterval(() => {
   updateToiletPaperTimer();
 }, 1000);
 
-// 15-second lightweight ping measurement
-setInterval(() => {
-  if (document.hidden) return;
-  measurePing();
-}, 15000);
+// 15-second sequential ping measurement (non-overlapping)
+scheduleNextPing();
 
 // Пауза / возобновление при сворачивании и возврате на вкладку браузера
 document.addEventListener("visibilitychange", () => {
@@ -5323,7 +5417,7 @@ function renderBossDropHtml(b, mode) {
     keys: "/static/assets/icons/keys.webp",
     rubles: "/static/assets/icons/rubles.webp",
     toiletPaper: "/static/assets/icons/paper.webp",
-    paper: "/static/assets/icons/paper.webp",
+    paper: "/static/assets/icons/paper.webp?v=2",
     soap: "/static/assets/icons/soap.webp",
   };
 
@@ -7144,13 +7238,7 @@ function _buildRadarRowData(p, idx) {
     ? `<span class="radar-badge-delta" style="color: #22c55e; font-weight: 700; font-size: 11px; background: rgba(34, 197, 94, 0.15); padding: 1px 5px; border-radius: 4px;">+Δ ${formatNum(p.damageDelta)}</span>`
     : "";
 
-  let srcLabel = "";
-  if (p.source === "tg_channel") srcLabel = "📡 TG";
-  else if (p.source === "news_ad") srcLabel = "📰 Новости";
-  else if (p.source === "guild") srcLabel = "🏰 Бригада";
-  else if (p.source === "weekly_top") srcLabel = "🏆 Топ";
-  else if (p.source === "achievements") srcLabel = "🎖️ Достижения";
-  else if (p.source === "import") srcLabel = "📋 Импорт";
+  const srcLabel = SOURCE_LABELS[p.source] || (p.source ? String(p.source) : "");
   const srcBadge = srcLabel ? `<span class="radar-badge-source" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 1px 5px; border-radius: 4px; font-size: 10px;">${srcLabel}</span>` : "";
 
   const scoreBadge = (p.score !== undefined && p.score !== null)

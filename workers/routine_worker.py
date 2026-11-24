@@ -2,7 +2,7 @@ import random
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional
 import httpx
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
@@ -90,6 +90,7 @@ class RoutineWorker:
         enable_jitter: bool = True,
         prison_worker: Optional[Any] = None,
         social_api: Optional[Any] = None,
+        on_business_reschedule: Optional[Callable[[float], Any]] = None,
     ):
         self.account_id = account_id
         self.api = player_api
@@ -98,6 +99,7 @@ class RoutineWorker:
         self.enable_jitter = enable_jitter
         self.prison_worker = prison_worker
         self.social_api = social_api
+        self.on_business_reschedule = on_business_reschedule
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -231,11 +233,18 @@ class RoutineWorker:
 
                 if last_collect_dt:
                     now_utc = datetime.now(timezone.utc)
-                    elapsed_minutes = (now_utc - last_collect_dt).total_seconds() / 60.0
+                    elapsed_sec = (now_utc - last_collect_dt).total_seconds()
+                    elapsed_minutes = elapsed_sec / 60.0
                     if elapsed_minutes < settings.BUSINESS_COLLECT_MIN_MINUTES:
                         can_collect_by_timer = False
+                        wait_sec = max(1.0, settings.BUSINESS_COLLECT_MIN_MINUTES * 60.0 - elapsed_sec + 1.0)
+                        if self.on_business_reschedule is not None:
+                            try:
+                                self.on_business_reschedule(wait_sec)
+                            except Exception:
+                                pass
                         logger.info(
-                            f"Бизнесы еще не накопили прибыль (прошло {elapsed_minutes:.1f} мин из {settings.BUSINESS_COLLECT_MIN_MINUTES} мин). Пропуск сбора."
+                            f"Бизнесы еще не накопили прибыль (прошло {elapsed_minutes:.1f} мин из {settings.BUSINESS_COLLECT_MIN_MINUTES} мин). Пропуск сбора (следующий через {wait_sec:.0f}с)."
                         )
 
                 if not has_active_biz:
@@ -246,6 +255,11 @@ class RoutineWorker:
                     try:
                         biz_res = await self.api.collect_business_rewards()
                         results["business_collected"] = True
+                        if self.on_business_reschedule is not None:
+                            try:
+                                self.on_business_reschedule(settings.BUSINESS_COLLECT_MIN_MINUTES * 60.0 + 1.0)
+                            except Exception:
+                                pass
                         await self._log_action("collect_business", "/api/player/business/collect", 200, True, biz_res)
                         logger.info(f"Прибыль с бизнесов собрана: {biz_res.get('rewards')}")
                         # Сохранение уведомления о сборе с бизнесов
@@ -483,6 +497,7 @@ class RoutineWorker:
                 cigs = int((p_data.get("currencies") or {}).get("cigarettes", 0))
 
                 if cigs_cost > 0 and cigs < cigs_cost:
+                    summary["skipped_reason"] = f"недостаточно папирос ({cigs} < {cigs_cost})"
                     logger.info(
                         "Пропуск месячного задания %s: недостаточно папирос (%s < %s).",
                         action_key, cigs, cigs_cost,
@@ -500,16 +515,17 @@ class RoutineWorker:
                         except Exception as fe:
                             logger.warning(f"Ошибка загрузки списка друзей для месячного квеста: {fe}")
 
-                    # Сортируем от самых слабых (минимальный авторитет вверх)
+                    # Сортируем от самых слабых (минимальный бицепс, затем авторитет) для гарантированных побед в Fight
                     sorted_friends = sorted(
                         [f for f in friends if isinstance(f, dict) and (f.get("userId") or f.get("id"))],
-                        key=lambda f: int(f.get("authority") or 0),
+                        key=lambda f: (int(f.get("biceps") if f.get("biceps") is not None else 999999), int(f.get("authority") or 0)),
                     )
 
                     for fr in sorted_friends:
                         if remaining <= 0:
                             break
                         if cigs_cost > 0 and cigs < cigs_cost:
+                            summary["skipped_reason"] = f"недостаточно папирос ({cigs} < {cigs_cost})"
                             logger.info("Папиросы закончились (%s < %s) во время выполнения %s.", cigs, cigs_cost, action_key)
                             break
 
@@ -520,10 +536,16 @@ class RoutineWorker:
                         try:
                             act_res = await s_api.perform_interaction(from_user_id, to_uid, inter_type)
                             if isinstance(act_res, dict) and act_res.get("success", True):
-                                summary["actions_performed"] += 1
-                                remaining -= 1
                                 if cigs_cost > 0:
                                     cigs -= cigs_cost
+                                msg_lower = str(act_res.get("message") or "").lower()
+                                is_loss = inter_type == "Fight" and ("проиграл" in msg_lower) and ("победил" not in msg_lower)
+                                if is_loss:
+                                    logger.debug("Бой с %s проигран (%s), пробуем следующего слабого друга.", to_uid, act_res.get("message"))
+                                    await self._jitter()
+                                    continue
+                                summary["actions_performed"] += 1
+                                remaining -= 1
                                 await self._log_action(
                                     "monthly_quest_action",
                                     "/api/interaction/perform",

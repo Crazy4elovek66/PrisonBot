@@ -52,6 +52,9 @@ class SchedulerController:
         self._boss_fast_mode = False
         self._immediate_boss_task: Optional[asyncio.Task] = None
         self._immediate_prison_task: Optional[asyncio.Task] = None
+        self._immediate_routine_task: Optional[asyncio.Task] = None
+        self._melee_timer_task: Optional[asyncio.Task] = None
+        self._business_timer_task: Optional[asyncio.Task] = None
 
     def set_boss_fast_mode(self, active: bool) -> None:
         """Переключает интервал проверки боссов (12с в бою / 60с в простое)."""
@@ -122,6 +125,95 @@ class SchedulerController:
         self._immediate_prison_task = asyncio.create_task(self._run_prison_and_refresh())
         return self._immediate_prison_task
 
+    async def _delayed_melee_hit(self, delay_sec: float) -> None:
+        try:
+            await asyncio.sleep(delay_sec)
+            if not self.boss_worker:
+                return
+            if self.boss_worker.db_engine:
+                from core.database import get_or_create_config, is_worker_active
+                cfg = await get_or_create_config(self.account_id, self.boss_worker.db_engine)
+                if not is_worker_active(cfg) or not (
+                    getattr(cfg, "boss_auto_melee", False) or getattr(cfg, "auto_boss_enabled", False)
+                ):
+                    return
+                res = await self.boss_worker.trigger_auto_melee(config=cfg)
+            else:
+                res = await self.boss_worker.trigger_auto_melee()
+            if res and (res.get("hits_performed") or res.get("killed")):
+                await self.refresh_slice("boss", force=True)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("Ошибка отложенного авто-удара босса: %s", e)
+
+    def reschedule_boss_melee_in(self, wait_seconds: float) -> None:
+        """Планирует точный одноразовый таймер следующего рукопашного удара по КД."""
+        if not self.boss_worker:
+            return
+        clamped = max(1.0, min(float(wait_seconds), 3600.0))
+        if self._melee_timer_task is not None and not self._melee_timer_task.done():
+            self._melee_timer_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            self._melee_timer_task = loop.create_task(self._delayed_melee_hit(clamped))
+        except RuntimeError:
+            pass
+
+    async def _delayed_business_collect(self, delay_sec: float) -> None:
+        try:
+            await asyncio.sleep(delay_sec)
+            if not self.routine_worker:
+                return
+            await self.routine_worker.run_cycle()
+            await asyncio.gather(
+                self.refresh_slice("profile", force=True),
+                self.refresh_slice("state", force=True),
+                return_exceptions=True,
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("Ошибка отложенного сбора прибыли бизнесов: %s", e)
+
+    def reschedule_business_in(self, wait_seconds: float) -> None:
+        """Планирует точное пробуждение RoutineWorker к моменту готовности сбора бизнесов."""
+        if not self.routine_worker:
+            return
+        clamped = max(1.0, min(float(wait_seconds), 9 * 3600.0))
+        if self._business_timer_task is not None and not self._business_timer_task.done():
+            self._business_timer_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            self._business_timer_task = loop.create_task(self._delayed_business_collect(clamped))
+        except RuntimeError:
+            pass
+
+    async def _run_routine_and_refresh(self) -> Any:
+        if not self.routine_worker:
+            return None
+        try:
+            res = await self.routine_worker.run_cycle()
+            await asyncio.gather(
+                self.refresh_slice("profile", force=True),
+                self.refresh_slice("monthly", force=True),
+                self.refresh_slice("state", force=True),
+                return_exceptions=True,
+            )
+            return res
+        except Exception as e:
+            logger.warning("Ошибка немедленного цикла RoutineWorker: %s", e)
+            return None
+
+    def trigger_routine_now(self) -> Optional[asyncio.Task]:
+        """Немедленно запускает цикл RoutineWorker в фоне при изменении настроек."""
+        if not self.routine_worker:
+            return None
+        if self._immediate_routine_task is not None and not self._immediate_routine_task.done():
+            return self._immediate_routine_task
+        self._immediate_routine_task = asyncio.create_task(self._run_routine_and_refresh())
+        return self._immediate_routine_task
+
     async def refresh_slice(self, slice_name: str, force: bool = True) -> None:
         try:
             from web.routes import refresh_hub_slice
@@ -189,6 +281,7 @@ def create_scheduler(
     setattr(scheduler, "controller", controller)
 
     r_interval = routine_interval_minutes or settings.ROUTINE_INTERVAL_MINUTES
+    routine_worker.on_business_reschedule = controller.reschedule_business_in
     scheduler.add_job(
         routine_worker.run_cycle,
         trigger="interval",
@@ -213,6 +306,7 @@ def create_scheduler(
 
     if boss_worker:
         boss_worker.on_activity_change = controller.set_boss_fast_mode
+        boss_worker.on_melee_reschedule = controller.reschedule_boss_melee_in
         boss_sec = SchedulerController.BOSS_IDLE_INTERVAL_SEC
         scheduler.add_job(
             boss_worker.run_cycle,
@@ -291,6 +385,24 @@ def create_scheduler(
         replace_existing=True,
         max_instances=1,
     )
+
+    if getattr(routine_worker, "db_engine", None) is not None:
+        from core.database import prune_old_notifications
+        async def _prune_notifs_job() -> None:
+            try:
+                await prune_old_notifications(routine_worker.db_engine, days=settings.NOTIFICATIONS_RETENTION_DAYS)
+            except Exception as pe:
+                logger.debug("Ошибка плановой очистки уведомлений: %s", pe)
+
+        scheduler.add_job(
+            _prune_notifs_job,
+            trigger="interval",
+            hours=1,
+            id=f"prune_notifications_{acc_id}",
+            name=f"Prune Notifications > {settings.NOTIFICATIONS_RETENTION_DAYS}d for account {acc_id}",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     return scheduler
 

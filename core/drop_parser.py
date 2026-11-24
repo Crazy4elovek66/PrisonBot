@@ -336,6 +336,36 @@ class DropParser:
             },
         }
 
+    _collection_item_map: Dict[str, str] = {}
+    _collection_image_map: Dict[str, str] = {}
+    _last_prune_ts: float = 0.0
+
+    @classmethod
+    def update_collection_cache(cls, payload: Any) -> None:
+        """Индексирует каталог коллекций (/api/collection/player/full) для точных названий дропов."""
+        cols = payload.get("collections", []) if isinstance(payload, dict) else (payload if isinstance(payload, list) else [])
+        for p_group in cols:
+            if not isinstance(p_group, dict):
+                continue
+            prison_title = str(p_group.get("prison") or "").strip()
+            for col in p_group.get("collections") or []:
+                if not isinstance(col, dict):
+                    continue
+                col_name = str(col.get("name") or col.get("title") or "").strip()
+                if not col_name:
+                    continue
+                label = f"{col_name} ({prison_title})" if prison_title else col_name
+                for itm in col.get("items") or []:
+                    if not isinstance(itm, dict):
+                        continue
+                    iid = itm.get("id")
+                    if iid is not None:
+                        cls._collection_item_map[str(iid)] = f"{col_name}"
+                    img = str(itm.get("image") or itm.get("imageUrl") or "").strip()
+                    if img:
+                        cls._collection_image_map[img] = label
+                        cls._collection_image_map[img.rsplit("/", 1)[-1]] = label
+
     @classmethod
     def parse_prison_work(
         cls,
@@ -345,6 +375,7 @@ class DropParser:
         is_day: bool = True,
         stage_num: Optional[int] = None,
         prison_id: Optional[int] = None,
+        collection_catalog: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Парсинг ответа выполнения ходки в тюрьме (POST /api/player/prison/{id}/work)."""
         rewards: List[Dict[str, Any]] = []
@@ -391,12 +422,33 @@ class DropParser:
             })
 
         if payload.get("collectionDrop"):
+            if collection_catalog is not None:
+                cls.update_collection_cache(collection_catalog)
             c_drop = payload["collectionDrop"]
-            c_name = c_drop.get("title") or c_drop.get("name") or "Коллекционный предмет"
+            if not isinstance(c_drop, dict):
+                c_drop = {"title": str(c_drop)}
+            c_id = c_drop.get("itemId") or c_drop.get("id")
+            c_img = str(c_drop.get("imageUrl") or c_drop.get("image") or "").strip()
+            col_label = (
+                (cls._collection_item_map.get(str(c_id)) if c_id is not None else None)
+                or (cls._collection_image_map.get(c_img) if c_img else None)
+                or (cls._collection_image_map.get(c_img.rsplit("/", 1)[-1]) if c_img else None)
+            )
+            c_name = (
+                c_drop.get("title")
+                or c_drop.get("name")
+                or c_drop.get("itemName")
+                or c_drop.get("collectionName")
+                or (f"Коллекция «{col_label}»" if col_label else None)
+                or (f"Предмет коллекции ({prison_name})" if prison_name else "Предмет коллекции")
+            )
+            sub_txt = f"Нычка: {col_label}" if col_label else (f"Нычка ({prison_name})" if prison_name else "Нычка")
             drops.append({
                 "kind": "item",
                 "title": c_name,
-                "subtitle": "Предмет коллекции",
+                "subtitle": sub_txt,
+                "itemId": c_id,
+                "imageUrl": c_img or None,
             })
 
         if payload.get("weaponDrop"):
@@ -570,4 +622,16 @@ class DropParser:
             session.add(notif)
             await session.commit()
             await session.refresh(notif)
-            return notif
+
+        import time
+        now_ts = time.monotonic()
+        if db_engine is not None and (now_ts - cls._last_prune_ts) >= 600.0:
+            cls._last_prune_ts = now_ts
+            try:
+                from core.config import settings
+                from core.database import prune_old_notifications
+                await prune_old_notifications(db_engine, days=settings.NOTIFICATIONS_RETENTION_DAYS)
+            except Exception as pe:
+                logger.debug("Ошибка фоновой очистки старых уведомлений: %s", pe)
+
+        return notif

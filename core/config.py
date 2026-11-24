@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     # Social & Events Settings
     SOCIAL_INTERVAL_MINUTES: int = 30
+    NOTIFICATIONS_RETENTION_DAYS: int = 7
 
     # Web Dashboard & Mini App Server
     WEB_HOST: str = "0.0.0.0"

@@ -9,7 +9,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.database import init_db, get_engine
+from core.config import settings
+from core.database import init_db, get_engine, prune_old_notifications
 from core.state_hub import state_hub
 from web.routes import api_router, public_router, proxy_game_asset, close_asset_client
 
@@ -34,6 +35,10 @@ class SSEAwareGZipMiddleware:
 async def lifespan(app: FastAPI):
     engine = get_engine()
     await init_db(engine)
+    try:
+        await prune_old_notifications(engine, days=settings.NOTIFICATIONS_RETENTION_DAYS)
+    except Exception as pe:
+        logger.warning("Could not prune old notifications on boot: %s", pe)
 
     # Очистка зависших активных пресетов после перезапуска процесса (stale PresetRunState guard)
     try:

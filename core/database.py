@@ -46,9 +46,11 @@ def normalize_db_url(db_url: str) -> str:
 
 
 def _set_sqlite_pragmas(dbapi_connection, connection_record):
-    """Оптимизация производительности SQLite: быстрые тайм-ауты, кэш 16MB и хранение temp в RAM."""
+    """Оптимизация производительности SQLite: WAL, быстрые тайм-ауты, кэш 16MB и хранение temp в RAM."""
     try:
         cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.execute("PRAGMA busy_timeout=5000;")
         cursor.execute("PRAGMA cache_size=-16000;")
         cursor.execute("PRAGMA temp_store=MEMORY;")
@@ -156,6 +158,8 @@ def _migrate_notifications(connection) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_notifications_event_key ON notifications (event_key);"))
     if "meta_json" not in existing_cols:
         connection.execute(text("ALTER TABLE notifications ADD COLUMN meta_json JSON DEFAULT '{}' NOT NULL;"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at);"))
+    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications (is_read);"))
 
 
 def _migrate_tracked_candidates(connection) -> None:
@@ -298,3 +302,18 @@ def is_worker_active(config) -> bool:
             if current_hour >= start or current_hour < end:
                 return False
     return True
+
+
+async def prune_old_notifications(engine: Optional[AsyncEngine] = None, days: int = 7) -> int:
+    """Удаляет уведомления старше `days` суток из таблицы notifications (политика ротации 7 дней)."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import delete
+    from core.models import Notification
+
+    cutoff = datetime.utcnow() - timedelta(days=max(1, int(days)))
+    async with get_session(engine) as session:
+        res = await session.execute(
+            delete(Notification).where(Notification.created_at < cutoff)
+        )
+        await session.commit()
+        return int(res.rowcount or 0)
