@@ -102,3 +102,23 @@ def test_preset_run_state_sync_and_clear():
     hub.set_preset_state(1, None, status="stopped", presets_list=[{"id": 7, "is_running": False}])
     assert hub.get_preset_state(1) is None
     assert hub.get_slice(1, "presets").data["activeRun"] is None
+
+
+@pytest.mark.asyncio
+async def test_player_api_init_single_flight():
+    """Одновременные вызовы PlayerAPI.init_player() схлопываются в 1 HTTP POST /api/player/init."""
+    from types import SimpleNamespace
+    from client.api.player import PlayerAPI
+
+    calls = 0
+
+    async def _post(url, json=None):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"userId": 1, "calls": calls})
+
+    api = PlayerAPI(http_client=SimpleNamespace(post=_post))
+    r1, r2 = await asyncio.gather(api.init_player(), api.init_player())
+    assert calls == 1
+    assert r1 == r2 == {"userId": 1, "calls": 1}

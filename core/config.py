@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     WEBAPP_PUBLIC_URL: str = ""
     WEB_ADMIN_TOKEN: str = "prison_local_admin"
 
+    # Asset Cache & Nginx X-Accel-Redirect
+    ASSET_CACHE_DIR: str = "storage/asset_cache"
+    ASSET_CACHE_MAX_MB: int = 600
+    ASSET_CACHE_MIN_FREE_GB: float = 4.0
+    ASSET_CACHE_NGINX_ACCEL_PREFIX: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

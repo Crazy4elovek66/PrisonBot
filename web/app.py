@@ -258,6 +258,21 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).resolve().parent / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
 
+    @app.get("/sw.js")
+    async def serve_service_worker():
+        sw_file = static_dir / "sw.js"
+        if not sw_file.exists():
+            return HTMLResponse("Not found", status_code=404)
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            sw_file,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, must-revalidate",
+                "Service-Worker-Allowed": "/",
+            },
+        )
+
     # Dynamic index.html route with auto-versioning (?v=<mtime>)
     @app.get("/", response_class=HTMLResponse)
     async def serve_index():

@@ -7794,3 +7794,11 @@ async function parseRaidText() {
     btn.textContent = "🔍 Распознать участников";
   }
 }
+
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    try {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    } catch (e) {}
+  });
+}

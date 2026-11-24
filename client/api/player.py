@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -40,12 +41,25 @@ class PlayerAPI:
         self._stashgear_cache: Optional[Dict[str, Any]] = None
         self._stashgear_cache_time: float = 0.0
         self._collections_cache: Dict[int, tuple[float, Dict[str, Any]]] = {}
+        self._init_inflight: Optional[asyncio.Task] = None
 
     async def init_player(self) -> Dict[str, Any]:
-        """Инициализация состояния игрока и получение балансов."""
-        resp = await self.http.post("/api/player/init", json={})
-        resp.raise_for_status()
-        return resp.json()
+        """Инициализация состояния игрока и получение балансов (single-flight)."""
+        if self._init_inflight is not None and not self._init_inflight.done():
+            return await self._init_inflight
+
+        async def _do_init() -> Dict[str, Any]:
+            resp = await self.http.post("/api/player/init", json={})
+            resp.raise_for_status()
+            return resp.json()
+
+        task = asyncio.create_task(_do_init())
+        self._init_inflight = task
+        try:
+            return await task
+        finally:
+            if self._init_inflight is task:
+                self._init_inflight = None
 
     async def get_me(self) -> Dict[str, Any]:
         """Получение базовой информации о пользователе."""

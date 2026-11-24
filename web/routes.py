@@ -125,8 +125,14 @@ _flight_cache = _SingleFlightCache()
 _ASSET_LRU_CACHE: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
 _MAX_LRU_ITEMS = 500
 
-ASSET_CACHE_DIR = Path(__file__).resolve().parent.parent / "storage" / "asset_cache"
-ASSET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+from core.asset_cache import (
+    asset_cache_key_and_ext,
+    content_type_for_ext,
+    get_asset_cache_manager,
+)
+
+_ASSET_CACHE_MANAGER = get_asset_cache_manager()
+ASSET_CACHE_DIR = _ASSET_CACHE_MANAGER.cache_dir
 
 ROOMS_STATIC_DIR = Path(__file__).resolve().parent / "static" / "assets" / "rooms"
 
@@ -197,13 +203,47 @@ def _lru_set(key: str, data: bytes, media_type: str) -> None:
         _ASSET_LRU_CACHE[key] = (data, media_type)
 
 
+async def _fetch_asset_from_cdn(clean_path: str) -> tuple[bytes, str, bool]:
+    """Скачивает ассет с CDN игры с ограничением конкурентности. Возвращает (bytes, content_type, should_persist)."""
+    ext = Path(clean_path).suffix.lower() or ".png"
+    cdn_base = "https://oldprison-prod-assets-cdn-yandex.luckygem.online"
+    cdn_path = clean_path
+    if not (cdn_path.startswith("assets/") or cdn_path.startswith("avatars/")):
+        cdn_path = f"assets/{cdn_path}"
+
+    target_url = f"{cdn_base}/{cdn_path}"
+    client = _get_asset_client()
+
+    async with _get_asset_cdn_sem():
+        resp = await client.get(target_url)
+    if resp.status_code != 200:
+        if resp.status_code in (403, 404):
+            if ext == ".bundle":
+                raise HTTPException(status_code=404, detail="Bundle asset not found on CDN")
+            if ext == ".json":
+                return b"{}", "application/json", False
+            if ext == ".atlas":
+                return b"", "text/plain; charset=utf-8", False
+            transparent_png = (
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+                b"\x1f\x15c4\x00\x00\x00\rIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            return transparent_png, "image/png", False
+        raise HTTPException(status_code=resp.status_code, detail="Asset not found on CDN")
+
+    content_type = resp.headers.get("content-type")
+    if not content_type or content_type == "application/octet-stream":
+        content_type = content_type_for_ext(ext)
+    return resp.content, content_type, True
+
+
 async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     """
     Загружает байты и MIME-тип ассета с многоуровневым кэшированием:
     1. Локальные статические WebP-хаты
     2. RAM LRU-кэш (_ASSET_LRU_CACHE)
-    3. Дисковый кэш (storage/asset_cache/)
-    4. HTTP/2 keep-alive скачивание с CDN
+    3. Дисковый кэш (AssetCacheManager)
+    4. HTTP/2 keep-alive скачивание с CDN (с дедупликацией)
     """
     clean_path = clean_path.lstrip("/").strip()
     if ".." in clean_path or "://" in clean_path or clean_path.startswith("http:") or clean_path.startswith("https:"):
@@ -225,81 +265,12 @@ async def _load_asset_bytes(clean_path: str) -> tuple[bytes, str]:
     if cached:
         return cached
 
-    # 3. Дисковый кэш storage/asset_cache/
-    import hashlib
-    path_hash = hashlib.sha256(clean_path.encode("utf-8")).hexdigest()
-    cached_file = ASSET_CACHE_DIR / f"{path_hash}{ext}"
-
-    if cached_file.exists():
-        try:
-            cached_bytes = await asyncio.to_thread(cached_file.read_bytes)
-            if len(cached_bytes) > 0:
-                c_type = "image/png"
-                if ext == ".webp":
-                    c_type = "image/webp"
-                elif ext == ".json":
-                    c_type = "application/json"
-                elif ext == ".atlas":
-                    c_type = "text/plain; charset=utf-8"
-                elif ext == ".bundle":
-                    c_type = "application/octet-stream"
-                _lru_set(clean_path, cached_bytes, c_type)
-                return cached_bytes, c_type
-        except Exception as e:
-            logger.warning("Ошибка чтения дискового кэша %s: %s", cached_file, e)
-
-    # 4. Скачивание с CDN по HTTP/2
-    cdn_base = "https://oldprison-prod-assets-cdn-yandex.luckygem.online"
-    cdn_path = clean_path
-    if not (cdn_path.startswith("assets/") or cdn_path.startswith("avatars/")):
-        cdn_path = f"assets/{cdn_path}"
-
-    target_url = f"{cdn_base}/{cdn_path}"
-    client = _get_asset_client()
-
-    async with _get_asset_cdn_sem():
-        resp = await client.get(target_url)
-    if resp.status_code != 200:
-        if resp.status_code in (403, 404):
-            if ext == ".bundle":
-                raise HTTPException(status_code=404, detail="Bundle asset not found on CDN")
-            if ext == ".json":
-                return b"{}", "application/json"
-            if ext == ".atlas":
-                return b"", "text/plain; charset=utf-8"
-            transparent_png = (
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
-                b"\x1f\x15c4\x00\x00\x00\rIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-            )
-            _lru_set(clean_path, transparent_png, "image/png")
-            return transparent_png, "image/png"
-        raise HTTPException(status_code=resp.status_code, detail="Asset not found on CDN")
-
-    content_type = resp.headers.get("content-type")
-    if not content_type or content_type == "application/octet-stream":
-        if ext == ".atlas":
-            content_type = "text/plain; charset=utf-8"
-        elif ext == ".json":
-            content_type = "application/json"
-        elif ext == ".webp":
-            content_type = "image/webp"
-        elif ext == ".bundle":
-            content_type = "application/octet-stream"
-        else:
-            content_type = "image/png"
-    content_bytes = resp.content
-
-    # Сохранение на диск в фоновом потоке (не блокируя event loop)
-    try:
-        def _write_cache():
-            tmp_file = ASSET_CACHE_DIR / f"{path_hash}.tmp_{random.randint(1000, 9999)}"
-            tmp_file.write_bytes(content_bytes)
-            tmp_file.replace(cached_file)
-
-        await asyncio.to_thread(_write_cache)
-    except Exception as e:
-        logger.warning("Could not write asset cache for %s: %s", clean_path, e)
-
+    # 3-4. Дисковый кэш + дедуплицированный CDN fetch
+    mgr = get_asset_cache_manager()
+    cached_file, mem_bytes, content_type = await mgr.get_or_fetch(clean_path, _fetch_asset_from_cdn)
+    if mem_bytes is None and cached_file is not None:
+        mem_bytes = await asyncio.to_thread(cached_file.read_bytes)
+    content_bytes = mem_bytes or b""
     _lru_set(clean_path, content_bytes, content_type)
     return content_bytes, content_type
 
@@ -349,19 +320,52 @@ async def proxy_game_asset(path: str = Query(..., description="Относите�
     ):
         raise HTTPException(status_code=400, detail="Invalid asset path prefix")
 
-    from fastapi.responses import Response
-    import hashlib
+    from fastapi.responses import FileResponse, Response
 
-    content_bytes, content_type = await _load_asset_bytes(clean_path)
-    path_hash = hashlib.sha256(clean_path.encode("utf-8")).hexdigest()
+    if ".." in clean_path or "://" in clean_path or clean_path.startswith("http:") or clean_path.startswith("https:"):
+        raise HTTPException(status_code=400, detail="Invalid asset path: traversal and external urls forbidden")
 
-    headers = {
+    path_hash, ext = asset_cache_key_and_ext(clean_path)
+    base_headers = {
         "Cache-Control": "public, max-age=31536000, immutable",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "ETag": f'"{path_hash}"',
     }
-    return Response(content=content_bytes, media_type=content_type, headers=headers)
+
+    if ext not in (".json", ".atlas", ".bundle"):
+        for folder, static_file in STATIC_ROOM_FILES.items():
+            if clean_path.endswith(f"RoomCameraUrl/{folder}/1.png") or clean_path.endswith(f"room_{folder}.webp"):
+                if static_file.exists():
+                    return FileResponse(static_file, media_type="image/webp", headers={**base_headers, "X-Asset-Cache": "HIT-STATIC"})
+
+    mgr = get_asset_cache_manager()
+    cached_file, mem_bytes, content_type = await mgr.get_or_fetch(clean_path, _fetch_asset_from_cdn)
+    if cached_file is not None:
+        if mgr.nginx_accel_prefix:
+            return Response(
+                content=b"",
+                status_code=200,
+                media_type=content_type,
+                headers={
+                    **base_headers,
+                    "X-Accel-Redirect": f"{mgr.nginx_accel_prefix}/{cached_file.name}",
+                    "X-Asset-Cache": "HIT-ACCEL",
+                },
+            )
+        return FileResponse(
+            cached_file,
+            media_type=content_type,
+            headers={**base_headers, "X-Asset-Cache": "HIT-DISK"},
+        )
+
+    return Response(content=mem_bytes or b"", media_type=content_type, headers={**base_headers, "X-Asset-Cache": "MISS-MEM"})
+
+
+@api_router.get("/cache/stats")
+async def get_asset_cache_stats() -> Dict[str, Any]:
+    """Read-only статистика дискового кэша ассетов (кэшируется на 60с)."""
+    return await get_asset_cache_manager().get_stats()
 
 
 class BatchAssetRequest(BaseModel):
