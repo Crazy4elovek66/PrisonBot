@@ -1,124 +1,136 @@
-# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: ВОССТАНОВЛЕНИЕ УНИКАЛЬНЫХ ИЗОБРАЖЕНИЙ ПРЕДМЕТОВ В КОЛЛЕКЦИЯХ НЫЧЕК (БЕЗ ЗАГЛУШКИ STASH.WEBP) И ДЕПЛОЙ НА VPS
+# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: УСТРАНЕНИЕ 404 НА КАРТИНКАХ НЫЧЕК (БАГ ДВОЙНОГО /PRISON/PRISON/, ПОТЕРИ ПРЕФИКСА /PRISON/ И SERVICE WORKER) + ДЕПЛОЙ И ПРОВЕРКА НА ПРОДЕ
 
-Ты выступаешь в роли Senior Full-Stack & Debugging инженера (Python / FastAPI / AsyncIO / Vanilla JS / CSS / Reverse Engineering / Linux systemd). Твоя задача - найти и устранить корневую причину поломки изображений предметов внутри аккордеона `Нычки` на главном экране, полностью убрать подмену всех предметов одинаковой заглушкой `stash.webp`, восстановить загрузку и стабильное отображение **реальных уникальных картинок каждой нычки** (как на `127.0.0.1:8085`, так и за Nginx-префиксом `/prison/`), доказать уникальность и отдачу `200 OK` реальных картинок на живом VPS, покрыть все автотестами и **обязательно задеплоить и верифицировать результат на VPS (`178.17.60.16`, `prisonbot.service`)** без какого-либо влияния на соседние Docker-контейнеры (`autoclip_service`, `crayfish_omni_hub`).
+Ты выступаешь в роли Senior Full-Stack & DevOps инженера (Python / FastAPI / Vanilla JS / Service Worker / Nginx / Linux systemd). Из DevTools живого продакшена (`https://zvezdoed.space/prison/`) поймана точная причина сломанных иконок нычек в аккордеоне `Нычки`: одновременно возникают две ошибки формирования URL (потеря `/prison/` -> `https://zvezdoed.space/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp` и двойной префикс -> `https://zvezdoed.space/prison/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp`), а ответ `404 Not Found` (`Content-Type: application/json`) отдается через Service Worker (`from service worker`)[cite: 31]. Твоя задача - полностью вылечить маршрутизацию URL ассетов на бэкенде, фронтенде и в `sw.js`, проверить проксирование на VPS, покрыть идемпотентность путей автотестами и **обязательно задеплоить и верифицировать загрузку реальных картинок по публичному URL `https://zvezdoed.space/prison/...` на VPS (`178.17.60.16`, `prisonbot.service`)** без какого-либо влияния на соседние Docker-контейнеры (`autoclip_service`, `crayfish_omni_hub`).
 
 ---
 
 ## 1. ЦЕЛЬ И БИЗНЕС-ТРЕБОВАНИЯ
 
-1. **Устранение регрессии с одинаковыми заглушками `stash.webp`**:
-   - До последнего патча картинки предметов внутри коллекций мелькали на доли секунды при перезагрузке страницы и превращались в пустые темные квадраты со счетчиками `xN`.
-   - После последнего патча проблема не была решена, а замаскировалась: теперь во всех слотах всех коллекций (`Мастера закатки`, `Любимые женщины`, `Письма с воли` и остальных из `544` предметов) отображается одна и та же иконка `stash.webp` (книжка/альбом нычек) вместо реальных уникальных изображений самих предметов[cite: 29, 30].
-2. **Жесткое требование (HARD REQUIREMENT - БЕЗ ЗАГЛУШЕК)**:
-   - **СТРОГО ЗАПРЕЩЕНО** маскировать сломанные картинки предметов в слотах коллекций общей иконкой `stash.webp` или любым другим одинаковым плейсхолдером.
-   - Каждый предмет внутри каждой коллекции обязан отображать **свое настоящее уникальное игровое изображение** (как для собранных предметов `x1+`, так и для несобранных `x0` с аккуратным затемнением/grayscale).
-   - Иконка `stash.webp` допустима только в заголовке самого аккордеона `Нычки` и в общих бейджах уведомлений, но **НЕ внутри ячеек предметов коллекций**.
-3. **Стабильность после загрузки и SSE-обновлений**:
-   - Уникальные изображения предметов не должны исчезать, моргать или затираться после прихода `liveSlices` / `domain_sync` из `StateHub` или нажатия кнопки обновления аккордеона `Нычки`.
-   - Загрузка картинок обязана одинаково исправно работать и при прямом обращении (`http://127.0.0.1:8085/`), и через продакшен-префикс Nginx (`/prison/`).
-4. **Обязательный деплой на VPS с доказательной проверкой**:
-   - Обновить cache-busting `?v=20261125_11` в `web/static/index.html` и версию кэша в `web/static/sw.js` (`prisonbot-assets-v6`), выкатить изменения на VPS (`178.17.60.16`, `/opt/prisonbot`), перезапустить `prisonbot.service` и инструментально доказать, что реальные URL разных предметов возвращают `HTTP 200`, `image/*` и **разные SHA256-хеши** содержимого.
-   - **НЕ ТРОГАТЬ** соседние Docker-контейнеры `autoclip_service` и `crayfish_omni_hub` (0 рестартов).
+1. **Устранение двух несовместимых багов URL в аккордеоне «Нычки»**:
+   - Факт 1 из живого DOM продакшена: при копировании адреса картинки получается `https://zvezdoed.space/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp` - потерян префикс `/prison/`, запрос уходит в корень домена и падает с `404`.
+   - Факт 2 из DevTools -> Network: запросы уходят на `https://zvezdoed.space/prison/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp` - префикс `/prison/` продублирован дважды (`/prison/prison/`), из-за чего бэкенд возвращает `404 Not Found` с `Content-Type: application/json`[cite: 31].
+   - Оба бага должны быть устранены раз и навсегда через единый канонический и **идемпотентный** механизм резолва URL, одинаково надежно работающий:
+     - на `https://zvezdoed.space/prison/` (со слэшем на конце);
+     - на `https://zvezdoed.space/prison` (без слэша на конце);
+     - на `http://127.0.0.1:8085/` (напрямую без префикса).
+2. **Лечение Service Worker (`web/static/sw.js`)**:
+   - В DevTools зафиксировано `404 Not Found (from service worker)`[cite: 31].
+   - Необходимо проверить `web/static/sw.js`: убрать любую возможность переписывания URL в `/prison/prison/`, строго запретить кэширование ответов с `!response.ok` (`status !== 200` или `Content-Type`, не являющимся изображением для прокси ассетов), обеспечить мгновенную активацию новой версии SW (`skipWaiting()` + `clients.claim()`) и полную очистку старых кэшей на `activate`.
+3. **Запрет маскировки заглушками**:
+   - Как и прежде, **запрещено** подменять слоты предметов коллекций иконкой `stash.webp` или скрывать битые `<img>` через `onerror`. Каждая ячейка обязана загружать реальную уникальную картинку предмета через валидный `/prison/api/v1/assets/proxy?path=...` с `HTTP 200` и `Content-Type: image/webp` (или `image/png`).
+4. **Обязательный деплой и проверка именно продакшен-URL**:
+   - Обновить cache-busting `?v=20261125_12` в `web/static/index.html` и имя кэша `prisonbot-assets-v7` в `web/static/sw.js`, задеплоить на VPS (`178.17.60.16`, `/opt/prisonbot`), перезапустить `prisonbot.service` и проверить **публичный URL `https://zvezdoed.space/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp` и `.../30/1/1.webp`**, сохранив 0 рестартов у `autoclip_service` и `crayfish_omni_hub`.
 
 ---
 
 ## 2. КОНФИГУРАЦИЯ
 
-### Ключевые файлы и источники данных для расследования и правки
-- Фронтенд: `web/static/app.js`, `web/static/styles.css`, `web/static/index.html`, `web/static/sw.js`.
-- Бэкенд и кэш ассетов: `web/routes.py`, `core/state_hub.py`, `core/asset_cache.py`, `client/api/player.py`.
-- Каталоги и игровые исходники: `storage/collections_catalog.json`, `storage/asset_cache/`, `parsed_js/bundle.js`, `parsed_js/cdn.js`, `docs/api_map.md`[cite: 23, 24].
-- При необходимости проверки живых CDN-путей и текстур игры: открытый Telegram WebApp на `http://127.0.0.1:9222` (MCP DevTools).
-- Cache-busting: `?v=20261125_11` в `web/static/index.html`, `prisonbot-assets-v6` в `web/static/sw.js`.
-- Продакшен VPS: `178.17.60.16` (через `vps.py` / SSH), `/opt/prisonbot`, `prisonbot.service` (`127.0.0.1:8085`).
+### Ключевые файлы под аудит и доработку
+- Фронтенд и Service Worker: `web/static/app.js`, `web/static/sw.js`, `web/static/index.html`[cite: 32].
+- Бэкенд и прокси ассетов: `web/routes.py`, `core/state_hub.py`, `core/asset_cache.py`, `web/app.py`[cite: 32].
+- Конфигурация Nginx на VPS (только аудит/точечная проверка маршрута `/prison` - **НЕ трогать** конфиги и контейнеры `autoclip_service` и `crayfish_omni_hub`).
+- Cache-busting: `?v=20261125_12` в `web/static/index.html`, `prisonbot-assets-v7` в `web/static/sw.js`.
+- Продакшен VPS: `178.17.60.16` (через `vps.py` / SSH), `/opt/prisonbot`, `prisonbot.service` (`127.0.0.1:8085`), публичный префикс `https://zvezdoed.space/prison/`.
 - Соседние Docker-контейнеры (**НЕ ТРОГАТЬ**): `autoclip_service` (`8080`) и `crayfish_omni_hub` (`8081`).
 
 ---
 
 ## 3. ЛОГИКА / АРХИТЕКТУРА
 
-### 3.1. Обязательное расследование корневой причины (ДО внесения любых правок)
+### 3.1. Точный аудит места появления `/prison/prison/` и `/api/...`
 - Снять baseline `StartedAt` контейнеров `autoclip_service` и `crayfish_omni_hub` на VPS.
-- Изучить историю правок (`git log -p -n 6 -- web/static/app.js web/routes.py core/state_hub.py`) и точно установить:
-  1. **Откуда брались настоящие картинки предметов** в те доли секунды при перезагрузке страницы до поломки (какой именно код/URL их отрисовывал раньше).
-  2. **Что именно ломало загрузку картинок** и заставляло их исчезать (а после прошлого патча - падать в fallback `stash.webp`).
-- Проверить все 5 возможных точек отказа на живых данных VPS и локально:
-  1. **Поля в `storage/collections_catalog.json` и ответе `GET /api/v1/collections` / `StateHub` (`collections`)**: присутствуют ли вообще уникальные URL/пути/имена спрайтов предметов в JSON-ответе обоих эндпоинтов (`icon`, `image`, `icon_url`, `img`, `sprite`, `url`) и совпадают ли имена полей между `routes.py`, `state_hub.py` и `app.js`.
-  2. **Формат URL под Nginx-префиксом `/prison/`**: не отдаются ли абсолютные пути вида `/api/v1/...` (которые на проде бьются в корень домена `404` вместо `/prison/api/v1/...`), либо не ломается ли двойное экранирование `encodeURIComponent` в `/api/v1/assets/proxy` / `/api/v1/assets/...`.
-  3. **Работа `core/asset_cache.py` и CDN-хоста игры**: проверить через `curl` прямо на VPS реальные URL 5-10 предметов из `Мастера закатки` и `Любимые женщины` - какой HTTP-статус и `Content-Type` отдает `127.0.0.1:8085`, какой отдает публичный Nginx `/prison/...`, и какой отдает сам CDN игры (проверить `parsed_js/cdn.js` / `parsed_js/bundle.js` / `storage/asset_cache/`).
-  4. **Service Worker (`web/static/sw.js`)**: проверить, не перехватывает ли `sw.js` запросы картинок/прокси и не возвращает ли кэшированный `404` или некорректный ответ.
-  5. **Перезапись через SSE / `StateHub`**: сравнить JSON `GET /api/v1/collections` и `liveSlices.data.collections` / `domain_sync` побайтово по полям предметов - убедиться, что второй рендер не затирает валидные URL пустыми значениями.
+- Проверить все места в `web/static/app.js`, `web/static/sw.js`, `web/routes.py` и `core/state_hub.py`, где фигурируют `assets/proxy`, `API_BASE`, `BASE_PATH`, `apiUrl`, `renderCollectionsData`, `prefix`, `/prison`:
+  1. Найти, откуда в Network взялся двойной `/prison/prison/api/v1/assets/proxy?...` (например, относительный путь `prison/api/...` на странице `/prison/`, либо повторное добавление `API_BASE` поверх уже префиксного пути, либо переписывание внутри `sw.js`)[cite: 31].
+  2. Найти, откуда в скопированном адресе взялся `/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp` без `/prison/` (например, ведущий слэш `/` в ответе `/api/v1/collections` или в `liveSlices`, либо открытие страницы по `/prison` без завершающего слэша `/`).
+  3. Проверить конфиг Nginx на VPS для `zvezdoed.space` (`/prison` и `/prison/`): убедиться, как Nginx передает `/prison/api/v1/assets/proxy?...` на `127.0.0.1:8085` (должно приходить `/api/v1/assets/proxy?...` на FastAPI, а не `/prison/api/...`).
 
-### 3.2. Исправление бэкенда, каталога и прокси ассетов (`web/routes.py`, `core/state_hub.py`, `core/asset_cache.py`, `storage/collections_catalog.json`)
-- Гарантировать, что **каждый** предмет в каждой коллекции в `GET /api/v1/collections` и в срезе `collections` в `StateHub` содержит валидный, уникальный URL изображения (единое каноническое имя поля во всех источниках, плюс совместимость если где-то читается синоним).
-- Если URL предмета указывает на внешний игровой CDN:
-  - Проверить актуальный базовый URL CDN в `parsed_js/cdn.js` / `parsed_js/bundle.js` (или через CDP `127.0.0.1:9222`), чтобы исключить протухший домен или неверный путь текстуры.
-  - Прокидывать картинки через надежный локальный кэш-прокси (`core/asset_cache.py`, относительный путь `api/v1/assets/...` без ведущего слэша `/` для полной совместимости с `/prison/`), который корректно отдает `200 OK`, правильный `Content-Type` (`image/webp` / `image/png`) и не кэширует ошибочные ответы.
-  - Если в игре нычки хранятся не отдельными файлами, а в атласе/конкретном пути CDN - реализовать точное извлечение/маппинг по реальному контракту игры из `parsed_js/bundle.js` и `storage/collections_catalog.json`.
+### 3.2. Единый канонический и идемпотентный резолв URL (`web/routes.py`, `core/state_hub.py`, `web/static/app.js`)
+- **На бэкенде (`web/routes.py`, `core/state_hub.py`)**:
+  - Все эндпоинты (`GET /api/v1/collections`, срез `collections` в `StateHub`, и прочие роуты с `assets/proxy`) должны возвращать **единообразный канонический путь без префикса `/prison/`**, например:
+    `api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp` (или `/api/v1/assets/proxy?...`, но строго одинаково везде, без зашитого `/prison`).
+- **На фронтенде (`web/static/app.js`)**:
+  - Создать единый **идемпотентный** helper `resolveAppAssetUrl(rawUrl)` (и использовать его в `renderCollectionsData` и всех остальных местах рендера картинок/прокси):
+    1. Определять префикс приложения `getAppBasePrefix()` надежно по `window.location.pathname`:
+       - Если путь равен `/prison` или начинается с `/prison/` -> `base = "/prison"`.
+       - Иначе -> `base = ""` (работа на `http://127.0.0.1:8085/`).
+    2. Если `rawUrl` начинается с `http://` или `https://` или `data:` - не трогать внешний URL (кроме случая, если это `window.location.origin` + `/api/v1/assets/proxy` или `/prison/prison/...`, тогда нормализовать путь).
+    3. Для локального пути:
+       - Удалить любые ведущие `./` и ведущие `/` и любые повторные префиксы `^(/?prison)+/` (например `prison/api/...`, `/prison/api/...`, `/prison/prison/api/...`, `/api/...`, `api/...` -> все сводятся к чистому `api/v1/assets/proxy?path=...`).
+       - Вернуть строго `${base}/${cleanPath}` (то есть всегда с **одним** ведущим слэшем: `/prison/api/v1/assets/proxy?path=...` на `zvezdoed.space/prison` и `zvezdoed.space/prison/`, и `/api/v1/assets/proxy?path=...` на `127.0.0.1:8085/`).
+    4. Гарантировать свойство идемпотентности: `resolveAppAssetUrl(resolveAppAssetUrl(x)) === resolveAppAssetUrl(x)` для любых входных форматов (`api/...`, `/api/...`, `prison/api/...`, `/prison/api/...`, `/prison/prison/api/...`).
+    5. Проверить, что с таким абсолютным от корня путем (`/prison/api/v1/assets/proxy?...`) картинки работают одинаково идеально даже если пользователь открыл `https://zvezdoed.space/prison` БЕЗ завершающего слэша `/`!
 
-### 3.3. Исправление фронтенда (`web/static/app.js`, `web/static/styles.css`, `web/static/sw.js`)
-- В `renderCollectionsData` (и любых вспомогательных функциях рендера коллекций в `web/static/app.js`):
-  - **Полностью удалить** подмену слота предмета на `stash.webp` (убрать `|| 'assets/icons/stash.webp'` и убрать `onerror="this.src='assets/icons/stash.webp'"` для предметов коллекций!).
-  - Строить URL картинки предмета через стандартный префикс-безопасный helper приложения (без жесткого ведущего `/` перед `api/...`, чтобы под `/prison/` запросы шли строго в `/prison/api/...`).
-  - Рендерить `<img>` каждого предмета с `title` и `alt` по названию нычки, корректными размерами и `object-fit: contain`, без скрытия элемента через `onerror="this.style.display='none'"`.
-  - Если у предмета реально отсутствует картинка (чего не должно происходить для валидных предметов каталога), логировать `console.warn` с `collectionId` / `itemId` / `url`, а не прятать баг под `stash.webp`.
-- Защитить состояние `collections` в `app.js` и `StateHub` от перезаписи урезанным срезом без URL картинок.
-- Проверить `web/static/sw.js`: гарантировать, что `sw.js` кэширует только `response.ok` (`status === 200`) и корректно работает под `/prison/`.
+### 3.3. Починка Service Worker (`web/static/sw.js`)
+- Провести полный аудит `web/static/sw.js`:
+  - Убедиться, что при обработке `fetch`:
+    - `sw.js` никогда не модифицирует путь запроса с добавлением лишнего `/prison/`.
+    - Запросы к `assets/proxy` кэшируются **ТОЛЬКО** если `response.ok && response.status === 200` и `Content-Type` начинается с `image/` (или допустимых ассетов `application/octet-stream` / `application/json` для spine/atlas, но **НИКОГДА** для `404`/`500`!).
+    - Если в кэше вдруг лежит старый ошибочный ответ (`!cached.ok`), немедленно удалять его и идти в сеть.
+  - Инкрементировать имя кэша до `prisonbot-assets-v7`, вызвать `self.skipWaiting()` в `install` и `self.clients.claim()` + удаление всех кэшей кроме `prisonbot-assets-v7` в `activate`.
 
-### 3.4. Обязательный деплой на VPS и доказательная живая верификация
+### 3.4. Обязательный деплой на VPS и проверка по реальным публичным URL
 - Удалить любые временные скрипты в корне локального репозитория (`diag_*.py`, `deploy_*.py`, `verify_*.py`, `fix_*.py` - не трогая `vps.py` и `vps_audit.md`).
-- Обновить `?v=20261125_11` в `web/static/index.html` и `prisonbot-assets-v6` в `web/static/sw.js`.
-- Загрузить все измененные файлы на VPS (`178.17.60.16`, `/opt/prisonbot`), перезапустить `systemctl restart prisonbot.service`.
-- Выполнить **строгую доказательную верификацию на живом VPS**:
-  1. `systemctl is-active prisonbot.service` -> `active`, и `http://127.0.0.1:8085/` отвечает `200 OK` в течение `<= 5` секунд.
-  2. Получить живой JSON из `GET http://127.0.0.1:8085/api/v1/collections` и из среза `collections` в `StateHub` (`/api/v1/live`):
-     - Проверить первые 3 коллекции (`Мастера закатки`, `Любимые женщины`, `Письма с воли`): у всех 7 предметов в каждой коллекции должны быть **уникальные** URL картинок и ни один URL не должен содержать `stash.webp`.
-  3. Скачать минимум 6 разных URL картинок предметов из живого ответа через `http://127.0.0.1:8085/<url>` И через публичный Nginx-путь `/prison/<url>`:
-     - Каждый запрос обязан вернуть `HTTP 200`, `Content-Type: image/...`, размер `> 200` байт.
-     - Посчитать `sha256` скачанных файлов и подтвердить, что все 6 хешей **различные** (и не совпадают с `sha256` файла `stash.webp`!) - это железное доказательство, что отдаются настоящие уникальные картинки нычек.
-  4. Проверить `journalctl -u prisonbot.service -n 80 --no-pager` на отсутствие `Traceback`.
-  5. Проверить неизменность `StartedAt` и статуса `running` у соседних Docker-контейнеров `autoclip_service` и `crayfish_omni_hub` (0 рестартов).
+- Обновить `?v=20261125_12` в `web/static/index.html` и `prisonbot-assets-v7` в `web/static/sw.js`.
+- Загрузить измененные файлы на VPS (`178.17.60.16`, `/opt/prisonbot`), перезапустить `systemctl restart prisonbot.service`.
+- Выполнить **живую верификацию и локально на `8085`, и через публичный Nginx `https://zvezdoed.space/prison/`**:
+  1. `systemctl is-active prisonbot.service` -> `active`, старт `127.0.0.1:8085` за `<= 5` секунд.
+  2. Проверить живой JSON `GET http://127.0.0.1:8085/api/v1/collections` и срез `collections` в `StateHub`: убедиться, что URL предметов НЕ содержат `prison/prison` и НЕ содержат `stash.webp`.
+  3. Проверить через `curl -sI` именно те пути, которые падали у пользователя:
+     - `https://zvezdoed.space/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp` -> строго `HTTP 200`, `Content-Type: image/webp` (или `image/...`), размер `> 200` байт.
+     - `https://zvezdoed.space/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp` -> строго `HTTP 200`, `Content-Type: image/webp` (или `image/...`), размер `> 200` байт.
+     - Еще 4 разных URL из `Мастера закатки` и `Любимые женщины` через `https://zvezdoed.space/prison/...` -> все `200 OK`, разные `sha256`.
+  4. Проверить, что `https://zvezdoed.space/prison/app.js?v=20261125_12` и `https://zvezdoed.space/prison/sw.js` отдают свежую версию (`200 OK`, `prisonbot-assets-v7`, `resolveAppAssetUrl`).
+  5. Проверить, что на `https://zvezdoed.space/prison/` в HTML/JS нет ни одного места, которое может собрать `/prison/prison/` или `/api/v1/assets/proxy` без `/prison`.
+  6. Проверить `journalctl -u prisonbot.service -n 80 --no-pager` (без `Traceback`) и 100% неизменность `StartedAt` и статуса `running` у `autoclip_service` и `crayfish_omni_hub` (0 рестартов).
 
 ---
 
 ## 4. ТЕСТИРОВАНИЕ
 
-Добавить и расширить автотесты в `tests/test_web_api.py`, `tests/test_web_endpoints.py`, `tests/test_state_hub.py`, `tests/test_asset_cache.py`:
+Добавить и расширить автотесты (в `tests/test_web_endpoints.py`, `tests/test_web_api.py`, `tests/test_asset_cache.py`)[cite: 32]:
 
-1. **Уникальные URL картинок в коллекциях (`tests/test_web_api.py`, `tests/test_state_hub.py`)**:
-   - `GET /api/v1/collections` и срез `collections` в `StateHub` возвращают для каждого предмета коллекции его уникальный относительный/проксированный URL (не пустой, не `stash.webp`, не ломающий префикс `/prison/`).
-   - У разных предметов одной коллекции URL иконок различаются.
-2. **Запрет маскировки заглушкой на фронтенде (`tests/test_web_endpoints.py`)**:
-   - Проверка кода `renderCollectionsData` в `web/static/app.js`: в рендере слотов предметов коллекций НЕ используется подмена на `stash.webp` и сохраняется корректное построение URL под `/prison/`.
-3. **Отдача ассетов (`tests/test_asset_cache.py`)**:
-   - Прокси/кэш ассетов корректно отдает реальные байты картинки с `200 OK` и не кэширует ошибочные (`404`/`500`) ответы.
+1. **Идемпотентность `resolveAppAssetUrl` через Node.js (`tests/test_web_endpoints.py`)**:
+   - Прогнать реальную функцию `resolveAppAssetUrl` из `web/static/app.js` (через `node -e`) для обоих `pathname`: `"/prison/"`, `"/prison"` и `"/"`, и для всех входных строк:
+     - `"api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp"`
+     - `"/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp"`
+     - `"prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp"`
+     - `"/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp"`
+     - `"/prison/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp"`
+   - Проверить, что для `"/prison"` и `"/prison/"` **все** 5 входов дают ровно `"/prison/api/v1/assets/proxy?path=..."` (без `/prison/prison/` и без потери `/prison`), а для `"/"` дают ровно `"/api/v1/assets/proxy?path=..."`.
+2. **Проверка `sw.js` (`tests/test_web_endpoints.py`)**:
+   - `web/static/sw.js` содержит `prisonbot-assets-v7`, `skipWaiting`, `clients.claim`, проверяет `response.ok` перед `cache.put` и не дублирует `/prison/`.
+3. **Проверка API коллекций (`tests/test_web_api.py`)**:
+   - `/api/v1/collections` и `StateHub` отдают валидные канонические URL без `/prison/prison/` и без `stash.webp`.
 4. **Синтаксис JS и полный прогон**:
-   - `node --check web/static/app.js` и `python -m pytest -q tests/`.
+   - `node --check web/static/app.js`, `node --check web/static/sw.js` и `python -m pytest -q tests/`.
 
 ---
 
 ## 5. ПОРЯДОК РЕАЛИЗАЦИИ ДЛЯ АГЕНТА
 
-- [ ] **Шаг 1. Диагностика реальной причины (VPS + `git log` + `collections_catalog.json` + `bundle.js`)**:
+- [ ] **Шаг 1. Точная локализация бага `/prison/prison/`, потери `/prison/` и `sw.js`**:
   - Снять baseline `StartedAt` контейнеров `autoclip_service` и `crayfish_omni_hub` на VPS.
-  - Посмотреть `git log -p` по `app.js` / `routes.py` / `state_hub.py`, проверить живой ответ `/api/v1/collections` и `/api/v1/live` на VPS и выяснить точную причину, почему не загружались реальные картинки предметов (и почему все упало в `stash.webp`).
-- [ ] **Шаг 2. Починка URL и отдачи реальных картинок предметов на бэкенде (`web/routes.py`, `core/state_hub.py`, `core/asset_cache.py`, `storage/collections_catalog.json`)**:
-  - Гарантировать одинаковые, валидные, уникальные и совместимые с `/prison/` URL изображений для всех предметов коллекций в `/api/v1/collections` и `StateHub`.
-- [ ] **Шаг 3. Починка фронтенда без маскировки заглушкой (`web/static/app.js`, `web/static/styles.css`, `web/static/sw.js`)**:
-  - Убрать подмену ячеек коллекций на `stash.webp`, починить загрузку реальных уникальных картинок предметов в `renderCollectionsData` и защиту от перезаписи при SSE.
-- [ ] **Шаг 4. Автотесты и уборка временных файлов**:
-  - Добавить тесты, прогнать `node --check web/static/app.js` и полный `python -m pytest -q tests/`.
+  - Найти в `web/static/app.js`, `web/static/sw.js`, `web/routes.py`, `core/state_hub.py` и конфиге Nginx на VPS точную причину обоих битых URL (`/api/v1/assets/proxy?...` и `/prison/prison/api/v1/assets/proxy?...`).
+- [ ] **Шаг 2. Унификация бэкенда и идемпотентный `resolveAppAssetUrl` (`web/routes.py`, `core/state_hub.py`, `web/static/app.js`)**:
+  - Стандартизировать путь `assets/proxy` в `/api/v1/collections` и `StateHub`.
+  - Реализовать и применить в `renderCollectionsData` (и везде по `app.js`) идемпотентный `resolveAppAssetUrl`, работающий для `/prison`, `/prison/` и `/` без дублирования префикса и без потери `/prison/`.
+- [ ] **Шаг 3. Починка `web/static/sw.js`**:
+  - Запретить кэширование `404` / `!response.ok`, убрать любые искажения путей, поднять версию кэша до `prisonbot-assets-v7` с `skipWaiting()` + `clients.claim()` + чисткой старых кэшей.
+- [ ] **Шаг 4. Автотесты (включая Node-проверку всех 5 кейсов `resolveAppAssetUrl`) и уборка**:
+  - Добавить тесты в `tests/test_web_endpoints.py` и `tests/test_web_api.py`.
+  - Прогнать `node --check web/static/app.js`, `node --check web/static/sw.js` и полный `python -m pytest -q tests/`.
   - Удалить временные скрипты в корне локального репозитория (не трогая `vps.py` и `vps_audit.md`).
-- [ ] **Шаг 5. ОБЯЗАТЕЛЬНЫЙ ДЕПЛОЙ НА VPS И ДОКАЗАТЕЛЬНАЯ ПРОВЕРКА УНИКАЛЬНОСТИ КАРТИНОК**:
-  - Обновить `?v=20261125_11` в `web/static/index.html` и `prisonbot-assets-v6` в `web/static/sw.js`.
+- [ ] **Шаг 5. ОБЯЗАТЕЛЬНЫЙ ДЕПЛОЙ НА VPS И ПРОВЕРКА ПУБЛИЧНЫХ URL `zvezdoed.space/prison/...`**:
+  - Обновить `?v=20261125_12` в `web/static/index.html`.
   - Загрузить измененные файлы на VPS (`178.17.60.16`, `/opt/prisonbot`), перезапустить `prisonbot.service`.
-  - Проверить быстрый старт `127.0.0.1:8085` (`<= 5s`), скачать минимум 6 реальных URL картинок предметов через `127.0.0.1:8085` и `/prison/`, подтвердить `HTTP 200`, `image/*` и **6 разных SHA256-хешей** (отличных от `stash.webp`), чистый `journalctl` и 0 рестартов у `autoclip_service` и `crayfish_omni_hub`.
+  - Подтвердить `HTTP 200` + `image/*` + уникальные `sha256` по публичным URL `https://zvezdoed.space/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp` и `.../30/1/1.webp` (+ еще 4 предмета), свежие `app.js` и `sw.js`, чистый `journalctl` и 0 рестартов у `autoclip_service` и `crayfish_omni_hub`.
   - Очистить локальные кэши `.pytest_cache` и `__pycache__`.
 
 ### Команды верификации
 
 ```bash
 node --check web/static/app.js
-python -m pytest -v tests/test_web_api.py tests/test_web_endpoints.py tests/test_state_hub.py tests/test_asset_cache.py
+node --check web/static/sw.js
+python -m pytest -v tests/test_web_endpoints.py tests/test_web_api.py tests/test_asset_cache.py
 python -m pytest -q tests/
 ```
