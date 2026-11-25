@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261125_16";
+const ASSET_VERSION = "20261125_17";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -88,7 +88,7 @@ function resolveAppAssetUrl(rawUrl) {
   }
   if (!cleanPath) return "";
   if (/(?:^|\/)assets\/icons\/[^?#]+\.(?:webp|png|ico|svg)(?:$|\?|#)/i.test(cleanPath) && !/assets\/proxy/i.test(cleanPath)) {
-    const ver = (typeof ASSET_VERSION !== "undefined" ? ASSET_VERSION : "20261125_16");
+    const ver = (typeof ASSET_VERSION !== "undefined" ? ASSET_VERSION : "20261125_17");
     const [pathAndQuery, hashPart] = cleanPath.split("#");
     const qIdx = pathAndQuery.indexOf("?");
     const pathOnly = qIdx >= 0 ? pathAndQuery.slice(0, qIdx) : pathAndQuery;
@@ -1530,21 +1530,37 @@ async function loadNotifications(category = "all") {
       }
 
       let defeatBarHtml = "";
-      if (isDefeat && meta.max_hp) {
-        const remHp = Math.max(0, Number(meta.remaining_hp || 0));
-        const maxHp = Math.max(1, Number(meta.max_hp || 1));
-        const hpPct = Math.max(0, Math.min(100, Math.round((remHp / maxHp) * 1000) / 10));
-        defeatBarHtml = `
-          <div class="defeat-hp-wrap">
-            <div class="defeat-hp-label">
-              <span>Осталось HP: ${formatNum(remHp)} / ${formatNum(maxHp)}</span>
-              <span>${hpPct}%</span>
+      if (isDefeat) {
+        const remHp = Number(meta.remaining_hp);
+        const maxHp = Number(meta.max_hp);
+        const hpKnown = meta.hp_known !== false && Number.isFinite(remHp) && remHp > 0 && Number.isFinite(maxHp) && maxHp > 1;
+        if (hpKnown) {
+          const rawPct = (meta.hp_percent !== undefined && meta.hp_percent !== null && Number.isFinite(Number(meta.hp_percent)))
+            ? Number(meta.hp_percent)
+            : Math.round((remHp / maxHp) * 1000) / 10;
+          const pctText = rawPct < 0.1 ? "<0.1%" : `${rawPct}%`;
+          const barWidth = Math.max(1, Math.min(100, rawPct));
+          defeatBarHtml = `
+            <div class="defeat-hp-wrap">
+              <div class="defeat-hp-label">
+                <span>Осталось HP: ${formatNum(remHp)} / ${formatNum(maxHp)}</span>
+                <span>${pctText}</span>
+              </div>
+              <div class="defeat-hp-bar">
+                <div class="defeat-hp-fill" style="width: ${barWidth}%;"></div>
+              </div>
             </div>
-            <div class="defeat-hp-bar">
-              <div class="defeat-hp-fill" style="width: ${hpPct}%;"></div>
+          `;
+        } else {
+          const maxSuffix = (Number.isFinite(maxHp) && maxHp > 1) ? ` (из ${formatNum(maxHp)})` : "";
+          defeatBarHtml = `
+            <div class="defeat-hp-wrap">
+              <div class="defeat-hp-label">
+                <span>Осталось HP: нет данных${maxSuffix}</span>
+              </div>
             </div>
-          </div>
-        `;
+          `;
+        }
       }
 
       if (meta.outcome === "victory") {

@@ -39,6 +39,7 @@ class Account(Base):
     boss_friend_damage_logs = relationship("BossFriendDamageLog", back_populates="account", cascade="all, delete-orphan")
     friends_count_snapshots = relationship("FriendsCountSnapshot", back_populates="account", cascade="all, delete-orphan")
     boss_presets = relationship("BossPreset", back_populates="account", cascade="all, delete-orphan")
+    boss_battle_snapshot = relationship("BossBattleSnapshot", back_populates="account", uselist=False, cascade="all, delete-orphan")
 
 
 class SessionData(Base):
@@ -334,6 +335,25 @@ class FriendsCountSnapshot(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
 
     account = relationship("Account", back_populates="friends_count_snapshots")
+
+
+class BossBattleSnapshot(Base):
+    __tablename__ = "boss_battle_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, unique=True)
+    boss_id = Column(Integer, nullable=True)
+    boss_name = Column(String(120), nullable=True)
+    mode = Column(String(40), nullable=True)
+    session_id = Column(String(128), nullable=True)
+    current_hp = Column(BigInteger, default=0, nullable=False)
+    max_hp = Column(BigInteger, default=0, nullable=False)
+    total_damage = Column(BigInteger, default=0, nullable=False)
+    personal_damage = Column(BigInteger, default=0, nullable=False)
+    ends_at = Column(String(64), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    account = relationship("Account", back_populates="boss_battle_snapshot")
 
 
 class BossPreset(Base):

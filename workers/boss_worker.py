@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
-from core.models import ActionLog, FriendStats, BossFriendDamageLog, BossPreset
+from core.models import ActionLog, FriendStats, BossFriendDamageLog, BossPreset, BossBattleSnapshot
 from client.api.boss import BossAPI, _load_bosses_catalog, FALLBACK_BOSSES
 from workers.routine_worker import parse_iso_utc
 from bot.notifier import TelegramNotifier
@@ -38,6 +38,150 @@ MELEE_CONFIG = {
         "default_cooldown": 28800,
     },
 }
+
+
+MODE_ALIASES = {
+    "пацанский": "pacansky",
+    "блатной": "blotnoy",
+    "авторитетный": "avtoritetny",
+    "воровской": "vorovskoy",
+    "в одного": "odin",
+    "бригадный": "brigade",
+}
+
+
+def _normalize_boss_mode(mode: Optional[str]) -> Optional[str]:
+    if not mode:
+        return None
+    m = str(mode).strip().lower()
+    return MODE_ALIASES.get(m, m)
+
+
+def resolve_catalog_boss_max_hp(
+    boss_id: Optional[int] = None,
+    boss_name: Optional[str] = None,
+    mode: Optional[str] = None,
+    catalog: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Возвращает эталонное max_hp босса для указанного режима из bosses_catalog.json."""
+    items = catalog if catalog is not None else FALLBACK_BOSSES
+    if not items:
+        return None
+    norm_mode = _normalize_boss_mode(mode) or "pacansky"
+    norm_name = str(boss_name or "").strip().lower()
+    target = None
+    for b in items:
+        if not isinstance(b, dict):
+            continue
+        if boss_id is not None and b.get("id") is not None and int(b.get("id")) == int(boss_id):
+            target = b
+            break
+        if norm_name and str(b.get("name") or b.get("title") or "").strip().lower() == norm_name:
+            target = b
+            break
+    if not target:
+        return None
+    modes = target.get("modes") if isinstance(target.get("modes"), dict) else {}
+    m_obj = modes.get(norm_mode) if isinstance(modes.get(norm_mode), dict) else None
+    if m_obj and m_obj.get("hp") and int(m_obj["hp"]) > 1:
+        return int(m_obj["hp"])
+    base_hp = target.get("baseHp") or target.get("hp")
+    if base_hp and int(base_hp) > 1:
+        return int(base_hp)
+    return None
+
+
+def resolve_defeat_boss_hp(
+    *,
+    server_payload: Optional[Dict[str, Any]] = None,
+    battle: Optional[Dict[str, Any]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+    boss_id: Optional[int] = None,
+    boss_name: Optional[str] = None,
+    mode: Optional[str] = None,
+    catalog: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Приоритетный каскад определения (remaining_hp, max_hp, hp_percent, hp_known) при поражении от босса:
+    1. Валидные ненулевые поля результата боя с сервера.
+    2. Каталожное max_hp + total_damage от сервера.
+    3. Последний живой снимок активного боя (память / SQLite).
+    """
+    def _pick_pos(sources: List[Optional[Dict[str, Any]]], keys: Tuple[str, ...], min_val: int = 1) -> Optional[int]:
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            for k in keys:
+                val = src.get(k)
+                if val is not None:
+                    try:
+                        iv = int(val)
+                        if iv >= min_val:
+                            return iv
+                    except (TypeError, ValueError):
+                        continue
+        return None
+
+    sources = [server_payload, battle]
+    server_rem = _pick_pos(sources, ("remainingHp", "remaining_hp", "currentHp", "current_hp", "hp", "health", "bossHp", "boss_hp"), min_val=1)
+    server_max = _pick_pos(sources, ("maxHp", "max_hp", "maxHealth", "max_health"), min_val=2)
+    total_damage = _pick_pos(sources, ("totalDamage", "total_damage", "raidDamage", "damage"), min_val=0)
+    personal_damage = _pick_pos(sources, ("personalDamage", "personal_damage", "myDamage", "my_damage"), min_val=1)
+
+    norm_mode = _normalize_boss_mode(mode)
+    catalog_max = resolve_catalog_boss_max_hp(boss_id=boss_id, boss_name=boss_name, mode=mode, catalog=catalog)
+    resolved_max = server_max or catalog_max
+
+    rem_hp: Optional[int] = None
+    max_hp: Optional[int] = resolved_max
+
+    # 1. Прямые валидные данные сервера
+    if server_rem is not None and resolved_max is not None and server_rem <= resolved_max:
+        rem_hp = server_rem
+    # 2. Расчет через каталог/max_hp + total_damage
+    elif total_damage is not None and resolved_max is not None and 0 <= total_damage < resolved_max:
+        calc_rem = resolved_max - total_damage
+        if calc_rem > 0:
+            rem_hp = calc_rem
+    # 3. Последний живой снимок активного боя
+    elif isinstance(snapshot, dict):
+        snap_bid = snapshot.get("boss_id")
+        snap_bname = str(snapshot.get("boss_name") or "").strip().lower()
+        snap_mode = _normalize_boss_mode(snapshot.get("mode"))
+        id_match = (boss_id is not None and snap_bid is not None and int(boss_id) == int(snap_bid))
+        name_match = (bool(boss_name) and bool(snap_bname) and str(boss_name).strip().lower() == snap_bname)
+        mode_match = (not norm_mode or not snap_mode or norm_mode == snap_mode)
+        if (id_match or name_match or (boss_id is None and not boss_name)) and mode_match:
+            snap_rem = int(snapshot.get("current_hp") or 0)
+            snap_max = int(snapshot.get("max_hp") or 0)
+            if snap_max <= 1 and resolved_max and resolved_max > 1:
+                snap_max = resolved_max
+            if snap_rem > 0 and snap_max > 1:
+                if total_damage is not None and 0 <= total_damage < snap_max:
+                    snap_rem = min(snap_rem, max(1, snap_max - total_damage))
+                rem_hp = snap_rem
+                max_hp = snap_max
+                if personal_damage is None and snapshot.get("personal_damage"):
+                    personal_damage = int(snapshot["personal_damage"])
+
+    # Защитный инвариант: remaining_hp при поражении строго > 0, max_hp строго > 1
+    if rem_hp is not None and rem_hp > 0 and max_hp is not None and max_hp > 1:
+        hp_percent = round((rem_hp / max_hp) * 100.0, 1)
+        return {
+            "remaining_hp": int(rem_hp),
+            "max_hp": int(max_hp),
+            "hp_percent": hp_percent,
+            "hp_known": True,
+            "personal_damage": personal_damage,
+        }
+
+    return {
+        "remaining_hp": None,
+        "max_hp": int(max_hp) if (max_hp is not None and max_hp > 1) else None,
+        "hp_percent": None,
+        "hp_known": False,
+        "personal_damage": personal_damage,
+    }
 
 
 class BossWorker:
@@ -79,7 +223,100 @@ class BossWorker:
         self._last_active_boss_id: Optional[int] = None
         self._last_active_boss_name: Optional[str] = None
         self._last_active_boss_mode: Optional[str] = None
+        self._last_live_battle_snapshot: Optional[Dict[str, Any]] = None
         self._notified_victory_keys: Set[str] = set()
+
+    async def _save_live_battle_snapshot(
+        self,
+        battle: Optional[Dict[str, Any]],
+        boss_name: Optional[str] = None,
+        override_hp: Optional[int] = None,
+    ) -> None:
+        """Сохраняет последний валидный снимок живого боя (current_hp > 0, max_hp > 1) в память и SQLite."""
+        if not isinstance(battle, dict):
+            return
+        cur_hp = int(override_hp if override_hp is not None else (battle.get("currentHp") or 0))
+        max_hp = int(battle.get("maxHp") or 0)
+        b_id = battle.get("bossId") or self._last_active_boss_id
+        b_mode = battle.get("mode") or self._last_active_boss_mode
+        b_name = boss_name or battle.get("title") or battle.get("bossName") or self._last_active_boss_name
+        if max_hp <= 1:
+            cat_max = resolve_catalog_boss_max_hp(boss_id=b_id, boss_name=b_name, mode=b_mode)
+            if cat_max:
+                max_hp = cat_max
+        if cur_hp <= 0 or max_hp <= 1:
+            return
+
+        snap = {
+            "boss_id": int(b_id) if b_id is not None else None,
+            "boss_name": str(b_name) if b_name else None,
+            "mode": str(b_mode) if b_mode else None,
+            "session_id": str(battle.get("sessionId")) if battle.get("sessionId") is not None else None,
+            "current_hp": cur_hp,
+            "max_hp": max_hp,
+            "total_damage": int(battle.get("totalDamage") or 0),
+            "personal_damage": int(battle.get("personalDamage") or 0),
+            "ends_at": str(battle.get("endsAt")) if battle.get("endsAt") else None,
+        }
+        self._last_live_battle_snapshot = snap
+        if not self.db_engine:
+            return
+        try:
+            async with get_session(self.db_engine) as session:
+                stmt = select(BossBattleSnapshot).where(BossBattleSnapshot.account_id == self.account_id)
+                existing = (await session.execute(stmt)).scalar_one_or_none()
+                if existing is None:
+                    existing = BossBattleSnapshot(account_id=self.account_id, **snap)
+                    session.add(existing)
+                else:
+                    for k, v in snap.items():
+                        setattr(existing, k, v)
+                await session.commit()
+        except Exception as e:
+            logger.debug("Ошибка сохранения снимка боя: %s", e)
+
+    async def _load_live_battle_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Загружает последний валидный снимок живого боя из памяти или SQLite."""
+        if self._last_live_battle_snapshot and self._last_live_battle_snapshot.get("current_hp", 0) > 0:
+            return self._last_live_battle_snapshot
+        if not self.db_engine:
+            return None
+        try:
+            async with get_session(self.db_engine) as session:
+                stmt = select(BossBattleSnapshot).where(BossBattleSnapshot.account_id == self.account_id)
+                row = (await session.execute(stmt)).scalar_one_or_none()
+                if row and int(row.current_hp or 0) > 0 and int(row.max_hp or 0) > 1:
+                    snap = {
+                        "boss_id": row.boss_id,
+                        "boss_name": row.boss_name,
+                        "mode": row.mode,
+                        "session_id": row.session_id,
+                        "current_hp": int(row.current_hp),
+                        "max_hp": int(row.max_hp),
+                        "total_damage": int(row.total_damage or 0),
+                        "personal_damage": int(row.personal_damage or 0),
+                        "ends_at": row.ends_at,
+                    }
+                    self._last_live_battle_snapshot = snap
+                    return snap
+        except Exception as e:
+            logger.debug("Ошибка загрузки снимка боя: %s", e)
+        return None
+
+    async def _clear_live_battle_snapshot(self) -> None:
+        """Очищает снимок боя строго после фиксации его исхода."""
+        self._last_live_battle_snapshot = None
+        if not self.db_engine:
+            return
+        try:
+            async with get_session(self.db_engine) as session:
+                stmt = select(BossBattleSnapshot).where(BossBattleSnapshot.account_id == self.account_id)
+                row = (await session.execute(stmt)).scalar_one_or_none()
+                if row is not None:
+                    await session.delete(row)
+                    await session.commit()
+        except Exception as e:
+            logger.debug("Ошибка очистки снимка боя: %s", e)
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -479,18 +716,31 @@ class BossWorker:
         mode = (fight_result or {}).get("mode")
 
         if outcome == "defeat":
-            rem_hp = int((fight_result or {}).get("remainingHp") or 0)
-            max_hp = int((fight_result or {}).get("maxHp") or rem_hp or 1)
-            session_id = (fight_result or {}).get("sessionId") or f"{boss_name}:{rem_hp}"
+            snap = await self._load_live_battle_snapshot()
+            resolved_hp = resolve_defeat_boss_hp(
+                server_payload=fight_result,
+                battle=fight_result,
+                snapshot=snap,
+                boss_id=(fight_result or {}).get("bossId") or self._last_active_boss_id,
+                boss_name=boss_name,
+                mode=mode,
+            )
+            rem_hp = resolved_hp["remaining_hp"]
+            max_hp = resolved_hp["max_hp"]
+            session_id = (fight_result or {}).get("sessionId") or (snap or {}).get("session_id") or f"{boss_name}:{rem_hp or 'unknown'}"
             if self.db_engine:
                 parsed = DropParser.parse_boss_defeat(
                     boss_name=boss_name,
                     mode=mode,
                     remaining_hp=rem_hp,
                     max_hp=max_hp,
+                    hp_percent=resolved_hp["hp_percent"],
+                    hp_known=resolved_hp["hp_known"],
+                    personal_damage=resolved_hp.get("personal_damage"),
                 )
                 parsed["event_key"] = f"boss_defeat_{session_id}"
                 await DropParser.save_notification(self.account_id, parsed, self.db_engine)
+            await self._clear_live_battle_snapshot()
 
             if active_preset and self.db_engine:
                 total = len(preset_steps or []) or self._count_total_steps(active_preset.items)
@@ -601,6 +851,8 @@ class BossWorker:
                 new_hp = hit_res.get("currentHp")
                 if new_hp is not None:
                     results["boss_hp_remaining"] = new_hp
+                    if int(new_hp) > 0:
+                        await self._save_live_battle_snapshot(battle, override_hp=int(new_hp))
                 results["hits_performed"].append({"weapon": weapon_name, "response": hit_res})
                 await self._log_action(
                     "boss_melee_hit",
@@ -923,13 +1175,18 @@ class BossWorker:
                 })
 
                 if outcome == "defeat":
-                    rem_hp = int(
-                        (claim_res.get("remainingHp") if isinstance(claim_res, dict) else None)
-                        or (claim_res.get("currentHp") if isinstance(claim_res, dict) else None)
-                        or last_hp
-                        or 0
+                    snap = await self._load_live_battle_snapshot()
+                    b_id = (battle.get("bossId") if isinstance(battle, dict) else None) or self._last_active_boss_id
+                    resolved_hp = resolve_defeat_boss_hp(
+                        server_payload=claim_res if isinstance(claim_res, dict) else None,
+                        battle=battle if isinstance(battle, dict) else None,
+                        snapshot=snap,
+                        boss_id=b_id,
+                        boss_name=resolved_boss_name,
+                        mode=resolved_mode,
                     )
-                    max_hp = int((battle.get("maxHp") if isinstance(battle, dict) else None) or rem_hp or 1)
+                    rem_hp = resolved_hp["remaining_hp"]
+                    max_hp = resolved_hp["max_hp"]
                     defeat_reason = (
                         (claim_res.get("message") if isinstance(claim_res, dict) else None)
                         or "Время боя вышло, босс не повержен"
@@ -941,6 +1198,9 @@ class BossWorker:
                         remaining_hp=rem_hp,
                         max_hp=max_hp,
                         reason=defeat_reason,
+                        hp_percent=resolved_hp["hp_percent"],
+                        hp_known=resolved_hp["hp_known"],
+                        personal_damage=resolved_hp.get("personal_damage"),
                     )
                     defeat_parsed["event_key"] = defeat_key
                     await DropParser.save_notification(self.account_id, defeat_parsed, self.db_engine)
@@ -951,6 +1211,9 @@ class BossWorker:
                             "mode": resolved_mode,
                             "remaining_hp": rem_hp,
                             "max_hp": max_hp,
+                            "hp_percent": resolved_hp["hp_percent"],
+                            "hp_known": resolved_hp["hp_known"],
+                            "personal_damage": resolved_hp.get("personal_damage"),
                             "reason": defeat_reason,
                             "event_key": defeat_key,
                         })
@@ -958,21 +1221,25 @@ class BossWorker:
                         active_preset = await self.on_boss_fight_finished(
                             {
                                 "outcome": "defeat",
+                                "bossId": b_id,
                                 "bossName": resolved_boss_name,
                                 "mode": resolved_mode,
                                 "remainingHp": rem_hp,
                                 "maxHp": max_hp,
+                                "personalDamage": resolved_hp.get("personal_damage"),
                                 "sessionId": b_sess_id,
                             },
                             active_preset=active_preset,
                             preset_steps=preset_steps,
                         )
+                    await self._clear_live_battle_snapshot()
                 else:
                     claimed_here += 1
                     results["rewards_claimed"] += 1
                     event_key = f"boss_claim_{b_sess_id}"
                     parsed["event_key"] = event_key
                     await DropParser.save_notification(self.account_id, parsed, self.db_engine)
+                    await self._clear_live_battle_snapshot()
                     if event_key not in self._notified_victory_keys:
                         self._notified_victory_keys.add(event_key)
                         results.setdefault("victories", []).append({
@@ -1001,10 +1268,21 @@ class BossWorker:
                 err_low = str(e).lower()
                 if any(m in err_low for m in ("не побежден", "время вышло", "пораж", "defeat", "not defeated")):
                     resolved_boss_name = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
+                    if resolved_boss_name == "Босс" and self._last_active_boss_name:
+                        resolved_boss_name = self._last_active_boss_name
                     resolved_mode = (battle.get("mode") if isinstance(battle, dict) else None) or self._last_active_boss_mode
+                    b_id = (battle.get("bossId") if isinstance(battle, dict) else None) or self._last_active_boss_id
                     b_sess_id = (battle.get("sessionId") if isinstance(battle, dict) else None) or cid or "latest"
-                    rem_hp = int((battle.get("currentHp") if isinstance(battle, dict) else None) or 0)
-                    max_hp = int((battle.get("maxHp") if isinstance(battle, dict) else None) or rem_hp or 1)
+                    snap = await self._load_live_battle_snapshot()
+                    resolved_hp = resolve_defeat_boss_hp(
+                        battle=battle if isinstance(battle, dict) else None,
+                        snapshot=snap,
+                        boss_id=b_id,
+                        boss_name=resolved_boss_name,
+                        mode=resolved_mode,
+                    )
+                    rem_hp = resolved_hp["remaining_hp"]
+                    max_hp = resolved_hp["max_hp"]
                     defeat_key = f"boss_defeat_{b_sess_id}"
                     defeat_parsed = DropParser.parse_boss_defeat(
                         boss_name=resolved_boss_name,
@@ -1012,6 +1290,9 @@ class BossWorker:
                         remaining_hp=rem_hp,
                         max_hp=max_hp,
                         reason="Время боя вышло, босс не повержен",
+                        hp_percent=resolved_hp["hp_percent"],
+                        hp_known=resolved_hp["hp_known"],
+                        personal_damage=resolved_hp.get("personal_damage"),
                     )
                     defeat_parsed["event_key"] = defeat_key
                     await DropParser.save_notification(self.account_id, defeat_parsed, self.db_engine)
@@ -1022,9 +1303,13 @@ class BossWorker:
                             "mode": resolved_mode,
                             "remaining_hp": rem_hp,
                             "max_hp": max_hp,
+                            "hp_percent": resolved_hp["hp_percent"],
+                            "hp_known": resolved_hp["hp_known"],
+                            "personal_damage": resolved_hp.get("personal_damage"),
                             "reason": "Время боя вышло, босс не повержен",
                             "event_key": defeat_key,
                         })
+                    await self._clear_live_battle_snapshot()
                 else:
                     logger.error(f"Ошибка сбора награды за босса: {e}")
                     results["errors"].append(f"claim_reward: {str(e)}")
@@ -1312,14 +1597,42 @@ class BossWorker:
                         is_defeat = True
 
                 if is_defeat and battle is not None:
+                    d_name = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
+                    d_mode = battle.get("mode") or self._last_active_boss_mode
+                    d_bid = battle.get("bossId") or self._last_active_boss_id
+                    snap = await self._load_live_battle_snapshot()
+                    resolved_hp = resolve_defeat_boss_hp(
+                        battle=battle,
+                        snapshot=snap,
+                        boss_id=d_bid,
+                        boss_name=d_name,
+                        mode=d_mode,
+                    )
+                    d_sess_id = battle.get("sessionId") or (snap or {}).get("session_id") or "latest"
+                    d_key = f"boss_defeat_{d_sess_id}"
+                    if d_key not in self._notified_victory_keys:
+                        self._notified_victory_keys.add(d_key)
+                        results.setdefault("defeats", []).append({
+                            "boss_name": d_name,
+                            "mode": d_mode,
+                            "remaining_hp": resolved_hp["remaining_hp"],
+                            "max_hp": resolved_hp["max_hp"],
+                            "hp_percent": resolved_hp["hp_percent"],
+                            "hp_known": resolved_hp["hp_known"],
+                            "personal_damage": resolved_hp.get("personal_damage"),
+                            "reason": "Время боя вышло, босс не повержен",
+                            "event_key": d_key,
+                        })
                     active_preset = await self.on_boss_fight_finished(
                         {
                             "outcome": "defeat",
-                            "bossName": self._resolve_boss_name(battle, bootstrap),
-                            "mode": battle.get("mode"),
-                            "remainingHp": int(current_hp or 0),
-                            "maxHp": int(battle.get("maxHp") or current_hp or 1),
-                            "sessionId": battle.get("sessionId"),
+                            "bossId": d_bid,
+                            "bossName": d_name,
+                            "mode": d_mode,
+                            "remainingHp": resolved_hp["remaining_hp"],
+                            "maxHp": resolved_hp["max_hp"],
+                            "personalDamage": resolved_hp.get("personal_damage"),
+                            "sessionId": d_sess_id,
                         },
                         active_preset=active_preset,
                         preset_steps=preset_steps,
@@ -1369,6 +1682,7 @@ class BossWorker:
                     nm = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
                     if nm and nm != "Босс":
                         self._last_active_boss_name = nm
+                    await self._save_live_battle_snapshot(battle, boss_name=nm)
                 logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
 
                 await self.record_friends_damage(bootstrap)
@@ -1449,7 +1763,20 @@ class BossWorker:
                         title_str = f"{df['boss_name']} ({m_str})" if m_str else str(df["boss_name"])
                         lines.append(f"💀 <b>Поражение от босса: {title_str}</b>")
                         lines.append(f"⏱ {df.get('reason') or 'Время боя вышло, босс не повержен'}")
-                        lines.append(f"❤️ Остаток HP: <b>{df.get('remaining_hp', 0)}</b>")
+                        d_rem = df.get("remaining_hp")
+                        d_max = df.get("max_hp")
+                        if df.get("hp_known") and d_rem and d_max and int(d_rem) > 0 and int(d_max) > 1:
+                            pct_str = DropParser.format_hp_percent(int(d_rem), int(d_max))
+                            lines.append(
+                                f"❤️ Осталось HP: <b>{DropParser.format_space_num(int(d_rem))} / "
+                                f"{DropParser.format_space_num(int(d_max))} ({pct_str})</b>"
+                            )
+                        elif d_max and int(d_max) > 1:
+                            lines.append(f"❤️ Осталось HP: <b>нет данных</b> (из {DropParser.format_space_num(int(d_max))})")
+                        else:
+                            lines.append("❤️ Осталось HP: <b>нет данных</b>")
+                        if df.get("personal_damage") and int(df["personal_damage"]) > 0:
+                            lines.append(f"⚔️ Личный урон: <b>{DropParser.format_space_num(int(df['personal_damage']))}</b>")
                     if not victories and not defeats:
                         b_label = self._last_active_boss_name or "Босс"
                         lines.append(f"👊 <b>Битва с боссом: {b_label}</b>")

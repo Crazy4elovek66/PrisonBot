@@ -490,21 +490,50 @@ class DropParser:
         }
 
     @classmethod
+    def format_space_num(cls, value: int) -> str:
+        """Форматирует целое число с пробелами-разделителями разрядов."""
+        return f"{int(value):,}".replace(",", " ")
+
+    @classmethod
+    def format_hp_percent(cls, remaining_hp: int, max_hp: int) -> str:
+        """Форматирует процент оставшегося HP, не схлопывая малые остатки > 0 в 0%."""
+        pct = round((remaining_hp / max_hp) * 100.0, 1)
+        if pct < 0.1:
+            return "<0.1%"
+        if pct.is_integer():
+            return f"{int(pct)}%"
+        return f"{pct:.1f}%"
+
+    @classmethod
     def parse_boss_defeat(
         cls,
         boss_name: Optional[str] = None,
         mode: Optional[str] = None,
-        remaining_hp: int = 0,
-        max_hp: int = 1,
+        remaining_hp: Optional[int] = None,
+        max_hp: Optional[int] = None,
         reason: str = "Время боя вышло, босс не повержен",
         my_damage: Optional[int] = None,
+        hp_percent: Optional[float] = None,
+        hp_known: Optional[bool] = None,
+        personal_damage: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Формирует структурированное уведомление о поражении от босса с полоской остатка HP."""
+        """Формирует структурированное уведомление о поражении от босса с достоверным остатком HP."""
         mode_str = cls.format_boss_mode(mode)
         b_name = boss_name.strip() if boss_name and boss_name.strip() else "Босс"
         title = f"Поражение от босса: {b_name}" + (f" ({mode_str})" if mode_str else "")
-        rem = max(0, int(remaining_hp or 0))
-        mx = max(1, int(max_hp or rem or 1))
+
+        raw_rem = int(remaining_hp) if remaining_hp is not None else 0
+        raw_max = int(max_hp) if max_hp is not None else 0
+        is_valid = raw_rem > 0 and raw_max > 1 and (hp_known is not False)
+        rem: Optional[int] = raw_rem if is_valid else None
+        mx: Optional[int] = raw_max if raw_max > 1 else None
+        pct: Optional[float] = None
+        if is_valid and rem is not None and mx is not None:
+            pct = float(hp_percent) if hp_percent is not None else round((rem / mx) * 100.0, 1)
+
+        p_dmg = personal_damage if personal_damage is not None else my_damage
+        p_dmg_val = int(p_dmg) if p_dmg is not None and int(p_dmg) > 0 else None
+
         return {
             "category": "bosses",
             "title": title,
@@ -518,6 +547,10 @@ class DropParser:
                 "mode": mode_str or mode,
                 "remaining_hp": rem,
                 "max_hp": mx,
+                "boss_hp": rem,
+                "hp_percent": pct,
+                "hp_known": bool(is_valid),
+                "personal_damage": p_dmg_val,
             },
         }
 

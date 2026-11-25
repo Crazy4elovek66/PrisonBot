@@ -1044,3 +1044,94 @@ async def test_boss_claim_defeat_does_not_emit_false_victory(tmp_path):
     await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_boss_defeat_hp_cascade_all_cases(tmp_path):
+    """
+    Проверка каскада определения оставшегося HP при поражении от босса:
+    1. Сервер вернул нули после таймаута, но есть живой снимок (18 500 / 50 000 -> 37%).
+    2. Сервер вернул totalDamage без hp/maxHp -> max_hp из каталога, remaining_hp = max_hp - total_damage.
+    3. Рестарт воркера -> живой снимок восстановлен из SQLite.
+    4. Малый остаток HP (5 / 100 000) -> <0.1%, не 0%.
+    5. Данных нет вообще -> hp_known=False, remaining_hp=None, 'нет данных'.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_session
+    from core.models import Account, Notification
+    from core.drop_parser import DropParser
+    from workers.boss_worker import BossWorker, resolve_defeat_boss_hp
+
+    db_path = tmp_path / "boss_defeat_cascade.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79001112233", nickname="Test"))
+        await session.commit()
+
+    # Кейс 1 + Кейс 3 (перезапуск воркера): сохраняем снимок первым инстансом, читаем вторым
+    notifier = SimpleNamespace(notify=AsyncMock())
+    boss_api = SimpleNamespace(
+        claim_reward=AsyncMock(return_value={"result": "defeat", "isWin": False, "message": "Время боя вышло"}),
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    worker1 = BossWorker(account_id=1, boss_api=boss_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    await worker1._save_live_battle_snapshot(
+        {"bossId": 3, "title": "Махно", "mode": "pacansky", "currentHp": 18500, "maxHp": 50000, "sessionId": "sess_makhno_1"},
+        boss_name="Махно",
+    )
+    # Имитация перезапуска: новый BossWorker с пустой памятью
+    worker2 = BossWorker(account_id=1, boss_api=boss_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    bootstrap_zeroed = {
+        "state": "reward",
+        "session": {"bossId": 3, "title": "Махно", "mode": "pacansky", "currentHp": 0, "maxHp": 0, "sessionId": "sess_makhno_1"},
+        "unclaimedRewards": [{"claimId": "cid_makhno_1", "bossId": 3}],
+    }
+    results = {"rewards_claimed": 0, "hits_performed": [], "summoned_bosses": [], "boss_hp_remaining": None, "victories": [], "defeats": [], "errors": []}
+    await worker2._claim_pending_rewards(bootstrap_zeroed, results, None, [], set())
+
+    assert len(results["defeats"]) == 1
+    df1 = results["defeats"][0]
+    assert df1["remaining_hp"] == 18500
+    assert df1["max_hp"] == 50000
+    assert df1["hp_percent"] == 37.0
+    assert df1["hp_known"] is True
+
+    async with get_session(engine) as session:
+        notifs = (await session.execute(select(Notification))).scalars().all()
+        assert len(notifs) == 1
+        meta = notifs[0].meta_json
+        assert meta["remaining_hp"] == 18500
+        assert meta["max_hp"] == 50000
+        assert meta["hp_percent"] == 37.0
+        assert meta["hp_known"] is True
+
+    # Кейс 2: сервер вернул totalDamage без hp/maxHp -> max_hp из каталога (Воркута pacansky = 400_000_000)
+    res2 = resolve_defeat_boss_hp(
+        server_payload={"totalDamage": 125000000},
+        battle=None,
+        snapshot=None,
+        boss_id=39,
+        boss_name="Воркута",
+        mode="pacansky",
+    )
+    assert res2["hp_known"] is True
+    assert res2["max_hp"] == 400000000
+    assert res2["remaining_hp"] == 275000000
+
+    # Кейс 4: малый остаток HP (5 / 100 000) -> <0.1%, не 0%
+    assert DropParser.format_hp_percent(5, 100000) == "<0.1%"
+    assert DropParser.format_space_num(18500) == "18 500"
+
+    # Кейс 5: данных нет вообще -> hp_known=False, remaining_hp=None
+    res5 = resolve_defeat_boss_hp(server_payload={}, battle={"currentHp": 0, "maxHp": 0}, snapshot=None, boss_id=99999, boss_name="Неизвестный", mode="pacansky")
+    assert res5["hp_known"] is False
+    assert res5["remaining_hp"] is None
+    parsed5 = DropParser.parse_boss_defeat(boss_name="Неизвестный", mode="pacansky", remaining_hp=res5["remaining_hp"], max_hp=res5["max_hp"], hp_known=res5["hp_known"])
+    assert parsed5["meta_json"]["hp_known"] is False
+    assert parsed5["meta_json"]["remaining_hp"] is None
+    assert parsed5["meta_json"]["max_hp"] is None
+
+    await engine.dispose()
+
+
+

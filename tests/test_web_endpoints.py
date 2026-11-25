@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v11" in sw
+    assert "prisonbot-assets-v12" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,18 +197,18 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261125_16";' in js
+    assert 'const ASSET_VERSION = "20261125_17";' in js
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261125_16" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261125_17" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261125_16"',
-        'src="assets/icons/room_reward.webp?v=20261125_16"',
-        'src="assets/icons/complect.webp?v=20261125_16"',
-        'src="assets/icons/podogrev.webp?v=20261125_16"',
-        'src="assets/icons/authority.webp?v=20261125_16"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261125_16"',
+        'src="assets/icons/boss.webp?v=20261125_17"',
+        'src="assets/icons/room_reward.webp?v=20261125_17"',
+        'src="assets/icons/complect.webp?v=20261125_17"',
+        'src="assets/icons/podogrev.webp?v=20261125_17"',
+        'src="assets/icons/authority.webp?v=20261125_17"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261125_17"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -228,7 +228,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     icon_inputs = [
         "/static/assets/icons/cigarettes.webp",
         "/static/assets/icons/rubles.webp?v=old",
-        "static/assets/icons/sugar.webp?v=20261125_16",
+        "static/assets/icons/sugar.webp?v=20261125_17",
         "/prison/static/assets/icons/soap.webp",
         "assets/icons/podogrev.webp",
         "assets/icons/boss.webp",
@@ -250,7 +250,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
         + "    const r1 = resolveAppAssetUrl(inp);\n"
         + "    const r2 = resolveAppAssetUrl(r1);\n"
         + "    if (r1 !== r2) throw new Error('Not idempotent: ' + r1 + ' vs ' + r2);\n"
-        + "    if (r1.includes('v=20261125_16')) throw new Error('Proxy url polluted with v=: ' + r1);\n"
+        + "    if (r1.includes('v=20261125_17')) throw new Error('Proxy url polluted with v=: ' + r1);\n"
         + "    if (p.startsWith('/prison')) {\n"
         + "      if (!r1.startsWith('/prison/api/v1/assets/proxy?path=')) throw new Error('Bad prison url: ' + r1);\n"
         + "      if (r1.includes('/prison/prison')) throw new Error('Double prefix: ' + r1);\n"
@@ -262,7 +262,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
         + "    const r1 = resolveAppAssetUrl(inp);\n"
         + "    const r2 = resolveAppAssetUrl(r1);\n"
         + "    if (r1 !== r2) throw new Error('Icon not idempotent: ' + r1 + ' vs ' + r2);\n"
-        + "    if (!r1.includes('v=20261125_16')) throw new Error('Missing icon version: ' + r1);\n"
+        + "    if (!r1.includes('v=20261125_17')) throw new Error('Missing icon version: ' + r1);\n"
         + "    if ((r1.match(/\\?v=/g) || []).length !== 1) throw new Error('Duplicate ?v=: ' + r1);\n"
         + "    if (p.startsWith('/prison')) {\n"
         + "      if (!r1.startsWith('/prison/')) throw new Error('Bad prison icon: ' + r1);\n"
@@ -298,7 +298,7 @@ def test_resource_icons_http_serving():
         "authority.webp",
     ):
         expected = (root / "web" / "static" / "assets" / "icons" / name).read_bytes()
-        for url in (f"/assets/icons/{name}", f"/static/assets/icons/{name}?v=20261125_16"):
+        for url in (f"/assets/icons/{name}", f"/static/assets/icons/{name}?v=20261125_17"):
             resp = client.get(url)
             assert resp.status_code == 200, f"Failed {url}: {resp.status_code}"
             assert "image/webp" in resp.headers.get("content-type", "").lower()
@@ -329,7 +329,7 @@ def test_render_boss_data_runtime_node():
         raise AssertionError(f"Could not extract {name}")
 
     helpers = "\n".join([
-        'const ASSET_VERSION = "20261125_16";',
+        'const ASSET_VERSION = "20261125_17";',
         extract_fn("getAppBasePrefix"),
         extract_fn("resolveAppAssetUrl"),
         extract_fn("setTextIfChanged"),
@@ -356,7 +356,7 @@ function makeEl(id, initialText = "", initialHtml = "") {
 }
 
 const titleTextEl = makeEl("boss-title-text", "Поиск активного рейда...");
-const titleEl = makeEl("boss-title", "", '<img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261125_16" alt="Босс"> <span id="boss-title-text">Поиск активного рейда...</span>');
+const titleEl = makeEl("boss-title", "", '<img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261125_17" alt="Босс"> <span id="boss-title-text">Поиск активного рейда...</span>');
 titleEl._children.titleText = titleTextEl;
 
 const elems = {
@@ -398,7 +398,7 @@ renderBossData({
 
 if (elems["boss-active-card"].style.display !== "block") throw new Error("activeCard not shown");
 if (titleTextEl.textContent !== "Кирпич") throw new Error("Bad title: " + titleTextEl.textContent);
-if (!titleEl.innerHTML.includes("assets/icons/boss.webp?v=20261125_16")) throw new Error("Missing boss icon in title");
+if (!titleEl.innerHTML.includes("assets/icons/boss.webp?v=20261125_17")) throw new Error("Missing boss icon in title");
 if (elems["boss-mode-badge"].textContent !== "Режим: Блатной") throw new Error("Bad mode: " + elems["boss-mode-badge"].textContent);
 if (elems["boss-hp-numbers"].textContent !== `${formatNum(12000)} / ${formatNum(20000)}`) throw new Error("Bad hp numbers: " + elems["boss-hp-numbers"].textContent);
 if (elems["boss-hp-percent"].textContent !== "60%") throw new Error("Bad hp pct: " + elems["boss-hp-percent"].textContent);
@@ -426,3 +426,52 @@ console.log("OK_RENDER_BOSS_RUNTIME");
     proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_RENDER_BOSS_RUNTIME" in proc.stdout
+
+
+def test_render_boss_defeat_notification_runtime_node():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    start = js.index("      let defeatBarHtml = \"\";")
+    end = js.index("      if (meta.outcome === \"victory\")", start)
+    defeat_snippet = js[start:end]
+
+    fn_start = js.index("function formatNum(")
+    depth = 0
+    in_fn = False
+    fn_end = fn_start
+    for idx in range(fn_start, len(js)):
+        if js[idx] == "{":
+            depth += 1
+            in_fn = True
+        elif js[idx] == "}":
+            depth -= 1
+            if in_fn and depth == 0:
+                fn_end = idx + 1
+                break
+    format_num_code = js[fn_start:fn_end]
+
+    node_script = format_num_code + "\nfunction renderDefeat(meta) {\n  const isDefeat = true;\n" + defeat_snippet + "\n  return defeatBarHtml;\n}\n" + """
+const c1 = renderDefeat({ remaining_hp: 12450, max_hp: 50000, hp_percent: 24.9, hp_known: true });
+if (!c1.includes("Осталось HP:") || !c1.includes("12") || !c1.includes("450") || !c1.includes("50") || !c1.includes("24.9%") || !c1.includes("width: 24.9%")) {
+  throw new Error("Case 1 failed: " + c1);
+}
+
+const c2 = renderDefeat({ remaining_hp: 5, max_hp: 100000, hp_known: true });
+if (!c2.includes("<0.1%") || !c2.includes("width: 1%")) {
+  throw new Error("Case 2 (small HP) failed: " + c2);
+}
+
+const c3 = renderDefeat({ remaining_hp: 0, max_hp: 1 });
+if (c3.includes("0 / 1") || c3.includes("0%") || c3.includes("defeat-hp-bar") || !c3.includes("нет данных")) {
+  throw new Error("Case 3 (legacy 0/1) failed: " + c3);
+}
+
+console.log("OK_DEFEAT_NOTIF_RUNTIME");
+"""
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_DEFEAT_NOTIF_RUNTIME" in proc.stdout
