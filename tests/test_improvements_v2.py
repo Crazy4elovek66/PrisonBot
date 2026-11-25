@@ -354,3 +354,82 @@ async def test_boss_victory_notification_web_and_telegram_formatting():
         claimed_keys_in_cycle=set(),
     )
     assert "boss_claim_sess_39" in worker._notified_victory_keys
+
+
+@pytest.mark.asyncio
+async def test_auto_interactions_targets_pool_and_limit_stop(tmp_path):
+    from pathlib import Path
+    from core.models import BotConfig, SentFriendRequest, TrackedCandidate
+
+    db_path = tmp_path / "test_interactions.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+
+    async with get_session(engine) as session:
+        acc = Account(id=1, phone="79000000000", game_user_id=1000, nickname="Test")
+        session.add(acc)
+        cfg = BotConfig(account_id=1, auto_biceps=True, auto_spit_balanda=False, auto_throw_yeast=True)
+        session.add(cfg)
+        session.add(TrackedCandidate(account_id=1, user_id=202))
+        session.add(TrackedCandidate(account_id=1, user_id=1000))  # self -> excluded
+        session.add(SentFriendRequest(account_id=1, target_user_id=303))
+        session.add(SentFriendRequest(account_id=1, target_user_id=202))  # duplicate -> deduplicated
+        await session.commit()
+
+    calls = []
+
+    async def _perform_interaction(from_uid, to_uid, action_type):
+        calls.append((from_uid, to_uid, action_type))
+        if action_type == "UpgradeBiceps" and to_uid == 202:
+            return {"success": False, "message": "Дневной лимит исчерпан"}
+        return {"success": True}
+
+    social_api = SimpleNamespace(
+        get_all_friend_profiles=AsyncMock(return_value=[{"userId": 101}, {"userId": 1000}]),
+        perform_interaction=AsyncMock(side_effect=_perform_interaction),
+    )
+    rw = RoutineWorker(
+        account_id=1,
+        player_api=SimpleNamespace(),
+        db_engine=engine,
+        social_api=social_api,
+        enable_jitter=False,
+    )
+    res1 = await rw.process_auto_interactions(player_data={"userId": 1000})
+    assert res1["targets_pool"] == 3  # 101, 202, 303
+    assert "Harknut" not in res1["actions"]
+    assert res1["actions"]["UpgradeBiceps"]["done"] == 1
+    assert res1["actions"]["UpgradeBiceps"]["limit_reached"] is True
+    assert res1["actions"]["TossDroj"]["done"] == 3
+    assert (1000, 303, "UpgradeBiceps") not in calls  # stopped at 202 limit
+
+    # Mark TossDroj limit too and verify next call short-circuits
+    res_off = await rw.process_auto_interactions(
+        config=SimpleNamespace(is_paused=False, sleep_mode_enabled=False, auto_biceps=True, auto_spit_balanda=False, auto_throw_yeast=False),
+        player_data={"userId": 1000},
+    )
+    assert res_off["status"] == "limit_reached"
+
+    await engine.dispose()
+
+
+def test_auto_interactions_and_boss_talents_ui_and_config_flags():
+    from pathlib import Path
+    from core.models import BotConfig
+
+    for col in ("auto_biceps", "auto_spit_balanda", "auto_throw_yeast"):
+        assert hasattr(BotConfig, col)
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    for cid in ("cfg-auto_biceps", "cfg-auto_spit_balanda", "cfg-auto_throw_yeast"):
+        assert cid in html
+
+    for key in ('"auto_biceps"', '"auto_spit_balanda"', '"auto_throw_yeast"'):
+        assert js.count(key) >= 2
+
+    boss_fn_start = js.index("async function loadBoss()")
+    boss_fn_end = js.index("async function ", boss_fn_start + 10)
+    assert "loadTalents()" in js[boss_fn_start:boss_fn_end]

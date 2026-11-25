@@ -2,7 +2,7 @@ import random
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, List, Optional
 import httpx
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
@@ -102,6 +102,8 @@ class RoutineWorker:
         self.social_api = social_api
         self.on_business_reschedule = on_business_reschedule
         self.on_katala_reschedule = on_katala_reschedule
+        self._daily_interaction_done: Dict[str, Dict[str, set]] = {}
+        self._daily_interaction_limit_hit: Dict[str, set] = {}
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -189,6 +191,164 @@ class RoutineWorker:
         except Exception as e:
             logger.warning(f"Ошибка при автоигре у Каталы: {e}")
             return {"success": False, "status": "error", "error": str(e)}
+
+    async def collect_interaction_targets(self, from_user_id: int) -> List[int]:
+        """Собирает дедуплицированный пул целей (друзья + кандидаты из БД/заявок), исключая свой userId."""
+        targets: List[int] = []
+        seen: set = {int(from_user_id)} if from_user_id else set()
+
+        def _add_uid(raw: Any) -> None:
+            try:
+                uid = int(raw)
+                if uid > 0 and uid not in seen:
+                    seen.add(uid)
+                    targets.append(uid)
+            except (TypeError, ValueError):
+                pass
+
+        if self.social_api is not None:
+            try:
+                friends = await self.social_api.get_all_friend_profiles()
+                if isinstance(friends, list):
+                    for f in friends:
+                        if isinstance(f, dict):
+                            _add_uid(f.get("userId") or f.get("id"))
+            except Exception as e:
+                logger.debug(f"collect_interaction_targets friends error: {e}")
+
+        if self.db_engine is not None:
+            try:
+                from sqlalchemy import select
+                from core.models import TrackedCandidate, SentFriendRequest
+                async with get_session(self.db_engine) as session:
+                    c_rows = (await session.execute(
+                        select(TrackedCandidate.user_id)
+                        .where(TrackedCandidate.account_id == self.account_id)
+                        .limit(200)
+                    )).scalars().all()
+                    for uid in c_rows:
+                        _add_uid(uid)
+                    s_rows = (await session.execute(
+                        select(SentFriendRequest.target_user_id)
+                        .where(SentFriendRequest.account_id == self.account_id)
+                        .limit(200)
+                    )).scalars().all()
+                    for uid in s_rows:
+                        _add_uid(uid)
+            except Exception as e:
+                logger.debug(f"collect_interaction_targets db error: {e}")
+
+        return targets
+
+    async def process_auto_interactions(
+        self,
+        config: Optional[Any] = None,
+        player_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Выполняет включенные ежедневные авто-взаимодействия (Качать бицуху, Плевать в баланду, Кидать дрожжи)
+        по пулу целей до достижения суточного лимита сервера (с учетом MSK даты).
+        """
+        if config is None and self.db_engine is not None:
+            config = await get_or_create_config(self.account_id, self.db_engine)
+        if config is not None and not is_worker_active(config):
+            return {"status": "skipped", "reason": "paused_or_sleep"}
+        if self.social_api is None:
+            return {"status": "skipped", "reason": "no_social_api"}
+
+        actions_cfg = [
+            ("auto_biceps", "UpgradeBiceps", "Качать бицуху"),
+            ("auto_spit_balanda", "Harknut", "Плевать в баланду"),
+            ("auto_throw_yeast", "TossDroj", "Кидать дрожжи"),
+        ]
+        enabled = [(attr, act, title) for attr, act, title in actions_cfg if getattr(config, attr, False)]
+        if not enabled:
+            return {"status": "skipped", "reason": "none_enabled"}
+
+        msk_today = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+        done_today = self._daily_interaction_done.setdefault(msk_today, {})
+        limit_hit_today = self._daily_interaction_limit_hit.setdefault(msk_today, set())
+
+        # Очистка старых дней
+        for old_day in [k for k in list(self._daily_interaction_done.keys()) if k != msk_today]:
+            self._daily_interaction_done.pop(old_day, None)
+        for old_day in [k for k in list(self._daily_interaction_limit_hit.keys()) if k != msk_today]:
+            self._daily_interaction_limit_hit.pop(old_day, None)
+
+        if all(act in limit_hit_today for _, act, _ in enabled):
+            return {"status": "limit_reached", "day": msk_today}
+
+        from_user_id = 0
+        if isinstance(player_data, dict):
+            from_user_id = int(player_data.get("userId") or (player_data.get("player") or {}).get("userId") or 0)
+        if not from_user_id:
+            try:
+                p_init = await self.api.init_player()
+                from_user_id = int(p_init.get("userId") or (p_init.get("player") or {}).get("userId") or 0)
+            except Exception as e:
+                logger.warning(f"auto_interactions: не удалось получить userId игрока: {e}")
+                return {"status": "error", "error": str(e)}
+
+        targets = await self.collect_interaction_targets(from_user_id)
+        summary: Dict[str, Any] = {"day": msk_today, "targets_pool": len(targets), "actions": {}}
+
+        limit_markers = ("лимит", "limit", "исчерпан", "больше нельзя", "завтра", "максимум")
+        already_markers = ("уже", "already", "использовано", "недоступ")
+
+        for _, action_type, title in enabled:
+            if action_type in limit_hit_today:
+                summary["actions"][action_type] = {"done": 0, "limit_reached": True}
+                continue
+            acted_set = done_today.setdefault(action_type, set())
+            done_cnt = 0
+            hit_limit = False
+
+            for uid in targets:
+                if uid in acted_set:
+                    continue
+                try:
+                    res = await self.social_api.perform_interaction(from_user_id, uid, action_type)
+                    ok = bool(res.get("success", True)) if isinstance(res, dict) else True
+                    msg = str((res.get("message") or res.get("error") or "") if isinstance(res, dict) else "").lower()
+                    if ok:
+                        done_cnt += 1
+                        acted_set.add(uid)
+                        if isinstance(res, dict) and res.get("remaining") == 0:
+                            hit_limit = True
+                            limit_hit_today.add(action_type)
+                            break
+                    elif any(m in msg for m in limit_markers):
+                        hit_limit = True
+                        limit_hit_today.add(action_type)
+                        break
+                    elif any(m in msg for m in already_markers):
+                        acted_set.add(uid)
+                except httpx.HTTPStatusError as err:
+                    err_txt = (err.response.text or "").lower()
+                    if any(m in err_txt for m in limit_markers):
+                        hit_limit = True
+                        limit_hit_today.add(action_type)
+                        break
+                    if any(m in err_txt for m in already_markers):
+                        acted_set.add(uid)
+                except Exception as e:
+                    logger.debug(f"auto_interactions ({action_type} -> {uid}): {e}")
+
+                if self.enable_jitter:
+                    await asyncio.sleep(random.uniform(0.3, 0.55))
+
+            summary["actions"][action_type] = {"done": done_cnt, "limit_reached": hit_limit}
+            if done_cnt > 0 or hit_limit:
+                await self._log_action(
+                    f"auto_{action_type.lower()}",
+                    "/api/interaction/perform",
+                    200,
+                    True,
+                    {"title": title, "done": done_cnt, "limit_reached": hit_limit, "day": msk_today},
+                )
+                logger.info(f"Авто-действие '{title}': выполнено={done_cnt}, лимит={hit_limit}")
+
+        return summary
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Выполняет один полный цикл рутинных задач."""
@@ -410,7 +570,19 @@ class RoutineWorker:
             elif katala_res.get("error"):
                 results["errors"].append(f"katala_game: {katala_res['error']}")
 
-        # 5.3. Месячные делюги — выполнение дневного негативного квеста и автосбор тиров
+        # 5.3. Авто-взаимодействия (Качать бицуху, Плевать в баланду, Кидать дрожжи до лимита)
+        if (
+            getattr(config, "auto_biceps", False)
+            or getattr(config, "auto_spit_balanda", False)
+            or getattr(config, "auto_throw_yeast", False)
+        ):
+            inter_res = await self.process_auto_interactions(
+                config=config,
+                player_data=player_data if "player_data" in locals() and isinstance(player_data, dict) else None,
+            )
+            results["auto_interactions"] = inter_res
+
+        # 5.4. Месячные делюги — выполнение дневного негативного квеста и автосбор тиров
         if getattr(config, "auto_monthly_tasks", False) or getattr(config, "auto_events", False):
             mq_res = await self.process_monthly_quests(
                 config=config,

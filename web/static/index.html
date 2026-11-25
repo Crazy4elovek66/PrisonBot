@@ -7,7 +7,7 @@
   <title>PrisonBot — Панель управления</title>
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261125_05">
+  <link rel="stylesheet" href="styles.css?v=20261125_06">
   <script>
     (function () {
       var allowed = ["main", "home", "bosses", "prisons", "wardrobe", "routine", "friends", "raids", "notifications", "settings"];
@@ -1042,6 +1042,56 @@
           </div>
         </div>
 
+        <!-- 4.1. Авто-взаимодействия (до суточного лимита) -->
+        <div style="margin: 10px 0; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
+          <div style="font-size: 12px; font-weight: 700; color: var(--muted-foreground); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.4px;">⚡ Авто-взаимодействия (до лимита)</div>
+          <div class="routine-action-row" style="padding: 6px 0;">
+            <div class="routine-action-info">
+              <div class="routine-action-title"><img src="/static/assets/icons/biceps.webp?v=2" class="game-icon-sm" alt="Бицуха"> Качать бицуху</div>
+              <div class="routine-action-desc">Автоматически качает бицуху по пулу игроков до суточного лимита</div>
+            </div>
+            <div class="routine-action-controls">
+              <div class="auto-toggle-wrap" title="Авто-прокачка бицухи до суточного лимита">
+                <span class="auto-toggle-label">АВТО</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-auto_biceps">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="routine-action-row" style="padding: 6px 0;">
+            <div class="routine-action-info">
+              <div class="routine-action-title">🍲 Плевать в баланду</div>
+              <div class="routine-action-desc">Автоматически харкает в баланду по пулу игроков до суточного лимита</div>
+            </div>
+            <div class="routine-action-controls">
+              <div class="auto-toggle-wrap" title="Авто-плевки в баланду до суточного лимита">
+                <span class="auto-toggle-label">АВТО</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-auto_spit_balanda">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="routine-action-row" style="padding: 6px 0; border-bottom: none;">
+            <div class="routine-action-info">
+              <div class="routine-action-title">🧪 Кидать дрожжи</div>
+              <div class="routine-action-desc">Автоматически подкидывает дрожжи по пулу игроков до суточного лимита</div>
+            </div>
+            <div class="routine-action-controls">
+              <div class="auto-toggle-wrap" title="Авто-дрожжи до суточного лимита">
+                <span class="auto-toggle-label">АВТО</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="cfg-auto_throw_yeast">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 5. Посылки / Подарки -->
         <div class="routine-action-row">
           <div class="routine-action-info">
@@ -1946,8 +1996,8 @@
 
   <script src="vendor/bundle-codec.js?v=20261124_03"></script>
   <script src="vendor/spine-runtime.js?v=20261124_03"></script>
-  <script src="spine_room_player.js?v=20261125_05"></script>
-  <script src="app.js?v=20261125_05"></script>
+  <script src="spine_room_player.js?v=20261125_06"></script>
+  <script src="app.js?v=20261125_06"></script>
 </body>
 
 </html>

@@ -339,6 +339,16 @@ def create_scheduler(
         max_instances=1,
     )
     logger.info("Cron-триггер ежедневной раздачи подогревов (00:00:05 МСК) зарегистрирован.")
+
+    scheduler.add_job(
+        routine_worker.process_auto_interactions,
+        trigger=CronTrigger(hour=0, minute=0, second=10, timezone=msk_tz),
+        id=f"daily_auto_interactions_msk_{acc_id}",
+        name=f"Daily Auto Interactions 00:00:10 MSK for account {acc_id}",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Cron-триггер ежедневных авто-взаимодействий (00:00:10 МСК) зарегистрирован.")
     routine_worker.on_katala_reschedule = controller.reschedule_katala_in
 
     if boss_worker:

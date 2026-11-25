@@ -626,7 +626,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         "friends_parser_tier", "friends_parser_min_authority", "friends_parser_max_authority",
         "friend_filter_mode", "auto_parse_news_raids", "auto_friend_cleanup",
         "friend_cleanup_inactive_days", "friend_cleanup_daily_limit", "friend_cleanup_trigger_threshold",
-        "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+        "auto_podogrev_send", "auto_katala", "auto_biceps", "auto_spit_balanda", "auto_throw_yeast", "auto_monthly_tasks",
     }
 
     updates = {k: v for k, v in payload.items() if k in allowed_fields}
@@ -755,6 +755,9 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             or updates.get("auto_toilet_paper")
             or updates.get("auto_podogrev_send")
             or updates.get("auto_katala")
+            or updates.get("auto_biceps")
+            or updates.get("auto_spit_balanda")
+            or updates.get("auto_throw_yeast")
         )
         if should_wake_boss:
             if updates.get("boss_auto_melee") and bot_context.boss_worker is not None:

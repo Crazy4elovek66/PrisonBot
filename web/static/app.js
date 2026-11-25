@@ -581,6 +581,7 @@ function updateConfigUI(cfg) {
   const checkboxKeys = [
     "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
     "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+    "auto_biceps", "auto_spit_balanda", "auto_throw_yeast",
     "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
     "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
     "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
@@ -907,6 +908,9 @@ async function loadBoss() {
   try {
     const data = await apiFetch("/live/boss");
     renderBossData(data);
+    if (!window._lastTalentsState || Date.now() - (window._lastTalentsFetchTs || 0) > 10000) {
+      loadTalents();
+    }
   } catch (err) {
     console.warn("loadBoss error:", err);
   }
@@ -2145,6 +2149,7 @@ function renderBossTalentsWidget(state) {
 async function loadTalents() {
   const container = document.getElementById("talents-list");
   try {
+    window._lastTalentsFetchTs = Date.now();
     const data = await apiFetch("/talents");
     const state = data.state || {};
     renderBossTalentsWidget(state);
@@ -2834,6 +2839,7 @@ document.getElementById("btn-scan-news")?.addEventListener("click", async () => 
 const autoConfigKeys = [
   "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
   "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+  "auto_biceps", "auto_spit_balanda", "auto_throw_yeast",
   "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
   "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
   "auto_friends", "auto_events", "friend_accept_all", "friend_auto_decline_below",
