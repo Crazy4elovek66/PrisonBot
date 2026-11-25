@@ -337,7 +337,36 @@ body {
 .drawer-item .item-icon {
   font-size: 16px;
   width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   text-align: center;
+}
+
+.nav-icon-img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.boss-battle-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+#boss-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .drawer-item .item-badge {

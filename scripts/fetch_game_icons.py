@@ -1,28 +1,42 @@
 import os
+import shutil
 import urllib.request
 from pathlib import Path
 
 DEST_DIR = Path("web/static/assets/icons")
 DEST_DIR.mkdir(parents=True, exist_ok=True)
+REF_HUD_DIR = Path("reference_archive/pro_prison_bot/assets")
+HUD_REFERENCE_MAP = {
+    "cigarettes.webp": "HUD_cigarettes.webp",
+    "rubles.webp": "HUD_rubles.webp",
+    "sugar.webp": "HUD_sugar.webp",
+    "soap.webp": "HUD_soap.webp",
+    "boss.webp": "PrisonV3_bosses_all_bosses.webp",
+    "stash.webp": "poker_hidesicon.webp",
+    "room_reward.webp": "PrisonV3_bosses_all_camerReward.webp",
+    "complect.webp": "PrisonV3_bosses_all_complectReward.webp",
+    "podogrev.webp": "podogrev_pagePodogrev.webp",
+    "authority.webp": "Avtoritet.webp",
+}
 
 # URL sources map: target_name -> [fallback_urls]
 ICON_SOURCES = {
-    # Currencies
+    # Currencies (HUD quality assets)
     "rubles.webp": [
-        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/BARIGA/img/icon_B_rubles.webp",
-        "https://pro-prison-bot.003220.xyz/cdn/assets/PrisonV3/BARIGA/img/icon_B_rubles.webp",
+        "https://pro-prison-bot.003220.xyz/game-icons/HUD_rubles.webp",
+        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/HUD/HUD_rubles.png",
     ],
     "soap.webp": [
         "https://pro-prison-bot.003220.xyz/game-icons/HUD_soap.webp",
         "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/HUD/HUD_soap.png",
     ],
     "sugar.webp": [
-        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/BARIGA/img/icon_B_sugar.webp",
-        "https://pro-prison-bot.003220.xyz/cdn/assets/PrisonV3/BARIGA/img/icon_B_sugar.webp",
+        "https://pro-prison-bot.003220.xyz/game-icons/HUD_sugar.webp",
+        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/HUD/HUD_sugar.png",
     ],
     "cigarettes.webp": [
-        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/BARIGA/img/icon_B_cigarettes.webp",
-        "https://pro-prison-bot.003220.xyz/cdn/assets/PrisonV3/BARIGA/img/icon_B_cigarettes.webp",
+        "https://pro-prison-bot.003220.xyz/game-icons/HUD_cigarettes.webp",
+        "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/HUD/HUD_cigarettes.png",
     ],
     "paper.webp": [
         "https://oldprison-prod-assets-cdn-yandex.luckygem.online/assets/PrisonV3/BARIGA/img/icon_B_paper.webp",
@@ -108,6 +122,9 @@ ICON_SOURCES = {
     "combo.webp": [
         "https://pro-prison-bot.003220.xyz/images/combo-donate.webp",
     ],
+    "podogrev.webp": [
+        "https://pro-prison-bot.003220.xyz/game-icons/podogrev_pagePodogrev.webp",
+    ],
     # Base body sprite for character layers
     "PlayerSprite.png": [
         "https://pro-prison-bot.003220.xyz/cdn/assets/PlayerSprite.png",
@@ -173,6 +190,14 @@ ICON_SOURCES = {
 
 def fetch_icon(target_name: str, urls: list) -> bool:
     target_path = DEST_DIR / target_name
+    ref_name = HUD_REFERENCE_MAP.get(target_name)
+    if ref_name:
+        ref_path = REF_HUD_DIR / ref_name
+        if ref_path.exists() and ref_path.stat().st_size > 0:
+            shutil.copyfile(ref_path, target_path)
+            print(f"[SYNCED_HUD] {target_name} <- {ref_path} ({target_path.stat().st_size} bytes)")
+            return True
+
     if target_path.exists() and target_path.stat().st_size > 0:
         print(f"[EXISTS] {target_name} ({target_path.stat().st_size} bytes)")
         return True

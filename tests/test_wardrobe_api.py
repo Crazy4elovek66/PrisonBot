@@ -504,3 +504,157 @@ async def test_character_layers_and_wardrobe_sets_front_and_back_sides():
     assert shorts["imageBackUrl"] == ""
 
 
+@pytest.mark.asyncio
+async def test_player_api_equip_tattoo_and_clothing_sets_normalize_payload():
+    """
+    Проверка реального контракта PlayerAPI.equip_tattoo_set и equip_clothing_set:
+    - нормализует id -> tattooId / clothingId;
+    - разворачивает /api/v1/assets/proxy?path=... в оригинальный путь assets/...;
+    - никогда не отправляет tattooId: 0 / clothingId: 0 при надевании сета.
+    """
+    mock_http = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"success": True}
+    mock_http.post = AsyncMock(return_value=mock_resp)
+
+    api = PlayerAPI(http_client=mock_http)
+
+    # 1. Сет наколок (включая старый формат с 'id', proxy URL и нулевой элемент, который должен быть отброшен)
+    res_tat = await api.equip_tattoo_set({
+        "2": {"id": 128, "imageUrl": "/prison/api/v1/assets/proxy?path=assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png"},
+        "3": {"tattooId": 129, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone3.png"},
+        "4": {"id": 0, "imageUrl": ""},
+    })
+    assert res_tat["success"] is True
+    mock_http.post.assert_awaited_once_with(
+        "/api/tattoo/apply",
+        json={
+            "tattooZones": {
+                "2": {"tattooId": 128, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png"},
+                "3": {"tattooId": 129, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone3.png"},
+            }
+        },
+    )
+
+    mock_http.post.reset_mock()
+
+    # 2. Сет одежды
+    res_cloth = await api.equip_clothing_set({
+        "1": {"id": 48, "imageUrl": "/api/v1/assets/proxy?path=assets/PrisonV3/Clotch/Sizi/C/2.png"},
+    })
+    assert res_cloth["success"] is True
+    mock_http.post.assert_awaited_once_with(
+        "/api/clothing/apply",
+        json={
+            "clothingZones": {
+                "1": {"clothingId": 48, "imageUrl": "assets/PrisonV3/Clotch/Sizi/C/2.png"},
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_wardrobe_post_verification_and_statehub(wardrobe_setup, monkeypatch):
+    """
+    Проверка пост-верификации в POST /api/v1/actions/wardrobe/equip и публикации в StateHub:
+    - честный ok=True при подтверждении всех зон в init_player (строковый формат URL как в живой игре);
+    - честный ok=False, если сервер игры вернул пустые tattooZones вместо надевания;
+    - корректная проверка комплекта одежды и смены хаты (camera);
+    - вызов StateHub.emit_change(['wardrobe', 'profile']).
+    """
+    from web.routes import _get_hub
+
+    client, _ = wardrobe_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    hub = _get_hub()
+    emit_spy = MagicMock(wraps=hub.emit_change)
+    monkeypatch.setattr(hub, "emit_change", emit_spy)
+
+    mock_player = MagicMock(spec=PlayerAPI)
+    mock_player.equip_tattoo_set = AsyncMock(return_value={"success": True})
+    mock_player.equip_clothing_set = AsyncMock(return_value={"success": True})
+    mock_player.select_camera = AsyncMock(return_value={
+        "success": True,
+        "roomCameraUrl": "assets/PrisonV3/RoomCameraUrl/2/1.png",
+    })
+
+    # 1. Успешная пост-верификация комплекта Биомеханики (живой формат init_player: строки URL)
+    mock_player.init_player = AsyncMock(return_value={
+        "tattooZones": {
+            "2": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png",
+            "3": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone3.png",
+        },
+        "clothingZones": {"1": "assets/PrisonV3/Clotch/Sizi/C/2.png"},
+        "clothingFrontIds": {"1": 48},
+        "roomCameraUrl": "assets/PrisonV3/RoomCameraUrl/1/1.png",
+    })
+    bot_context.player_api = mock_player
+
+    res = await client.post("/api/v1/actions/wardrobe/equip", json={
+        "kind": "tattoo_set",
+        "setName": 'Комплект "Биомеханика"',
+        "zonesMap": {
+            "2": {"tattooId": 128, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png"},
+            "3": {"tattooId": 129, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone3.png"},
+        },
+    }, headers=headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["applied_count"] == 2
+    assert body["expected_count"] == 2
+    assert body["failed_items"] == []
+    assert "Биомеханика" in body["message"]
+    assert emit_spy.called
+    assert emit_spy.call_args[0][1] == ["wardrobe", "profile"]
+
+    # 2. Ложный успех невозможен: если init_player вернул пустые tattooZones -> ok=False
+    mock_player.init_player = AsyncMock(return_value={
+        "tattooZones": {},
+        "clothingZones": {"1": "assets/PrisonV3/Clotch/Sizi/C/2.png"},
+        "roomCameraUrl": "assets/PrisonV3/RoomCameraUrl/1/1.png",
+    })
+    res_fail = await client.post("/api/v1/actions/wardrobe/equip", json={
+        "kind": "tattoo_set",
+        "setName": 'Комплект "Биомеханика"',
+        "zonesMap": {
+            "2": {"tattooId": 128, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png"},
+            "3": {"tattooId": 129, "imageUrl": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone3.png"},
+        },
+    }, headers=headers)
+    assert res_fail.status_code == 200
+    fail_body = res_fail.json()
+    assert fail_body["ok"] is False
+    assert fail_body["applied_count"] == 0
+    assert fail_body["expected_count"] == 2
+    assert set(fail_body["failed_items"]) == {"2", "3"}
+
+    # 3. Комплект одежды + сохранение прочих слотов
+    mock_player.init_player = AsyncMock(return_value={
+        "tattooZones": {"2": "assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png"},
+        "clothingZones": {"1": "assets/PrisonV3/Clotch/Sizi/C/2.png"},
+        "clothingFrontIds": {"1": 48},
+        "roomCameraUrl": "assets/PrisonV3/RoomCameraUrl/2/1.png",
+    })
+    res_cloth = await client.post("/api/v1/actions/wardrobe/equip", json={
+        "kind": "clothing_set",
+        "setName": "Сизый",
+        "zonesMap": {"1": {"clothingId": 48, "imageUrl": "assets/PrisonV3/Clotch/Sizi/C/2.png"}},
+    }, headers=headers)
+    assert res_cloth.status_code == 200
+    assert res_cloth.json()["ok"] is True
+    assert res_cloth.json()["applied_count"] == 1
+
+    # 4. Смена хаты (camera)
+    res_cam = await client.post("/api/v1/actions/wardrobe/equip", json={
+        "kind": "camera",
+        "id": 2,
+    }, headers=headers)
+    assert res_cam.status_code == 200
+    assert res_cam.json()["ok"] is True
+
+
+

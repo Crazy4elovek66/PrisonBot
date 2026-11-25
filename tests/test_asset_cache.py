@@ -133,12 +133,41 @@ async def test_prewarm_dry_run_and_disk_guard():
 def test_sw_js_rules_and_network_only():
     root = Path(__file__).resolve().parent.parent
     sw_text = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
-    assert "prisonbot-assets-v7" in sw_text
+    assert "prisonbot-assets-v11" in sw_text
     assert "/assets_cache/" in sw_text
     assert "/api/v1/assets/proxy" in sw_text
     assert "/static/assets/icons/" in sw_text
     assert "/static/assets/rooms/" in sw_text
     assert "live/stream" not in sw_text or "Network-Only" in sw_text
+
+
+def test_resource_hud_icons_match_reference_archive():
+    import hashlib
+
+    root = Path(__file__).resolve().parent.parent
+    icons_dir = root / "web" / "static" / "assets" / "icons"
+    ref_dir = root / "reference_archive" / "pro_prison_bot" / "assets"
+    mapping = {
+        "cigarettes.webp": "HUD_cigarettes.webp",
+        "rubles.webp": "HUD_rubles.webp",
+        "sugar.webp": "HUD_sugar.webp",
+        "soap.webp": "HUD_soap.webp",
+        "boss.webp": "PrisonV3_bosses_all_bosses.webp",
+        "stash.webp": "poker_hidesicon.webp",
+        "room_reward.webp": "PrisonV3_bosses_all_camerReward.webp",
+        "complect.webp": "PrisonV3_bosses_all_complectReward.webp",
+        "podogrev.webp": "podogrev_pagePodogrev.webp",
+        "authority.webp": "Avtoritet.webp",
+    }
+    for dst_name, ref_name in mapping.items():
+        dst_path = icons_dir / dst_name
+        assert dst_path.exists(), f"Missing icon: {dst_path}"
+        data = dst_path.read_bytes()
+        assert len(data) > 0
+        assert data[:4] == b"RIFF" and data[8:12] == b"WEBP", f"Invalid WebP header: {dst_path}"
+        ref_path = ref_dir / ref_name
+        if ref_path.exists():
+            assert hashlib.sha256(data).hexdigest() == hashlib.sha256(ref_path.read_bytes()).hexdigest()
 
 
 def test_python_and_js_sha256_hash_parity():

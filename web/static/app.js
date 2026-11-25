@@ -4,25 +4,26 @@
  */
 
 const API_BASE = "/api/v1";
+const ASSET_VERSION = "20261125_16";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
-  rubles: "/static/assets/icons/rubles.webp",
-  soap: "/static/assets/icons/soap.webp",
-  sugar: "/static/assets/icons/sugar.webp",
-  cigarettes: "/static/assets/icons/cigarettes.webp",
+  rubles: `/static/assets/icons/rubles.webp?v=${ASSET_VERSION}`,
+  soap: `/static/assets/icons/soap.webp?v=${ASSET_VERSION}`,
+  sugar: `/static/assets/icons/sugar.webp?v=${ASSET_VERSION}`,
+  cigarettes: `/static/assets/icons/cigarettes.webp?v=${ASSET_VERSION}`,
   paper: "/static/assets/icons/paper.webp?v=2",
   knife: "/static/assets/icons/knife.webp",
   poison: "/static/assets/icons/poison.webp",
   gunshot: "/static/assets/icons/gunshot.webp",
   energy: "/static/assets/icons/energy.webp",
-  authority: "/static/assets/icons/authority.webp",
+  authority: `/static/assets/icons/authority.webp?v=${ASSET_VERSION}`,
   respect: "/static/assets/icons/respect.webp",
   rating: "/static/assets/icons/respect.webp",
   biceps: "/static/assets/icons/biceps.webp?v=2",
   keys: "/static/assets/icons/keys.webp",
   talents: "/static/assets/icons/talents.webp?v=2",
-  boss: "/static/assets/icons/boss.webp",
+  boss: `/static/assets/icons/boss.webp?v=${ASSET_VERSION}`,
   vote: "/static/assets/icons/vote.webp",
   punchChest: "/static/assets/icons/punchChest.webp",
   kickBalls: "/static/assets/icons/kickBalls.webp",
@@ -30,10 +31,11 @@ const GAME_ICONS = {
   kneeEar: "/static/assets/icons/kneeEar.webp",
   kolsik: "/static/assets/icons/kolsik.webp",
   baul: "/static/assets/icons/baul.webp",
-  stash: "/static/assets/icons/stash.webp",
-  stashed_gear: "/static/assets/icons/stash.webp",
-  complect: "/static/assets/icons/complect.webp",
-  room_reward: "/static/assets/icons/room_reward.webp",
+  stash: `/static/assets/icons/stash.webp?v=${ASSET_VERSION}`,
+  stashed_gear: `/static/assets/icons/stash.webp?v=${ASSET_VERSION}`,
+  complect: `/static/assets/icons/complect.webp?v=${ASSET_VERSION}`,
+  room_reward: `/static/assets/icons/room_reward.webp?v=${ASSET_VERSION}`,
+  podogrev: `/static/assets/icons/podogrev.webp?v=${ASSET_VERSION}`,
   combo: "/static/assets/icons/combo.webp",
 };
 
@@ -85,6 +87,16 @@ function resolveAppAssetUrl(rawUrl) {
     cleanPath = cleanPath.replace(/^prison\/?/i, "");
   }
   if (!cleanPath) return "";
+  if (/(?:^|\/)assets\/icons\/[^?#]+\.(?:webp|png|ico|svg)(?:$|\?|#)/i.test(cleanPath) && !/assets\/proxy/i.test(cleanPath)) {
+    const ver = (typeof ASSET_VERSION !== "undefined" ? ASSET_VERSION : "20261125_16");
+    const [pathAndQuery, hashPart] = cleanPath.split("#");
+    const qIdx = pathAndQuery.indexOf("?");
+    const pathOnly = qIdx >= 0 ? pathAndQuery.slice(0, qIdx) : pathAndQuery;
+    const rawQuery = qIdx >= 0 ? pathAndQuery.slice(qIdx + 1) : "";
+    const params = new URLSearchParams(rawQuery);
+    params.set("v", ver);
+    cleanPath = `${pathOnly}?${params.toString()}${hashPart ? "#" + hashPart : ""}`;
+  }
   const base = getAppBasePrefix();
   return `${base}/${cleanPath}`;
 }
@@ -96,30 +108,31 @@ function resolveAssetUrl(rawUrl) {
 function gameIcon(key, alt = "", cls = "game-icon") {
   const src = GAME_ICONS[key];
   if (!src) return alt ? `<span>${alt}</span>` : "";
-  return `<img src="${src}" class="${cls}" alt="${alt}" onerror="this.onerror=null;this.replaceWith('${alt || ''}')">`;
+  const resolved = resolveAppAssetUrl(src);
+  return `<img src="${resolved}" class="${cls}" alt="${alt}" onerror="this.onerror=null;this.replaceWith('${alt || ''}')">`;
 }
 
 // Unified Resource Icon Map (Делюги -> Список предприятий & Центр уведомлений)
 const RESOURCE_ICON_MAP = {
-  authority: { src: "/static/assets/icons/authority.webp", label: "Авторитет" },
+  authority: { src: `/static/assets/icons/authority.webp?v=${ASSET_VERSION}`, label: "Авторитет" },
   respect: { src: "/static/assets/icons/respect.webp", label: "Уважение" },
   rating: { src: "/static/assets/icons/respect.webp", label: "Уважение" },
-  cigarettes: { src: "/static/assets/icons/cigarettes.webp", label: "Папиросы" },
-  cigs: { src: "/static/assets/icons/cigarettes.webp", label: "Папиросы" },
-  rubles: { src: "/static/assets/icons/rubles.webp", label: "Рубли" },
-  coins: { src: "/static/assets/icons/rubles.webp", label: "Рубли" },
-  sugar: { src: "/static/assets/icons/sugar.webp", label: "Сахар" },
+  cigarettes: { src: `/static/assets/icons/cigarettes.webp?v=${ASSET_VERSION}`, label: "Папиросы" },
+  cigs: { src: `/static/assets/icons/cigarettes.webp?v=${ASSET_VERSION}`, label: "Папиросы" },
+  rubles: { src: `/static/assets/icons/rubles.webp?v=${ASSET_VERSION}`, label: "Рубли" },
+  coins: { src: `/static/assets/icons/rubles.webp?v=${ASSET_VERSION}`, label: "Рубли" },
+  sugar: { src: `/static/assets/icons/sugar.webp?v=${ASSET_VERSION}`, label: "Сахар" },
   paper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
   toiletpaper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
   toilet_paper: { src: "/static/assets/icons/paper.webp", label: "Туалетная бумага" },
-  soap: { src: "/static/assets/icons/soap.webp", label: "Мыло" },
+  soap: { src: `/static/assets/icons/soap.webp?v=${ASSET_VERSION}`, label: "Мыло" },
   energy: { src: "/static/assets/icons/energy.webp", label: "Энергия" },
   biceps: { src: "/static/assets/icons/biceps.webp?v=2", label: "Бицепс" },
   talents: { src: "/static/assets/icons/talents.webp?v=2", label: "Таланты" },
   intellect: { src: "/static/assets/icons/talents.webp?v=2", label: "Интеллект" },
   keys: { src: "/static/assets/icons/keys.webp", label: "Ключи" },
-  stash: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
-  stashes: { src: "/static/assets/icons/stash.webp", label: "Нычка" },
+  stash: { src: `/static/assets/icons/stash.webp?v=${ASSET_VERSION}`, label: "Нычка" },
+  stashes: { src: `/static/assets/icons/stash.webp?v=${ASSET_VERSION}`, label: "Нычка" },
   signet: { src: "/static/assets/icons/signet.webp", label: "Перстень" },
   ore_signet: { src: "/static/assets/icons/ore_signet.webp", label: "Перстень рудный" },
   knife: { src: "/static/assets/icons/knife.webp", label: "Финка" },
@@ -140,7 +153,8 @@ function renderResourceIcon(key, cls = "res-icon", fallbackLabel = "") {
   if (!meta.src) {
     return `<span class="res-fallback-label" title="${meta.label}">${meta.label}</span>`;
   }
-  return `<img src="${meta.src}" class="${cls}" title="${meta.label}" alt="${meta.label}" onerror="this.onerror=null;this.replaceWith('${meta.label}')">`;
+  const resolved = resolveAppAssetUrl(meta.src);
+  return `<img src="${resolved}" class="${cls}" title="${meta.label}" alt="${meta.label}" onerror="this.onerror=null;this.replaceWith('${meta.label}')">`;
 }
 
 function renderResourceBadge(reward) {
@@ -916,7 +930,19 @@ function renderBossData(data) {
     }
     if (manualAttackCard) manualAttackCard.style.display = "block";
 
-    setTextIfChanged(document.getElementById("boss-title"), `⚔️ ${session.title || session.bossName || 'Босс #' + session.bossId}`);
+    const bossTitleEl = document.getElementById("boss-title");
+    const bossTitleTextEl = document.getElementById("boss-title-text");
+    const bossName = String(session.title || session.bossName || ("Босс #" + session.bossId));
+    if (bossTitleTextEl) {
+      setTextIfChanged(bossTitleTextEl, bossName);
+    } else if (bossTitleEl) {
+      let titleSpan = bossTitleEl.querySelector("#boss-title-text, .boss-title-text");
+      if (!titleSpan) {
+        bossTitleEl.innerHTML = `<img class="boss-battle-icon" src="${resolveAppAssetUrl("assets/icons/boss.webp")}" alt="Босс"> <span class="boss-title-text"></span>`;
+        titleSpan = bossTitleEl.querySelector(".boss-title-text");
+      }
+      if (titleSpan) setTextIfChanged(titleSpan, bossName);
+    }
     const bossModes = {
       pacansky: "Пацанский",
       blotnoy: "Блатной",
@@ -944,6 +970,8 @@ function renderBossData(data) {
     if (activeCard) activeCard.style.display = "none";
     if (idleTalentsCard) idleTalentsCard.style.display = "block";
     window._bossBattleActive = false;
+    const bossTitleTextEl = document.getElementById("boss-title-text");
+    if (bossTitleTextEl) setTextIfChanged(bossTitleTextEl, "Поиск активного рейда...");
     if (manualAttackCard && slotTop && manualAttackCard.parentElement !== slotTop) {
       slotTop.appendChild(manualAttackCard);
     }
@@ -1413,7 +1441,10 @@ function updateBusinessCountdown() {
     if (card) card.classList.remove("business-cooldown-locked");
     if (collectBtn) {
       collectBtn.disabled = false;
-      setTextIfChanged(collectBtn, "💰 Собрать прибыль сейчас");
+      const collectHtml = `${gameIcon("rubles", "Рубли", "game-icon-sm")} Собрать прибыль сейчас`;
+      if (collectBtn.innerHTML !== collectHtml) {
+        collectBtn.innerHTML = collectHtml;
+      }
     }
   } else {
     const cdStr = formatCountdown(diff);
@@ -2485,7 +2516,7 @@ function renderBaulsData(data) {
         pendingRewardsEl.dataset.emptySig = "";
         pendingRewardsEl.dataset.sig = nextSig;
         pendingRewardsEl.innerHTML = rewards.map(r => {
-          const iconSrc = r.imageUrl || (r.iconKey ? `/static/assets/icons/${r.iconKey}.webp` : '/static/assets/icons/rubles.webp');
+          const iconSrc = resolveAppAssetUrl(r.imageUrl || (r.iconKey ? `/static/assets/icons/${r.iconKey}.webp` : "/static/assets/icons/rubles.webp"));
           const lbl = r.label || r.title || r.type || 'Награда';
           const amt = r.amount !== undefined ? r.amount : (r.count || 0);
           return `
@@ -3402,27 +3433,46 @@ function renderWardrobeSets() {
     });
 
     // Equip Set button
-    card.querySelector(".btn-equip-set")?.addEventListener("click", async () => {
+    card.querySelector(".btn-equip-set")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      const isTattoos = wardrobeSubtab === "tattoos";
+      const kind = isTattoos ? "tattoo_set" : "clothing_set";
+      const idKey = isTattoos ? "tattooId" : "clothingId";
       const zonesMap = {};
       ownedPartsList.forEach(p => {
         zonesMap[String(p.zone)] = {
-          id: p.id,
-          imageUrl: p.imageUrl,
+          [idKey]: p.id,
+          imageUrl: p.rawImageUrl || p.imageUrl,
         };
       });
+      if (Object.keys(zonesMap).length === 0) {
+        showToast("Нет собранных частей для надевания", "error");
+        return;
+      }
+      const prevText = btn ? btn.textContent : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Применяем...";
+      }
       try {
-        const kind = wardrobeSubtab === "tattoos" ? "tattoo_set" : "clothing_set";
         const res = await apiFetch("/actions/wardrobe/equip", {
           method: "POST",
-          body: JSON.stringify({ kind, zonesMap }),
+          body: JSON.stringify({ kind, setName: s.setName, zonesMap }),
         });
-        if (res.success) {
-          showToast(`Сет «${s.setName}» надет!`, "success");
-          loadWardrobe();
-          loadProfile();
+        if (res && res.ok !== false && res.success !== false) {
+          showToast(res.message || `Сет «${s.setName}» надет!`, "success");
+        } else {
+          showToast(res?.message || `Не удалось надеть сет «${s.setName}»`, "error");
         }
+        await loadWardrobe();
+        loadProfile();
       } catch (e) {
         showToast(`Ошибка: ${e.message}`, "error");
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
       }
     });
 
@@ -3473,7 +3523,7 @@ function renderLazySetParts(partsCont, s) {
                 Снять
               </button>
             ` : (p.owned ? `
-              <button class="btn btn-primary btn-sm btn-part-action" data-action="equip" data-id="${p.id}" data-zone="${p.zone}" data-img="${p.imageUrl || ''}" style="width: 100%; font-size: 10px; padding: 2px 4px;">
+              <button class="btn btn-primary btn-sm btn-part-action" data-action="equip" data-id="${p.id}" data-zone="${p.zone}" data-img="${p.rawImageUrl || p.imageUrl || ''}" style="width: 100%; font-size: 10px; padding: 2px 4px;">
                 Надеть
               </button>
             ` : (p.canBuy ? `
@@ -3503,11 +3553,13 @@ function renderLazySetParts(partsCont, s) {
           method: "POST",
           body: JSON.stringify({ kind, action, id: parseInt(itemId), zone: parseInt(zone), imageUrl }),
         });
-        if (res.success) {
-          showToast(action === "equip" ? "Предмет надет" : "Предмет снят", "success");
-          loadWardrobe();
-          loadProfile();
+        if (res && res.ok !== false && res.success !== false) {
+          showToast(res.message || (action === "equip" ? "Предмет надет" : "Предмет снят"), "success");
+        } else {
+          showToast(res?.message || "Не удалось применить предмет", "error");
         }
+        await loadWardrobe();
+        loadProfile();
       } catch (err) {
         showToast(`Ошибка: ${err.message}`, "error");
       }
@@ -4930,6 +4982,7 @@ function openFittingRoom(previewData = null) {
       const bonusHtml = formatFittingBonusesHtml(previewData.item.bonuses);
       descEl.innerHTML = `Зона: ${previewData.item.zone} ${bonusHtml ? `| ${bonusHtml}` : `| ${previewData.item.description || 'Часть сета'}`}`;
       if (applyBtn) {
+        applyBtn.disabled = false;
         if (previewData.item.owned) {
           applyBtn.style.display = "block";
           applyBtn.textContent = "Надеть в игре";
@@ -4943,10 +4996,20 @@ function openFittingRoom(previewData = null) {
     } else if (previewData.type === "set") {
       badgeEl.textContent = `Примерка сета: ${previewData.set.setName}`;
       const bonusHtml = formatFittingBonusesHtml(previewData.set.maxBonus || previewData.set.bonuses);
-      descEl.innerHTML = `Всего частей: ${previewData.set.totalParts} | Собрано: ${previewData.set.ownedParts}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
+      const ownedCount = (previewData.set.parts || []).filter(p => p.owned).length;
+      const totalCount = previewData.set.totalParts || (previewData.set.parts || []).length;
+      descEl.innerHTML = `Всего частей: ${totalCount} | Собрано: ${ownedCount}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
       if (applyBtn) {
         applyBtn.style.display = "block";
-        applyBtn.textContent = "Надеть сет в игре";
+        if (ownedCount === 0) {
+          applyBtn.disabled = true;
+          applyBtn.textContent = "Нет собранных частей";
+        } else {
+          applyBtn.disabled = false;
+          applyBtn.textContent = ownedCount < totalCount
+            ? `Надеть сет в игре (${ownedCount}/${totalCount})`
+            : "Надеть сет в игре";
+        }
       }
     } else if (previewData.type === "camera") {
       badgeEl.textContent = `Примерка хаты: ${previewData.camera.name}`;
@@ -4954,6 +5017,7 @@ function openFittingRoom(previewData = null) {
       const statusTxt = previewData.camera.owned ? "В наличии" : `Цена: ${previewData.camera.price} ${previewData.camera.currency}`;
       descEl.innerHTML = `${statusTxt}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
       if (applyBtn) {
+        applyBtn.disabled = false;
         applyBtn.style.display = "block";
         applyBtn.textContent = previewData.camera.owned ? "Выбрать хату" : "Купить хату";
       }
@@ -5287,58 +5351,98 @@ document.getElementById("modal-fitting-room")?.addEventListener("click", (e) => 
 document.getElementById("btn-reset-fitting")?.addEventListener("click", () => {
   openFittingRoom(null);
 });
-document.getElementById("btn-apply-fitting")?.addEventListener("click", async () => {
+document.getElementById("btn-apply-fitting")?.addEventListener("click", async (ev) => {
   if (!fittingRoomPreview) return;
+  const applyBtn = ev.currentTarget;
+  if (applyBtn && applyBtn.disabled) return;
+  const prevText = applyBtn ? applyBtn.textContent : "";
+  if (applyBtn) {
+    applyBtn.disabled = true;
+    applyBtn.textContent = "Применяем...";
+  }
   try {
+    let opSuccess = true;
     if (fittingRoomPreview.type === "item") {
       const itm = fittingRoomPreview.item;
       const kind = fittingRoomPreview.kind === "tattoos" ? "tattoo" : "clothing";
       if (itm.owned) {
-        await apiFetch("/actions/wardrobe/equip", {
+        const res = await apiFetch("/actions/wardrobe/equip", {
           method: "POST",
-          body: JSON.stringify({ kind, action: "equip", id: itm.id, zone: itm.zone, imageUrl: itm.imageUrl }),
+          body: JSON.stringify({
+            kind,
+            action: "equip",
+            id: itm.id,
+            zone: itm.zone,
+            imageUrl: itm.rawImageUrl || itm.imageUrl,
+          }),
         });
-        showToast("Предмет успешно надет!", "success");
+        opSuccess = Boolean(res && res.ok !== false && res.success !== false);
+        showToast(res?.message || (opSuccess ? "Предмет успешно надет!" : "Не удалось надеть предмет"), opSuccess ? "success" : "error");
       } else {
-        await apiFetch("/actions/wardrobe/buy", {
+        const res = await apiFetch("/actions/wardrobe/buy", {
           method: "POST",
           body: JSON.stringify({ kind, id: itm.id }),
         });
-        showToast("Предмет успешно куплен!", "success");
+        opSuccess = Boolean(res && res.ok !== false && res.success !== false);
+        showToast(opSuccess ? "Предмет успешно куплен!" : (res?.message || "Ошибка покупки"), opSuccess ? "success" : "error");
       }
     } else if (fittingRoomPreview.type === "set") {
       const s = fittingRoomPreview.set;
-      const kind = fittingRoomPreview.kind === "tattoos" ? "tattoo_set" : "clothing_set";
+      const isTattoos = fittingRoomPreview.kind === "tattoos";
+      const kind = isTattoos ? "tattoo_set" : "clothing_set";
+      const idKey = isTattoos ? "tattooId" : "clothingId";
       const zonesMap = {};
       (s.parts || []).filter(p => p.owned).forEach(p => {
-        zonesMap[String(p.zone)] = { id: p.id, imageUrl: p.imageUrl };
+        zonesMap[String(p.zone)] = {
+          [idKey]: p.id,
+          imageUrl: p.rawImageUrl || p.imageUrl,
+        };
       });
-      await apiFetch("/actions/wardrobe/equip", {
+      if (Object.keys(zonesMap).length === 0) {
+        showToast("В сете нет собранных частей для надевания", "error");
+        return;
+      }
+      const res = await apiFetch("/actions/wardrobe/equip", {
         method: "POST",
-        body: JSON.stringify({ kind, zonesMap }),
+        body: JSON.stringify({ kind, setName: s.setName, zonesMap }),
       });
-      showToast(`Сет «${s.setName}» надет!`, "success");
+      opSuccess = Boolean(res && res.ok !== false && res.success !== false);
+      showToast(
+        res?.message || (opSuccess ? `Сет «${s.setName}» надет!` : `Не удалось надеть сет «${s.setName}»`),
+        opSuccess ? "success" : "error"
+      );
     } else if (fittingRoomPreview.type === "camera") {
       const cam = fittingRoomPreview.camera;
       if (cam.owned) {
-        await apiFetch("/actions/wardrobe/equip", {
+        const res = await apiFetch("/actions/wardrobe/equip", {
           method: "POST",
           body: JSON.stringify({ kind: "camera", id: cam.id }),
         });
-        showToast(`Хата «${cam.name}» выбрана!`, "success");
+        opSuccess = Boolean(res && res.ok !== false && res.success !== false);
+        showToast(res?.message || (opSuccess ? `Хата «${cam.name}» выбрана!` : "Не удалось выбрать хату"), opSuccess ? "success" : "error");
       } else {
-        await apiFetch("/actions/wardrobe/buy", {
+        const res = await apiFetch("/actions/wardrobe/buy", {
           method: "POST",
           body: JSON.stringify({ kind: "camera", id: cam.id }),
         });
-        showToast(`Хата «${cam.name}» куплена!`, "success");
+        opSuccess = Boolean(res && res.ok !== false && res.success !== false);
+        showToast(opSuccess ? `Хата «${cam.name}» куплена!` : (res?.message || "Ошибка покупки хаты"), opSuccess ? "success" : "error");
       }
     }
-    closeFittingRoom();
-    loadWardrobe();
+    await loadWardrobe();
     loadProfile();
+    if (opSuccess) {
+      closeFittingRoom();
+    } else {
+      drawFittingRoomStage(fittingRoomRenderToken);
+    }
   } catch (e) {
     showToast(`Ошибка: ${e.message}`, "error");
+  } finally {
+    if (applyBtn) {
+      applyBtn.disabled = false;
+      applyBtn.textContent = prevText;
+    }
   }
 });
 
@@ -5840,14 +5944,14 @@ function renderBossDropHtml(b, mode) {
   }
 
   const curIcons = {
-    authority: "/static/assets/icons/authority.webp",
-    cigarettes: "/static/assets/icons/cigarettes.webp",
-    sugar: "/static/assets/icons/sugar.webp",
+    authority: `/static/assets/icons/authority.webp?v=${ASSET_VERSION}`,
+    cigarettes: `/static/assets/icons/cigarettes.webp?v=${ASSET_VERSION}`,
+    sugar: `/static/assets/icons/sugar.webp?v=${ASSET_VERSION}`,
     keys: "/static/assets/icons/keys.webp",
-    rubles: "/static/assets/icons/rubles.webp",
+    rubles: `/static/assets/icons/rubles.webp?v=${ASSET_VERSION}`,
     toiletPaper: "/static/assets/icons/paper.webp",
     paper: "/static/assets/icons/paper.webp?v=2",
-    soap: "/static/assets/icons/soap.webp",
+    soap: `/static/assets/icons/soap.webp?v=${ASSET_VERSION}`,
   };
 
   let currenciesHtml = "";
@@ -5855,7 +5959,7 @@ function renderBossDropHtml(b, mode) {
     currenciesHtml = `
       <div class="boss-drop-currencies">
         ${currencies.map(c => {
-      const icon = curIcons[c.currency] || "/static/assets/icons/rubles.webp";
+      const icon = resolveAppAssetUrl(curIcons[c.currency] || "/static/assets/icons/rubles.webp");
       return `
             <span class="loot-currency" title="${c.label || c.currency}">
               <img src="${icon}" alt="${c.label || c.currency}" onerror="this.style.display='none'">
@@ -5872,7 +5976,11 @@ function renderBossDropHtml(b, mode) {
     itemsHtml = `
       <div class="boss-drop-items">
         ${items.map((it, idx) => {
-      const fallbackIcon = it.kind === "stash" ? "/static/assets/icons/stash.webp" : (it.kind === "camera" ? "/static/assets/icons/punchChest.webp" : "/static/assets/icons/kolsik.webp");
+      const fallbackIcon = resolveAppAssetUrl(
+        it.kind === "stash"
+          ? "/static/assets/icons/stash.webp"
+          : (it.kind === "camera" ? "/static/assets/icons/room_reward.webp" : "/static/assets/icons/complect.webp")
+      );
       const thumb = it.previewUrl ? proxyAssetUrl(it.previewUrl) : fallbackIcon;
       const isOwned = Boolean(it.owned);
       const hasCount = it.totalCount && it.totalCount > 1;
@@ -6488,7 +6596,7 @@ function renderBossPresets() {
           <span style="font-weight: 700; font-size: 13px; color: #fff;">${preset.name || 'Без названия'}</span>
           <span class="preset-time-badge">⏰ ${preset.schedule_time_msk || '09:00'} МСК</span>
           ${preset.daily_enabled ? `<span class="badge" style="background: rgba(52, 211, 153, 0.15); color: #34d399; font-size: 10px;">Ежедневно</span>` : '<span class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--muted-foreground); font-size: 10px;">По вызову</span>'}
-          ${isRunning ? `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; font-size: 10px; font-weight: 700;">⚔️ В процессе (${displayStep}/${totalSteps})</span>` : ''}
+          ${isRunning ? `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; font-size: 10px; font-weight: 700;">${gameIcon("boss", "Босс", "boss-battle-icon")} В процессе (${displayStep}/${totalSteps})</span>` : ''}
           ${preset.last_status ? `<span style="font-size: 10px; color: var(--muted-foreground); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${preset.last_status}">${preset.last_status}</span>` : ''}
         </div>
         <div style="display: flex; gap: 6px; align-items: center;">

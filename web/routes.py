@@ -3252,8 +3252,14 @@ def parse_set_description(desc: str, has_item_bonuses: bool = False) -> Optional
     return None
 
 
-def _build_wardrobe_sets(items: List[Dict[str, Any]], owned_ids: set, equipped_zones: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_wardrobe_sets(
+    items: List[Dict[str, Any]],
+    owned_ids: set,
+    equipped_zones: Dict[str, Any],
+    clothing_front_ids: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     sets_map: Dict[str, Dict[str, Any]] = {}
+    front_ids_map = clothing_front_ids if isinstance(clothing_front_ids, dict) else {}
     for itm in items:
         sname = itm.get("setName") or itm.get("name") or "Без сета"
         if sname not in sets_map:
@@ -3271,14 +3277,27 @@ def _build_wardrobe_sets(items: List[Dict[str, Any]], owned_ids: set, equipped_z
         iid = itm.get("id")
         is_owned = iid in owned_ids
         zone = itm.get("zone") or 1
+        raw_item_url = (itm.get("imageUrl") or "").strip()
         zone_info = equipped_zones.get(str(zone)) or equipped_zones.get(zone) or {}
+        eq_url = ""
         if isinstance(zone_info, dict):
             eq_id = zone_info.get("tattooId") or zone_info.get("clothingId")
+            eq_url = str(zone_info.get("imageUrl") or zone_info.get("url") or "").strip()
         elif isinstance(zone_info, int):
             eq_id = zone_info
+        elif isinstance(zone_info, str):
+            eq_id = front_ids_map.get(str(zone)) or front_ids_map.get(zone)
+            eq_url = zone_info.strip()
         else:
             eq_id = None
-        is_equipped = bool(eq_id and eq_id == iid)
+        is_equipped = bool(
+            (eq_id and eq_id == iid)
+            or (
+                eq_url
+                and raw_item_url
+                and eq_url.lstrip("/") == raw_item_url.lstrip("/")
+            )
+        )
 
         price = itm.get("price") or 0
         currency = itm.get("currency") or ""
@@ -3301,7 +3320,8 @@ def _build_wardrobe_sets(items: List[Dict[str, Any]], owned_ids: set, equipped_z
             "price": price,
             "currency": currency,
             "rarity": itm.get("rarity") or "B2",
-            "imageUrl": _proxy_asset_url(itm.get("imageUrl") or ""),
+            "imageUrl": _proxy_asset_url(raw_item_url),
+            "rawImageUrl": raw_item_url,
             "cardPreviewUrl": _proxy_asset_url(itm.get("cardPreviewUrl") or ""),
             "bonuses": itm.get("combat_stats_bonus") or {},
             "description": itm.get("description") or "",
@@ -3477,8 +3497,8 @@ async def get_wardrobe_overview() -> Dict[str, Any]:
             reg_tattoo_sets = _build_wardrobe_sets(reg_tattoos, owned_tattoos, tattoo_zones)
             blind_tattoo_sets = _build_wardrobe_sets(blind_tattoos, owned_tattoos, tattoo_zones)
 
-            reg_clothing_sets = _build_wardrobe_sets(reg_clothing, owned_clothing, clothing_zones)
-            blind_clothing_sets = _build_wardrobe_sets(blind_clothing, owned_clothing, clothing_zones)
+            reg_clothing_sets = _build_wardrobe_sets(reg_clothing, owned_clothing, clothing_zones, clothing_front_ids)
+            blind_clothing_sets = _build_wardrobe_sets(blind_clothing, owned_clothing, clothing_zones, clothing_front_ids)
 
             summ_reg_tattoos = _calc_wardrobe_summary(reg_tattoo_sets)
             summ_reg_clothing = _calc_wardrobe_summary(reg_clothing_sets)
@@ -3540,12 +3560,45 @@ async def get_wardrobe_overview() -> Dict[str, Any]:
     return await _flight_cache.get_or_set("wardrobe_overview", 30.0, _compute_wardrobe_overview)
 
 
+def _zone_matches_expected(
+    zone_val: Any,
+    expected_id: int,
+    expected_url: str,
+    front_id: Any = None,
+) -> bool:
+    """Проверяет соответствие надетого слота из init_player целевому предмету."""
+    from client.api.player import PlayerAPI
+
+    clean_expected = PlayerAPI._unwrap_game_asset_url(expected_url).lstrip("/")
+    if isinstance(zone_val, dict):
+        actual_id = zone_val.get("tattooId") or zone_val.get("clothingId") or zone_val.get("id") or 0
+        actual_url = PlayerAPI._unwrap_game_asset_url(str(zone_val.get("imageUrl") or zone_val.get("url") or "")).lstrip("/")
+        if expected_id > 0 and actual_id and int(actual_id) == expected_id:
+            return True
+        if clean_expected and actual_url and actual_url == clean_expected:
+            return True
+        return False
+    if isinstance(zone_val, int):
+        return expected_id > 0 and zone_val == expected_id
+    if isinstance(zone_val, str):
+        actual_url = PlayerAPI._unwrap_game_asset_url(zone_val).lstrip("/")
+        if front_id is not None and expected_id > 0:
+            try:
+                if int(front_id) == expected_id:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        if clean_expected and actual_url and actual_url == clean_expected:
+            return True
+    return False
+
+
 @api_router.post("/actions/wardrobe/equip")
 async def action_wardrobe_equip(
     payload: Dict[str, Any] = Body(...),
     account_id: int = 1,
 ) -> Dict[str, Any]:
-    """Надевание / снятие отдельного предмета, сета или выбор хаты."""
+    """Надевание / снятие отдельного предмета, сета или выбор хаты с пост-верификацией."""
     player_api = bot_context.player_api
     if not player_api:
         raise HTTPException(status_code=503, detail="PlayerAPI not available")
@@ -3553,38 +3606,230 @@ async def action_wardrobe_equip(
     kind = payload.get("kind")
     action = payload.get("action", "equip")
     item_id = payload.get("id")
+    set_name = payload.get("setName") or payload.get("set_name") or ""
 
     if not kind:
         raise HTTPException(status_code=400, detail="kind обязателен ('tattoo', 'clothing', 'tattoo_set', 'clothing_set', 'camera')")
 
+    expected_zones: Dict[str, Dict[str, Any]] = {}
+    expected_count = 1
     try:
         if kind == "tattoo":
             zone = int(payload.get("zone", 1))
-            image_url = payload.get("imageUrl", "")
+            image_url = payload.get("rawImageUrl") or payload.get("imageUrl", "")
             if action == "unequip":
                 res = await player_api.unequip_tattoo(zone)
             else:
-                res = await player_api.equip_tattoo(zone, int(item_id or 0), image_url)
+                tid = int(item_id or 0)
+                expected_zones[str(zone)] = {"id": tid, "imageUrl": image_url}
+                res = await player_api.equip_tattoo(zone, tid, image_url)
         elif kind == "tattoo_set":
             zones_map = payload.get("zonesMap", {})
+            if not isinstance(zones_map, dict) or not zones_map:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "applied_count": 0,
+                    "expected_count": 0,
+                    "failed_items": [],
+                    "message": "Нет собранных частей комплекта татуировок для надевания",
+                }
+            for zk, zv in zones_map.items():
+                if isinstance(zv, dict):
+                    zid = int(zv.get("tattooId") or zv.get("id") or zv.get("item_id") or 0)
+                    zurl = str(zv.get("rawImageUrl") or zv.get("imageUrl") or "")
+                    if zid > 0:
+                        expected_zones[str(zk)] = {"id": zid, "imageUrl": zurl}
+            expected_count = len(expected_zones)
+            if expected_count == 0:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "applied_count": 0,
+                    "expected_count": 0,
+                    "failed_items": [],
+                    "message": "В комплекте нет валидных наколок для надевания",
+                }
             res = await player_api.equip_tattoo_set(zones_map)
         elif kind == "clothing":
             zone = int(payload.get("zone", 1))
-            image_url = payload.get("imageUrl", "")
+            image_url = payload.get("rawImageUrl") or payload.get("imageUrl", "")
             if action == "unequip":
                 res = await player_api.unequip_clothing(zone)
             else:
-                res = await player_api.equip_clothing(zone, int(item_id or 0), image_url)
+                cid = int(item_id or 0)
+                expected_zones[str(zone)] = {"id": cid, "imageUrl": image_url}
+                res = await player_api.equip_clothing(zone, cid, image_url)
         elif kind == "clothing_set":
             zones_map = payload.get("zonesMap", {})
+            if not isinstance(zones_map, dict) or not zones_map:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "applied_count": 0,
+                    "expected_count": 0,
+                    "failed_items": [],
+                    "message": "Нет собранных вещей комплекта одежды для надевания",
+                }
+            for zk, zv in zones_map.items():
+                if isinstance(zv, dict):
+                    zid = int(zv.get("clothingId") or zv.get("id") or zv.get("item_id") or 0)
+                    zurl = str(zv.get("rawImageUrl") or zv.get("imageUrl") or "")
+                    if zid > 0:
+                        expected_zones[str(zk)] = {"id": zid, "imageUrl": zurl}
+            expected_count = len(expected_zones)
+            if expected_count == 0:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "applied_count": 0,
+                    "expected_count": 0,
+                    "failed_items": [],
+                    "message": "В комплекте нет валидных вещей для надевания",
+                }
             res = await player_api.equip_clothing_set(zones_map)
         elif kind == "camera":
             res = await player_api.select_camera(int(item_id))
         else:
             raise HTTPException(status_code=400, detail=f"Неизвестный kind: {kind}")
 
-        await _log_action(account_id, f"wardrobe_{action}_{kind}", f"/api/{kind}/{action}", 200, True, res)
-        return {"success": True, "result": res}
+        if isinstance(res, dict) and res.get("success") is False:
+            err_msg = res.get("message") or res.get("error") or "Сервер игры отклонил изменение гардероба"
+            await _log_action(account_id, f"wardrobe_{action}_{kind}", f"/api/{kind}/{action}", 200, False, res)
+            return {
+                "ok": False,
+                "success": False,
+                "applied_count": 0,
+                "expected_count": expected_count,
+                "failed_items": list(expected_zones.keys()),
+                "message": err_msg,
+                "result": res,
+            }
+
+        # Пост-верификация реального состояния на сервере игры
+        verify_init: Optional[Dict[str, Any]] = None
+        try:
+            cand = await player_api.init_player()
+            if isinstance(cand, dict) and (
+                "tattooZones" in cand or "clothingZones" in cand or "roomCameraUrl" in cand
+            ):
+                verify_init = cand
+        except Exception as ver_err:
+            logger.debug("Wardrobe post-verify init_player failed: %s", ver_err)
+
+        applied_count = expected_count
+        failed_items: List[str] = []
+        equipped_snapshot: Dict[str, Any] = {}
+        ok = True
+        msg = "Гардероб обновлён"
+
+        if verify_init is not None:
+            _last_live_player_data[account_id] = verify_init
+            t_zones = verify_init.get("tattooZones") or {}
+            c_zones = verify_init.get("clothingZones") or {}
+            c_front = verify_init.get("clothingFrontIds") or {}
+            room_url = verify_init.get("roomCameraUrl") or ""
+            equipped_snapshot = {
+                "tattooZones": t_zones,
+                "clothingZones": c_zones,
+                "clothingFrontIds": c_front,
+                "roomCameraUrl": room_url,
+            }
+
+            if kind in ("tattoo", "tattoo_set"):
+                if action == "unequip":
+                    z_str = str(int(payload.get("zone", 1)))
+                    still_there = bool(t_zones.get(z_str))
+                    applied_count = 0 if still_there else 1
+                    ok = not still_there
+                    if not ok:
+                        failed_items.append(z_str)
+                    msg = "Наколка снята" if ok else "Не удалось снять наколку"
+                else:
+                    applied_count = 0
+                    for zk, zinfo in expected_zones.items():
+                        if _zone_matches_expected(t_zones.get(zk), zinfo["id"], zinfo["imageUrl"]):
+                            applied_count += 1
+                        else:
+                            failed_items.append(zk)
+                    ok = applied_count == expected_count and expected_count > 0
+                    label = f"«{set_name}» " if set_name else ""
+                    if ok:
+                        msg = (
+                            f"Комплект {label}надет ({applied_count}/{expected_count})"
+                            if kind == "tattoo_set"
+                            else "Наколка надета"
+                        )
+                    else:
+                        msg = f"Надето {applied_count} из {expected_count} частей (сервер не подтвердил: зоны {', '.join(failed_items[:5])})"
+            elif kind in ("clothing", "clothing_set"):
+                if action == "unequip":
+                    z_str = str(int(payload.get("zone", 1)))
+                    val = c_zones.get(z_str)
+                    still_there = bool(val) and not (isinstance(val, dict) and int(val.get("clothingId") or 0) == 0)
+                    applied_count = 0 if still_there else 1
+                    ok = not still_there
+                    if not ok:
+                        failed_items.append(z_str)
+                    msg = "Вещь снята" if ok else "Не удалось снять вещь"
+                else:
+                    applied_count = 0
+                    for zk, zinfo in expected_zones.items():
+                        if _zone_matches_expected(
+                            c_zones.get(zk),
+                            zinfo["id"],
+                            zinfo["imageUrl"],
+                            front_id=c_front.get(zk),
+                        ):
+                            applied_count += 1
+                        else:
+                            failed_items.append(zk)
+                    ok = applied_count == expected_count and expected_count > 0
+                    label = f"«{set_name}» " if set_name else ""
+                    if ok:
+                        msg = (
+                            f"Комплект одежды {label}надет ({applied_count}/{expected_count})"
+                            if kind == "clothing_set"
+                            else "Вещь надета"
+                        )
+                    else:
+                        msg = f"Надето {applied_count} из {expected_count} вещей (не подтверждены зоны: {', '.join(failed_items[:5])})"
+            elif kind == "camera":
+                resp_room = res.get("roomCameraUrl") if isinstance(res, dict) else None
+                ok = bool(room_url) and (not resp_room or room_url == resp_room)
+                applied_count = 1 if ok else 0
+                if not ok:
+                    failed_items.append(str(item_id))
+                msg = "Хата выбрана" if ok else "Сервер игры не подтвердил смену хаты"
+
+        _flight_cache.invalidate("wardrobe", "profile")
+        try:
+            patch_data: Dict[str, Any] = {}
+            if equipped_snapshot:
+                patch_data["wardrobe"] = {
+                    "equipped": equipped_snapshot,
+                    "characterLayers": _build_character_layers(verify_init or {}),
+                }
+            _get_hub().emit_change(
+                account_id,
+                ["wardrobe", "profile"],
+                patch=patch_data or None,
+                reason=f"wardrobe_{action}_{kind}",
+            )
+        except Exception as hub_err:
+            logger.debug("Wardrobe StateHub emit_change error: %s", hub_err)
+
+        await _log_action(account_id, f"wardrobe_{action}_{kind}", f"/api/{kind}/{action}", 200, ok, res)
+        return {
+            "ok": ok,
+            "success": ok,
+            "applied_count": applied_count,
+            "expected_count": expected_count,
+            "failed_items": failed_items,
+            "equipped": equipped_snapshot,
+            "message": msg,
+            "result": res,
+        }
     except Exception as e:
         await _log_action(account_id, f"wardrobe_{action}_{kind}", f"/api/{kind}/{action}", 500, False, {"error": str(e)})
         raise HTTPException(status_code=500, detail=str(e))

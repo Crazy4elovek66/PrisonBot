@@ -4,6 +4,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from urllib.parse import parse_qs, urlsplit
 from client.http_client import GameHttpClient
 
 logger = logging.getLogger(__name__)
@@ -343,69 +344,229 @@ class PlayerAPI:
             self._cameras_cache = self._normalize_cameras(self._cameras_cache)
         return {"success": True, "cameras": self._cameras_cache or []}
 
+    @staticmethod
+    def _unwrap_game_asset_url(image_url: str) -> str:
+        """Преобразует проксированный URL (/api/v1/assets/proxy?path=...) или CDN URL в чистый путь игры (assets/...)."""
+        raw = str(image_url or "").strip()
+        if not raw:
+            return ""
+        if "assets/proxy" in raw:
+            parsed = urlsplit(raw)
+            qs = parse_qs(parsed.query)
+            path_vals = qs.get("path") or []
+            if path_vals and path_vals[0]:
+                raw = str(path_vals[0]).strip()
+        cdn_prefix = "https://oldprison-prod-assets-cdn-yandex.luckygem.online/"
+        if raw.startswith(cdn_prefix):
+            raw = raw[len(cdn_prefix):]
+        if raw.startswith("/assets/"):
+            raw = raw.lstrip("/")
+        return raw
+
+    def _resolve_catalog_item(self, kind: str, item_id: int) -> Optional[Dict[str, Any]]:
+        """Возвращает элемент каталога по ID для татуировок или одежды."""
+        if item_id <= 0:
+            return None
+        self._ensure_catalogs_loaded()
+        catalog = self._tattoos_cache if kind == "tattoo" else self._clothing_cache
+        for item in catalog or []:
+            if isinstance(item, dict) and item.get("id") == item_id:
+                return item
+        return None
+
+    def _normalize_zones_payload(
+        self,
+        kind: str,
+        zones_map: Dict[str, Any],
+        *,
+        require_positive_id: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Приводит zonesMap к строгому контракту игрового API:
+        - tattoo:   {"<zone>": {"tattooId": int, "imageUrl": str}}
+        - clothing: {"<zone>": {"clothingId": int, "imageUrl": str}}
+        При надевании сета (require_positive_id=True) никогда не включает зоны с id <= 0,
+        чтобы исключить случайное снятие наколок/одежды на сервере игры.
+        """
+        if not isinstance(zones_map, dict):
+            return {}
+        id_key = "tattooId" if kind == "tattoo" else "clothingId"
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for zone_key, info in zones_map.items():
+            try:
+                zone_int = int(zone_key)
+            except (TypeError, ValueError):
+                continue
+            if zone_int <= 0:
+                continue
+
+            if isinstance(info, dict):
+                raw_id = info.get(id_key)
+                if raw_id is None:
+                    raw_id = info.get("id")
+                if raw_id is None:
+                    raw_id = info.get("item_id")
+                try:
+                    item_id = int(raw_id or 0)
+                except (TypeError, ValueError):
+                    item_id = 0
+                raw_url = str(
+                    info.get("rawImageUrl")
+                    or info.get("imageUrl")
+                    or info.get("image_url")
+                    or ""
+                )
+            else:
+                try:
+                    item_id = int(info or 0)
+                except (TypeError, ValueError):
+                    item_id = 0
+                raw_url = ""
+
+            if require_positive_id and item_id <= 0:
+                continue
+
+            clean_url = self._unwrap_game_asset_url(raw_url)
+            if item_id > 0 and (not clean_url or clean_url.startswith("/static/")):
+                cat_item = self._resolve_catalog_item(kind, item_id)
+                if cat_item:
+                    clean_url = self._unwrap_game_asset_url(cat_item.get("imageUrl") or "")
+
+            if require_positive_id and not clean_url:
+                logger.warning("Wardrobe %s zone=%s id=%s skipped: empty imageUrl", kind, zone_int, item_id)
+                continue
+
+            normalized[str(zone_int)] = {
+                id_key: item_id,
+                "imageUrl": clean_url,
+            }
+        return normalized
+
     async def select_camera(self, camera_id: int) -> Dict[str, Any]:
         """Выбор активной камеры (Хаты)."""
-        resp = await self.http.post("/api/camera/select", json={"cameraId": camera_id})
+        cid = int(camera_id)
+        logger.info("Wardrobe select_camera: cameraId=%s", cid)
+        resp = await self.http.post("/api/camera/select", json={"cameraId": cid})
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info("Wardrobe select_camera response: status=%s ok=%s", resp.status_code, data.get("success"))
+        return data
 
     async def buy_camera(self, camera_id: int) -> Dict[str, Any]:
         """Покупка камеры."""
-        resp = await self.http.post("/api/camera/buy", json={"cameraId": camera_id})
+        resp = await self.http.post("/api/camera/buy", json={"cameraId": int(camera_id)})
         resp.raise_for_status()
         return resp.json()
 
     async def equip_tattoo(self, zone: int, tattoo_id: int, image_url: str = "") -> Dict[str, Any]:
         """Надевание татуировки."""
-        payload = {"tattooZones": {str(zone): {"tattooId": tattoo_id, "imageUrl": image_url}}}
+        tid = int(tattoo_id)
+        if tid <= 0:
+            raise ValueError("tattoo_id должен быть > 0 для надевания; для снятия используйте unequip_tattoo")
+        clean_url = self._unwrap_game_asset_url(image_url)
+        if not clean_url or clean_url.startswith("/static/"):
+            cat_item = self._resolve_catalog_item("tattoo", tid)
+            if cat_item:
+                clean_url = self._unwrap_game_asset_url(cat_item.get("imageUrl") or "")
+        payload = {"tattooZones": {str(int(zone)): {"tattooId": tid, "imageUrl": clean_url}}}
+        logger.info("Wardrobe equip_tattoo: zone=%s tattooId=%s imageUrl=%s", zone, tid, clean_url)
         resp = await self.http.post("/api/tattoo/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info("Wardrobe equip_tattoo response: status=%s ok=%s", resp.status_code, data.get("success"))
+        return data
 
     async def unequip_tattoo(self, zone: int) -> Dict[str, Any]:
         """Снятие татуировки с зоны."""
-        payload = {"tattooZones": {str(zone): {"tattooId": 0, "imageUrl": ""}}}
+        payload = {"tattooZones": {str(int(zone)): {"tattooId": 0, "imageUrl": ""}}}
+        logger.info("Wardrobe unequip_tattoo: zone=%s", zone)
         resp = await self.http.post("/api/tattoo/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info("Wardrobe unequip_tattoo response: status=%s ok=%s", resp.status_code, data.get("success"))
+        return data
 
     async def equip_tattoo_set(self, zones_map: Dict[str, Any]) -> Dict[str, Any]:
-        """Надевание целого комплекта татуировок."""
-        payload = {"tattooZones": zones_map}
+        """Надевание целого комплекта татуировок по контракту POST /api/tattoo/apply."""
+        normalized = self._normalize_zones_payload("tattoo", zones_map, require_positive_id=True)
+        if not normalized:
+            raise ValueError("Нет валидных частей комплекта татуировок для надевания")
+        payload = {"tattooZones": normalized}
+        logger.info(
+            "Wardrobe equip_tattoo_set: zones_count=%d zones=%s",
+            len(normalized),
+            list(normalized.keys()),
+        )
         resp = await self.http.post("/api/tattoo/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info(
+            "Wardrobe equip_tattoo_set response: status=%s ok=%s body=%s",
+            resp.status_code,
+            data.get("success") if isinstance(data, dict) else None,
+            str(data)[:240],
+        )
+        return data
 
     async def buy_tattoo(self, tattoo_id: int) -> Dict[str, Any]:
         """Покупка татуировки."""
-        resp = await self.http.post("/api/tattoo/buy", json={"tattooId": tattoo_id})
+        resp = await self.http.post("/api/tattoo/buy", json={"tattooId": int(tattoo_id)})
         resp.raise_for_status()
         return resp.json()
 
     async def equip_clothing(self, zone: int, clothing_id: int, image_url: str = "") -> Dict[str, Any]:
         """Надевание предмета одежды."""
-        payload = {"clothingZones": {str(zone): {"clothingId": clothing_id, "imageUrl": image_url}}}
+        cid = int(clothing_id)
+        if cid <= 0:
+            raise ValueError("clothing_id должен быть > 0 для надевания; для снятия используйте unequip_clothing")
+        clean_url = self._unwrap_game_asset_url(image_url)
+        if not clean_url or clean_url.startswith("/static/"):
+            cat_item = self._resolve_catalog_item("clothing", cid)
+            if cat_item:
+                clean_url = self._unwrap_game_asset_url(cat_item.get("imageUrl") or "")
+        payload = {"clothingZones": {str(int(zone)): {"clothingId": cid, "imageUrl": clean_url}}}
+        logger.info("Wardrobe equip_clothing: zone=%s clothingId=%s imageUrl=%s", zone, cid, clean_url)
         resp = await self.http.post("/api/clothing/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info("Wardrobe equip_clothing response: status=%s ok=%s", resp.status_code, data.get("success"))
+        return data
 
     async def unequip_clothing(self, zone: int) -> Dict[str, Any]:
         """Снятие одежды с зоны."""
-        payload = {"clothingZones": {str(zone): {"clothingId": 0, "imageUrl": ""}}}
+        payload = {"clothingZones": {str(int(zone)): {"clothingId": 0, "imageUrl": ""}}}
+        logger.info("Wardrobe unequip_clothing: zone=%s", zone)
         resp = await self.http.post("/api/clothing/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info("Wardrobe unequip_clothing response: status=%s ok=%s", resp.status_code, data.get("success"))
+        return data
 
     async def equip_clothing_set(self, zones_map: Dict[str, Any]) -> Dict[str, Any]:
-        """Надевание комплекта одежды."""
-        payload = {"clothingZones": zones_map}
+        """Надевание комплекта одежды по контракту POST /api/clothing/apply."""
+        normalized = self._normalize_zones_payload("clothing", zones_map, require_positive_id=True)
+        if not normalized:
+            raise ValueError("Нет валидных частей комплекта одежды для надевания")
+        payload = {"clothingZones": normalized}
+        logger.info(
+            "Wardrobe equip_clothing_set: zones_count=%d zones=%s",
+            len(normalized),
+            list(normalized.keys()),
+        )
         resp = await self.http.post("/api/clothing/apply", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        logger.info(
+            "Wardrobe equip_clothing_set response: status=%s ok=%s body=%s",
+            resp.status_code,
+            data.get("success") if isinstance(data, dict) else None,
+            str(data)[:240],
+        )
+        return data
 
     async def buy_clothing(self, clothing_id: int) -> Dict[str, Any]:
         """Покупка предмета одежды."""
-        resp = await self.http.post("/api/clothing/buy", json={"clothingId": clothing_id})
+        resp = await self.http.post("/api/clothing/buy", json={"clothingId": int(clothing_id)})
         resp.raise_for_status()
         return resp.json()
 

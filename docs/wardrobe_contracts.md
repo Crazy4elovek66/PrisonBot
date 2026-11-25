@@ -54,16 +54,21 @@
   ```
 
 ### 1.4. Надевание, снятие и покупка
-- **Надевание/снятие отдельной татуировки:**
+- **Надевание/снятие отдельной татуировки или комплекта татуировок:**
   - `POST /api/tattoo/apply`
-    Payload: `{"tattooZones": { "<zoneId>": { "tattooId": int, "imageUrl": str } } }`
-    (Для снятия передается `tattooId: 0` или пустой `imageUrl`).
+    Payload: `{"tattooZones": { "<zoneId>": { "tattooId": int, "imageUrl": str }, ... } }`
+    - Передаются только изменяемые зоны (1..42). `imageUrl` — оригинальный путь игры (например `assets/PrisonV3/Tattoos/biomechanics/T/bone_Zone2.png`), **без** обёртки `/api/v1/assets/proxy`.
+    - Отсутствие `tattooId` (или `tattooId: 0` / пустой `imageUrl`) трактуется сервером игры как **снятие** татуировки в указанной зоне.
+    - Для надевания полного или частичного комплекта передаётся словарь всех собранных зон с валидными `tattooId > 0` и `imageUrl`.
+    - Особенность игры (`bundle.js`): при надевании татуировки в зону `14` (кисть) клиент сбрасывает зону `6` одежды на дефолтную кисть (`clothingId: 0`).
 - **Покупка татуировки:**
   - `POST /api/tattoo/buy`
     Payload: `{"tattooId": int}`
-- **Надевание/снятие одежды:**
+- **Надевание/снятие одежды или комплекта одежды:**
   - `POST /api/clothing/apply`
-    Payload: `{"clothingZones": { "<zoneId>": { "clothingId": int, "imageUrl": str } } }`
+    Payload: `{"clothingZones": { "<zoneId>": { "clothingId": int, "imageUrl": str }, ... } }`
+    - Для снятия передаётся `clothingId: 0` и `imageUrl: ""`.
+    - При надевании комплекта передаётся словарь собранных зон с `clothingId > 0` и оригинальным `imageUrl`.
 - **Покупка одежды:**
   - `POST /api/clothing/buy`
     Payload: `{"clothingId": int}`
