@@ -91,6 +91,7 @@ class RoutineWorker:
         prison_worker: Optional[Any] = None,
         social_api: Optional[Any] = None,
         on_business_reschedule: Optional[Callable[[float], Any]] = None,
+        on_katala_reschedule: Optional[Callable[[float], Any]] = None,
     ):
         self.account_id = account_id
         self.api = player_api
@@ -100,6 +101,7 @@ class RoutineWorker:
         self.prison_worker = prison_worker
         self.social_api = social_api
         self.on_business_reschedule = on_business_reschedule
+        self.on_katala_reschedule = on_katala_reschedule
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -127,6 +129,66 @@ class RoutineWorker:
                 session.add(log_entry)
         except Exception as e:
             logger.error(f"Не удалось записать ActionLog ({action_type}): {e}")
+
+    async def send_podogrev_if_ready(self, config: Optional[Any] = None) -> Dict[str, Any]:
+        """Отправляет бесплатные подогревы всем доступным друзьям, если включен тумблер auto_podogrev_send."""
+        if config is None and self.db_engine:
+            config = await get_or_create_config(self.account_id, self.db_engine)
+        if config is not None and (not is_worker_active(config) or not getattr(config, "auto_podogrev_send", False)):
+            return {"success": False, "sent": 0, "skipped": True}
+        try:
+            friends_res = await self.api.get_podogrev_friends(page=1, page_size=50)
+            friends_list = (
+                (friends_res.get("friends") or friends_res.get("items") or friends_res.get("list") or [])
+                if isinstance(friends_res, dict)
+                else []
+            )
+            uids_to_send = [
+                int(f.get("userId") or f.get("id"))
+                for f in friends_list
+                if isinstance(f, dict) and (f.get("userId") or f.get("id"))
+            ]
+            if not uids_to_send:
+                return {"success": True, "sent": 0}
+            send_res = await self.api.send_podogrev(uids_to_send, send_to_all=True, gift_type=1)
+            await self._log_action("send_podogrev", "/api/podogrev/send", 200, True, send_res)
+            logger.info(f"Отправлены бесплатные подогревы друзьям ({len(uids_to_send)} чел.)")
+            return {"success": True, "sent": len(uids_to_send), "result": send_res}
+        except Exception as e:
+            logger.error(f"Ошибка при отправке подогревов друзьям: {e}")
+            await self._log_action("send_podogrev", "/api/podogrev/send", 500, False, {"error": str(e)})
+            return {"success": False, "sent": 0, "error": str(e)}
+
+    async def play_katala_if_ready(self, config: Optional[Any] = None) -> Dict[str, Any]:
+        """Запускает бесплатную партию у Каталы и перепланирует точный таймер следующего запуска."""
+        if config is None and self.db_engine:
+            config = await get_or_create_config(self.account_id, self.db_engine)
+        if config is not None and (not is_worker_active(config) or not getattr(config, "auto_katala", False)):
+            return {"success": False, "status": "skipped"}
+        try:
+            from client.api.katala import KatalaAPI, play_free_daily_game
+            katala_api = KatalaAPI(self.api.http)
+            katala_res = await play_free_daily_game(katala_api)
+            if katala_res.get("success"):
+                await self._log_action("katala_game", "/api/card/finish", 200, True, katala_res)
+                logger.info(f"Успешно сыграна бесплатная суточная партия у Каталы: комбо={katala_res.get('combo')}")
+                next_cd = katala_res.get("next_cooldown_sec") or 86400
+                if self.on_katala_reschedule is not None:
+                    try:
+                        self.on_katala_reschedule(float(next_cd) + 2.0)
+                    except Exception:
+                        pass
+            else:
+                sec_left = katala_res.get("seconds_left")
+                if sec_left is not None and float(sec_left) > 0 and self.on_katala_reschedule is not None:
+                    try:
+                        self.on_katala_reschedule(float(sec_left) + 2.0)
+                    except Exception:
+                        pass
+            return katala_res
+        except Exception as e:
+            logger.warning(f"Ошибка при автоигре у Каталы: {e}")
+            return {"success": False, "status": "error", "error": str(e)}
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Выполняет один полный цикл рутинных задач."""
@@ -334,32 +396,19 @@ class RoutineWorker:
 
         # 5.1. Отправка бесплатных подогревов друзьям
         if getattr(config, "auto_podogrev_send", False):
-            try:
-                friends_res = await self.api.get_podogrev_friends(page=1, page_size=50)
-                friends_list = friends_res.get("friends", []) if isinstance(friends_res, dict) else []
-                uids_to_send = [int(f["userId"]) for f in friends_list if isinstance(f, dict) and f.get("userId")]
-                if uids_to_send:
-                    send_res = await self.api.send_podogrev(uids_to_send)
-                    results["podogrev_sent"] = True
-                    await self._log_action("send_podogrev", "/api/podogrev/send", 200, True, send_res)
-                    logger.info(f"Отправлены бесплатные подогревы друзьям ({len(uids_to_send)} чел.)")
-            except Exception as e:
-                logger.error(f"Ошибка при отправке подогревов друзьям: {e}")
-                results["errors"].append(f"send_podogrev: {str(e)}")
+            pod_sent_res = await self.send_podogrev_if_ready(config=config)
+            if pod_sent_res.get("sent", 0) > 0:
+                results["podogrev_sent"] = True
+            if pod_sent_res.get("error"):
+                results["errors"].append(f"send_podogrev: {pod_sent_res['error']}")
 
         # 5.2. Бесплатная суточная партия у Каталы (1-в-1 по правилам игры с шульмовками)
         if getattr(config, "auto_katala", False):
-            try:
-                from client.api.katala import KatalaAPI, play_free_daily_game
-                katala_api = KatalaAPI(self.api.http)
-                katala_res = await play_free_daily_game(katala_api)
-                if katala_res.get("success"):
-                    results["katala_played"] = True
-                    await self._log_action("katala_game", "/api/card/finish", 200, True, katala_res)
-                    logger.info(f"Успешно сыграна бесплатная суточная партия у Каталы: комбо={katala_res.get('combo')}")
-            except Exception as e:
-                logger.warning(f"Ошибка при автоигре у Каталы: {e}")
-                results["errors"].append(f"katala_game: {str(e)}")
+            katala_res = await self.play_katala_if_ready(config=config)
+            if katala_res.get("success"):
+                results["katala_played"] = True
+            elif katala_res.get("error"):
+                results["errors"].append(f"katala_game: {katala_res['error']}")
 
         # 5.3. Месячные делюги — выполнение дневного негативного квеста и автосбор тиров
         if getattr(config, "auto_monthly_tasks", False) or getattr(config, "auto_events", False):

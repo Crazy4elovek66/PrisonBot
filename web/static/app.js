@@ -846,8 +846,11 @@ function renderBossData(data) {
   const slotTop = document.getElementById("boss-attack-slot-top");
   const slotBottom = document.getElementById("boss-attack-slot-bottom");
 
+  const idleTalentsCard = document.getElementById("boss-talents-idle-card");
   if (session && session.currentHp > 0) {
     if (activeCard) activeCard.style.display = "block";
+    if (idleTalentsCard) idleTalentsCard.style.display = "none";
+    window._bossBattleActive = true;
     if (manualAttackCard && slotBottom && manualAttackCard.parentElement !== slotBottom) {
       slotBottom.appendChild(manualAttackCard);
     }
@@ -879,10 +882,15 @@ function renderBossData(data) {
     }
   } else {
     if (activeCard) activeCard.style.display = "none";
+    if (idleTalentsCard) idleTalentsCard.style.display = "block";
+    window._bossBattleActive = false;
     if (manualAttackCard && slotTop && manualAttackCard.parentElement !== slotTop) {
       slotTop.appendChild(manualAttackCard);
     }
     if (manualAttackCard) manualAttackCard.style.display = "block";
+  }
+  if (window._lastTalentsState) {
+    renderBossTalentsWidget(window._lastTalentsState);
   }
 
   const wepDmgs = data.weaponDamages || {};
@@ -2097,6 +2105,7 @@ document.getElementById("btn-buffs-tab-brigade")?.addEventListener("click", () =
 // --- 4.10 Talents ---
 function renderBossTalentsWidget(state) {
   const s = state || {};
+  window._lastTalentsState = s;
   const totalPts = s.totalPoints !== undefined ? s.totalPoints : ((s.spentPoints || 0) + (s.unspentPoints || 0));
   const unspentPts = Number(s.unspentPoints || 0);
   const curDmg = Number(s.currentDamage || 0);
@@ -2115,6 +2124,21 @@ function renderBossTalentsWidget(state) {
   if (newEl) newEl.textContent = formatNum(unspentPts);
   if (newBadge) {
     newBadge.classList.toggle("has-new", unspentPts > 0);
+  }
+
+  // Idle card (when no active battle: damage progress reset to 0 / N)
+  const idleDmgFill = document.getElementById("boss-talents-idle-dmg-fill");
+  const idleDmgNum = document.getElementById("boss-talents-idle-dmg-numbers");
+  const idleTotal = document.getElementById("boss-talents-idle-total");
+  const idleNew = document.getElementById("boss-talents-idle-new");
+  const idleNewBadge = document.getElementById("boss-talents-idle-new-badge");
+
+  if (idleDmgFill) idleDmgFill.style.width = "0%";
+  if (idleDmgNum) idleDmgNum.textContent = `0 / ${formatNum(reqDmg)}`;
+  if (idleTotal) idleTotal.textContent = formatNum(totalPts);
+  if (idleNew) idleNew.textContent = formatNum(unspentPts);
+  if (idleNewBadge) {
+    idleNewBadge.classList.toggle("has-new", unspentPts > 0);
   }
 }
 

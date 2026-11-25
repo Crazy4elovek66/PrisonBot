@@ -218,10 +218,12 @@ def test_boss_talents_widget_present_between_active_and_melee():
     root = Path(__file__).resolve().parent.parent
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
     app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
-    pos_top_slot = index_html.index('id="boss-attack-slot-top"')
+    pos_active = index_html.index('id="boss-active-card"')
     pos_talents = index_html.index('id="boss-talents-widget"')
+    pos_idle_talents = index_html.index('id="boss-talents-idle-card"')
+    pos_top_slot = index_html.index('id="boss-attack-slot-top"')
     pos_melee = index_html.index('id="cfg-boss_auto_melee"')
-    assert pos_top_slot < pos_talents < pos_melee
+    assert pos_active < pos_talents < pos_idle_talents < pos_top_slot < pos_melee
     assert "function renderBossTalentsWidget(state)" in app_js
 
 
@@ -243,3 +245,112 @@ def test_room_folder_id_mapping_for_all_boss_rooms():
     assert _extract(by_id[36]["imageUrl"], 36) == "35"  # Змей
     assert _extract(by_id[37]["imageUrl"], 37) == "36"  # Шнифер
     assert _extract(by_id[38]["imageUrl"], 38) == "37"  # Взлом (Spine-animated)
+
+
+@pytest.mark.asyncio
+async def test_katala_exact_reschedule_and_smart_cheat():
+    from client.api.katala import KatalaSolver
+
+    # Smart cheat keeps higher card and rerolls lower card
+    act = KatalaSolver.choose_best_action("7", "A", shulmovki_left=1)
+    assert act["action"] == "reroll"
+    assert act["card_index"] == 0
+    assert act["keep_card"] == "A"
+
+    act_pair = KatalaSolver.choose_best_action("K", "K", shulmovki_left=2)
+    assert act_pair["action"] == "finish"
+
+    rescheduled = []
+    katala_api = SimpleNamespace(
+        get_state=AsyncMock(return_value={"freeGameAvailable": False, "cooldownSec": 1200}),
+    )
+    player_api = SimpleNamespace(http=None)
+    rw = RoutineWorker(
+        account_id=1,
+        player_api=player_api,
+        enable_jitter=False,
+        on_katala_reschedule=lambda sec: rescheduled.append(sec),
+    )
+    # Monkeypatch KatalaAPI inside play_katala_if_ready via client.api.katala
+    import client.api.katala as k_mod
+    orig_cls = k_mod.KatalaAPI
+    k_mod.KatalaAPI = lambda _http: katala_api
+    try:
+        res = await rw.play_katala_if_ready(config=SimpleNamespace(auto_katala=True, is_paused=False))
+    finally:
+        k_mod.KatalaAPI = orig_cls
+
+    assert res["status"] == "already_played"
+    assert len(rescheduled) == 1
+    assert 1200.0 <= rescheduled[0] <= 1205.0
+
+
+@pytest.mark.asyncio
+async def test_podogrev_send_includes_type_1_and_respects_toggle():
+    from client.api.player import PlayerAPI
+
+    posted = []
+
+    async def _post(url, json=None):
+        posted.append((url, json))
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"success": True})
+
+    async def _get(url):
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"friends": [{"userId": 101}, {"userId": 102}]})
+
+    p_api = PlayerAPI(http_client=SimpleNamespace(post=_post, get=_get))
+    rw = RoutineWorker(account_id=1, player_api=p_api, enable_jitter=False)
+
+    # Disabled toggle -> skipped
+    r_off = await rw.send_podogrev_if_ready(config=SimpleNamespace(auto_podogrev_send=False, is_paused=False))
+    assert r_off["skipped"] is True
+    assert posted == []
+
+    # Enabled toggle -> sends with type=1 and sendToAll=True
+    r_on = await rw.send_podogrev_if_ready(config=SimpleNamespace(auto_podogrev_send=True, is_paused=False))
+    assert r_on["sent"] == 2
+    assert posted == [("/api/podogrev/send", {"type": 1, "sendToAll": True})]
+
+
+@pytest.mark.asyncio
+async def test_boss_victory_notification_web_and_telegram_formatting():
+    claim_payload = {
+        "bossId": 39,
+        "mode": "pacansky",
+        "globalReward": {
+            "authority": 1000,
+            "keys": 2,
+            "currencies": [{"type": "sugar", "amount": 500}, {"type": "cigarettes", "amount": 1000}],
+        },
+    }
+    parsed = DropParser.parse_boss_claim(claim_payload, boss_name=None, mode="pacansky")
+    assert "Воркута" in parsed["title"]
+    assert "Босс повержен: Босс" != parsed["title"]
+    curs = {r["currency"]: r["amount"] for r in parsed["rewards"]}
+    assert curs["authority"] == 1000
+    assert curs["sugar"] == 500
+    assert curs["cigarettes"] == 1000
+    assert curs["keys"] == 2
+
+    sent_msgs = []
+    notifier = SimpleNamespace(notify=AsyncMock(side_effect=lambda msg: sent_msgs.append(msg)))
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(return_value={
+            "state": "reward",
+            "session": {"bossId": 39, "title": "Воркута", "mode": "pacansky", "currentHp": 0, "maxHp": 400000000, "sessionId": "sess_39"},
+            "unclaimedRewards": [{"claimId": "c39", "bossId": 39}],
+        }),
+        claim_reward=AsyncMock(return_value=claim_payload),
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    prison_api = SimpleNamespace(get_prisons=AsyncMock(return_value={"prisons": []}))
+    worker = BossWorker(account_id=1, boss_api=boss_api, notifier=notifier, prison_api=prison_api, enable_jitter=False)
+    cfg = SimpleNamespace(is_paused=False, sleep_mode_enabled=False, auto_boss_enabled=False, auto_boss_summon=False, boss_auto_melee=False)
+    await worker._claim_pending_rewards(
+        bootstrap=await boss_api.get_bootstrap(),
+        results={"rewards_claimed": 0, "hits_performed": [], "summoned_bosses": [], "boss_hp_remaining": 0, "victories": [], "errors": []},
+        active_preset=None,
+        preset_steps=[],
+        claimed_keys_in_cycle=set(),
+    )
+    assert "boss_claim_sess_39" in worker._notified_victory_keys

@@ -144,17 +144,49 @@ class DropParser:
                             "amount": int(v),
                         })
 
-        # 3. Валюты внутри payload.get("currencies")
-        currencies = payload.get("currencies") or (raw_rewards.get("currencies") if isinstance(raw_rewards, dict) else None)
-        if isinstance(currencies, dict):
-            for k, v in currencies.items():
-                c_key = cls._normalize_currency(k)
-                if c_key and isinstance(v, (int, float)) and v > 0:
-                    if not any(r["currency"] == c_key for r in rewards):
+        # 3. Валюты внутри payload.get("currencies") / globalReward / personalReward (dict или list)
+        for container in (
+            payload,
+            raw_rewards if isinstance(raw_rewards, dict) else {},
+            payload.get("globalReward") if isinstance(payload.get("globalReward"), dict) else {},
+            payload.get("personalReward") if isinstance(payload.get("personalReward"), dict) else {},
+            payload.get("loot") if isinstance(payload.get("loot"), dict) else {},
+        ):
+            if not container:
+                continue
+            cur_block = container.get("currencies")
+            if isinstance(cur_block, dict):
+                for k, v in cur_block.items():
+                    c_key = cls._normalize_currency(k)
+                    if c_key and isinstance(v, (int, float)) and v > 0:
+                        if not any(r["currency"] == c_key for r in rewards):
+                            rewards.append({
+                                "currency": c_key,
+                                "label": CURRENCY_LABELS.get(c_key, c_key),
+                                "amount": int(v),
+                            })
+            elif isinstance(cur_block, list):
+                for item in cur_block:
+                    if isinstance(item, dict):
+                        t = item.get("type") or item.get("currency")
+                        amt = item.get("amount") or item.get("value") or 0
+                        c_key = cls._normalize_currency(str(t))
+                        if c_key and isinstance(amt, (int, float)) and amt > 0:
+                            if not any(r["currency"] == c_key for r in rewards):
+                                rewards.append({
+                                    "currency": c_key,
+                                    "label": CURRENCY_LABELS.get(c_key, c_key),
+                                    "amount": int(amt),
+                                })
+            for k in ("authority", "cigarettes", "rubles", "sugar", "toiletPaper", "paper", "soap", "keys", "respect", "energy"):
+                val = container.get(k)
+                if isinstance(val, (int, float)) and val > 0:
+                    c_key = cls._normalize_currency(k)
+                    if c_key and not any(r["currency"] == c_key for r in rewards):
                         rewards.append({
                             "currency": c_key,
                             "label": CURRENCY_LABELS.get(c_key, c_key),
-                            "amount": int(v),
+                            "amount": int(val),
                         })
 
         # 4. Разбор дропов татуировок и сетов (rewardSets, soloSetReward, tattoo, clothing, room)

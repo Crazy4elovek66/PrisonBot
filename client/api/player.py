@@ -224,15 +224,22 @@ class PlayerAPI:
         resp.raise_for_status()
         return resp.json()
 
-    async def send_podogrev(self, recipient_ids: List[int], send_to_all: bool = False) -> Dict[str, Any]:
+    async def send_podogrev(self, recipient_ids: List[int], send_to_all: bool = False, gift_type: int = 1) -> Dict[str, Any]:
         """
         Отправка бесплатных подогревов друзьям (POST /api/podogrev/send).
         Категорический запрет на платные подарки /api/gifts/send.
         """
-        payload = {
-            "sendToAll": bool(send_to_all),
-            "recipientIds": [int(uid) for uid in recipient_ids],
-        }
+        if send_to_all:
+            payload: Dict[str, Any] = {
+                "type": int(gift_type),
+                "sendToAll": True,
+            }
+        else:
+            payload = {
+                "type": int(gift_type),
+                "sendToAll": False,
+                "recipientIds": [int(uid) for uid in recipient_ids],
+            }
         resp = await self.http.post("/api/podogrev/send", json=payload)
         resp.raise_for_status()
         return resp.json()
@@ -262,7 +269,7 @@ class PlayerAPI:
             if not recipient_ids:
                 return {"success": True, "sent": 0, "message": "Нет доступных друзей для отправки подогревов"}
 
-            res = await self.send_podogrev(recipient_ids=recipient_ids)
+            res = await self.send_podogrev(recipient_ids=recipient_ids, send_to_all=True)
             return {"success": True, "sent": len(recipient_ids), "result": res}
         except Exception as e:
             logger.error("Ошибка в send_all_podogrev: %s", e)

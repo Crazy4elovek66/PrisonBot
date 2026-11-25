@@ -234,25 +234,50 @@ async def play_free_daily_game(
         logger.warning(f"Катала: ошибка получения состояния: {e}")
         return {"success": False, "status": "error", "error": f"state_error: {e}"}
 
-    # Проверка бесплатной попытки
+    # Проверка бесплатной попытки и точного серверного таймера отката
+    from datetime import timezone as _tz
     free_available = (
         state.get("freeGameAvailable", False)
         or state.get("canPlayFree", False)
         or state.get("freeGamesLeft", 0) > 0
     )
+    now_utc = datetime.now(_tz.utc)
+    seconds_left: Optional[float] = None
+    for cd_key in ("cooldownSec", "secondsLeft", "remainingSec", "nextFreeInSec"):
+        if state.get(cd_key) is not None:
+            try:
+                seconds_left = max(0.0, float(state[cd_key]))
+                break
+            except (TypeError, ValueError):
+                pass
+    if seconds_left is None:
+        for ts_key in ("nextFreeGameAt", "nextFreeAt", "nextGameAt", "availableAt"):
+            raw_ts = state.get(ts_key)
+            if raw_ts:
+                try:
+                    dt = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=_tz.utc)
+                    seconds_left = max(0.0, (dt - now_utc).total_seconds())
+                    break
+                except Exception:
+                    pass
+
     last_game_str = state.get("lastGameTime")
     if not free_available and last_game_str and not force:
         try:
             # Проверка 24ч
-            last_dt = datetime.fromisoformat(last_game_str.replace("Z", "+00:00"))
-            from datetime import timezone
-            diff = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            last_dt = datetime.fromisoformat(str(last_game_str).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=_tz.utc)
+            diff = (now_utc - last_dt).total_seconds()
             if diff < 86400:
-                logger.info(f"Катала: бесплатная суточная игра еще на кулдауне (прошло {int(diff)}с из 86400с)")
+                rem = seconds_left if seconds_left is not None else max(1.0, 86400.0 - diff)
+                logger.info(f"Катала: бесплатная суточная игра еще на кулдауне (осталось {int(rem)}с)")
                 return {
                     "success": False,
                     "status": "already_played",
-                    "seconds_left": int(86400 - diff),
+                    "seconds_left": int(rem),
                     "message": "Бесплатная попытка у Каталы сегодня уже использована",
                 }
         except Exception:
@@ -262,6 +287,7 @@ async def play_free_daily_game(
         return {
             "success": False,
             "status": "already_played",
+            "seconds_left": int(seconds_left) if seconds_left is not None else None,
             "message": "Бесплатная суточная игра у Каталы недоступна",
         }
 
@@ -310,8 +336,14 @@ async def play_free_daily_game(
         idx = decision["card_index"]
         try:
             reroll_res = await katala_api.reroll_card(idx)
-            card1 = reroll_res.get("card1") or card1
-            card2 = reroll_res.get("card2") or card2
+            if "cards" in reroll_res and isinstance(reroll_res["cards"], list) and len(reroll_res["cards"]) >= 2:
+                r_c1 = reroll_res["cards"][0]
+                r_c2 = reroll_res["cards"][1]
+                card1 = (r_c1.get("rank") if isinstance(r_c1, dict) else str(r_c1)) or card1
+                card2 = (r_c2.get("rank") if isinstance(r_c2, dict) else str(r_c2)) or card2
+            else:
+                card1 = reroll_res.get("card1") or card1
+                card2 = reroll_res.get("card2") or card2
             shulmovki_left -= 1
             shulmovki_used += 1
             logger.info(f"Катала: шульмовка карты {idx} успешна, новая рука=[{card1}, {card2}], осталось={shulmovki_left}")
@@ -334,6 +366,7 @@ async def play_free_daily_game(
             "shulmovki_used": shulmovki_used,
             "reward": reward,
             "finish_result": finish_res,
+            "next_cooldown_sec": int(finish_res.get("cooldownSec") or 86400),
         }
     except Exception as e:
         logger.error(f"Катала: ошибка при завершении игры: {e}")

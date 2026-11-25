@@ -76,6 +76,10 @@ class BossWorker:
         self.is_paused: bool = False
         self._cycle_lock = asyncio.Lock()
         self.melee_ready_at: Dict[str, float] = {w: 0.0 for w in MELEE_CONFIG}
+        self._last_active_boss_id: Optional[int] = None
+        self._last_active_boss_name: Optional[str] = None
+        self._last_active_boss_mode: Optional[str] = None
+        self._notified_victory_keys: Set[str] = set()
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -893,15 +897,32 @@ class BossWorker:
                 results["rewards_claimed"] += 1
                 await self._log_action("claim_boss_reward", "/api/boss/claim", 200, True, claim_res)
 
-                resolved_boss_name = self._resolve_boss_name(battle, bootstrap)
+                resolved_boss_name = self._resolve_boss_name(
+                    battle,
+                    bootstrap,
+                    fallback_id=self._last_active_boss_id,
+                )
+                if resolved_boss_name == "Босс" and self._last_active_boss_name:
+                    resolved_boss_name = self._last_active_boss_name
+                resolved_mode = (battle.get("mode") if isinstance(battle, dict) else None) or self._last_active_boss_mode
                 parsed = DropParser.parse_boss_claim(
                     claim_res,
                     boss_name=resolved_boss_name,
-                    mode=battle.get("mode"),
+                    mode=resolved_mode,
                 )
-                b_sess_id = battle.get("sessionId") or cid or "latest"
-                parsed["event_key"] = f"boss_claim_{b_sess_id}"
+                b_sess_id = (battle.get("sessionId") if isinstance(battle, dict) else None) or cid or "latest"
+                event_key = f"boss_claim_{b_sess_id}"
+                parsed["event_key"] = event_key
                 await DropParser.save_notification(self.account_id, parsed, self.db_engine)
+                if event_key not in self._notified_victory_keys:
+                    self._notified_victory_keys.add(event_key)
+                    results.setdefault("victories", []).append({
+                        "boss_name": parsed.get("meta", {}).get("boss_name") or resolved_boss_name,
+                        "mode": resolved_mode,
+                        "rewards": parsed.get("rewards") or [],
+                        "drops": parsed.get("drops") or [],
+                        "event_key": event_key,
+                    })
 
                 if active_preset:
                     active_preset = await self._advance_preset_step(active_preset.id, preset_steps)
@@ -1102,6 +1123,7 @@ class BossWorker:
                 "summoned_bosses": [],
                 "boss_active": False,
                 "boss_hp_remaining": None,
+                "victories": [],
                 "errors": [],
             }
 
@@ -1208,6 +1230,12 @@ class BossWorker:
                 boss_active = True
                 results["boss_active"] = True
                 results["boss_hp_remaining"] = current_hp
+                if isinstance(battle, dict):
+                    self._last_active_boss_id = battle.get("bossId") or self._last_active_boss_id
+                    self._last_active_boss_mode = battle.get("mode") or self._last_active_boss_mode
+                    nm = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
+                    if nm and nm != "Босс":
+                        self._last_active_boss_name = nm
                 logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
 
                 await self.record_friends_damage(bootstrap)
@@ -1232,14 +1260,28 @@ class BossWorker:
                     if melee_res.get("claim_id"):
                         claimed_keys_in_cycle.add(f"cid:{melee_res['claim_id']}")
                     if melee_res.get("claim_response"):
+                        r_name = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
+                        if r_name == "Босс" and self._last_active_boss_name:
+                            r_name = self._last_active_boss_name
+                        r_mode = (battle.get("mode") if isinstance(battle, dict) else None) or self._last_active_boss_mode
                         parsed_win = DropParser.parse_boss_claim(
                             melee_res["claim_response"],
-                            boss_name=self._resolve_boss_name(battle, bootstrap),
-                            mode=battle.get("mode") if isinstance(battle, dict) else None,
+                            boss_name=r_name,
+                            mode=r_mode,
                         )
-                        parsed_win["event_key"] = f"boss_claim_{battle.get('sessionId') or melee_res['claim_id'] if isinstance(battle, dict) else melee_res['claim_id']}"
+                        ev_key = f"boss_claim_{battle.get('sessionId') or melee_res['claim_id'] if isinstance(battle, dict) else melee_res['claim_id']}"
+                        parsed_win["event_key"] = ev_key
                         if self.db_engine:
                             await DropParser.save_notification(self.account_id, parsed_win, self.db_engine)
+                        if ev_key not in self._notified_victory_keys:
+                            self._notified_victory_keys.add(ev_key)
+                            results["victories"].append({
+                                "boss_name": parsed_win.get("meta", {}).get("boss_name") or r_name,
+                                "mode": r_mode,
+                                "rewards": parsed_win.get("rewards") or [],
+                                "drops": parsed_win.get("drops") or [],
+                                "event_key": ev_key,
+                            })
                     if active_preset:
                         active_preset = await self._advance_preset_step(active_preset.id, preset_steps)
 
@@ -1257,16 +1299,47 @@ class BossWorker:
 
             # Telegram уведомление только по итогам значимых событий
             if self.notifier is not None:
-                if results["rewards_claimed"] > 0 or len(results["hits_performed"]) > 0 or len(results["summoned_bosses"]) > 0:
-                    lines = ["👊 <b>Битва с боссом:</b>"]
+                victories = results.get("victories") or []
+                if victories or len(results["hits_performed"]) > 0 or len(results["summoned_bosses"]) > 0:
+                    _mode_ru = {
+                        "pacansky": "Пацанский",
+                        "blotnoy": "Блатной",
+                        "avtoritetny": "Авторитетный",
+                        "vorovskoy": "Воровской",
+                        "odin": "В одного",
+                        "brigade": "Бригадный",
+                    }
+                    _cur_emoji = {
+                        "cigarettes": "🚬",
+                        "authority": "🤘",
+                        "rubles": "💵",
+                        "sugar": "🍬",
+                        "paper": "🧻",
+                        "soap": "🧼",
+                        "keys": "🔑",
+                        "respect": "⭐",
+                        "energy": "⚡",
+                    }
+                    lines: List[str] = []
+                    for vic in victories:
+                        m_str = _mode_ru.get(str(vic.get("mode") or "").lower(), vic.get("mode") or "")
+                        title_str = f"{vic['boss_name']} ({m_str})" if m_str else str(vic["boss_name"])
+                        lines.append(f"🏆 <b>Победа над боссом: {title_str}</b>")
+                        for rw in vic.get("rewards") or []:
+                            em = _cur_emoji.get(rw.get("currency"), "🎁")
+                            lines.append(f"{em} {rw.get('label')}: <b>+{rw.get('amount')}</b>")
+                        for dr in vic.get("drops") or []:
+                            sub = f" ({dr['subtitle']})" if dr.get("subtitle") else ""
+                            lines.append(f"🎁 {dr.get('title')}{sub}")
+                    if not victories:
+                        b_label = self._last_active_boss_name or "Босс"
+                        lines.append(f"👊 <b>Битва с боссом: {b_label}</b>")
                     if len(results["summoned_bosses"]) > 0:
                         lines.append(f"🔥 Призвано боссов: <b>{len(results['summoned_bosses'])}</b>")
                     if len(results["hits_performed"]) > 0:
                         lines.append(f"⚔️ Нанесено рукопашных ударов: <b>{len(results['hits_performed'])}</b>")
-                        if results["boss_hp_remaining"] is not None:
+                        if not victories and results["boss_hp_remaining"] is not None:
                             lines.append(f"❤️ Оставшееся HP босса: <b>{results['boss_hp_remaining']}</b>")
-                    if results["rewards_claimed"] > 0:
-                        lines.append(f"🏆 Собрано наград: <b>{results['rewards_claimed']}</b>")
                     await self.notifier.notify("\n".join(lines))
 
             logger.info(f"=== [Аккаунт {self.account_id}] Цикл проверки боссов завершен ===")

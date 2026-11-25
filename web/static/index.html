@@ -7,7 +7,7 @@
   <title>PrisonBot — Панель управления</title>
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261125_04">
+  <link rel="stylesheet" href="styles.css?v=20261125_05">
   <script>
     (function () {
       var allowed = ["main", "home", "bosses", "prisons", "wardrobe", "routine", "friends", "raids", "notifications", "settings"];
@@ -360,13 +360,29 @@
               награду</button>
           </div>
         </div>
+        <!-- Embedded Talents Progress Section (when battle is active) -->
+        <div id="boss-talents-widget" class="boss-talents-embedded" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; margin-top: 10px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;">
+              <img src="/static/assets/icons/talents.webp?v=2" class="game-icon-sm" alt="Таланты">
+              <span>Таланты</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 130px; max-width: 280px;">
+              <div class="boss-talents-progress-track">
+                <div id="boss-talents-dmg-fill" class="boss-talents-progress-fill" style="width: 0%;"></div>
+              </div>
+              <span id="boss-talents-dmg-numbers" style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); white-space: nowrap;">0 / 0</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;">
+              <span class="boss-talents-badge">Очки: <b id="boss-talents-total">0</b></span>
+              <span id="boss-talents-new-badge" class="boss-talents-badge">Новые: <b id="boss-talents-new">0</b></span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- Top Slot for Manual Boss Attack (when no active battle) -->
-      <div id="boss-attack-slot-top" style="margin-bottom: 12px;"></div>
-
-      <!-- Compact Talents Progress Widget -->
-      <div id="boss-talents-widget" class="card boss-talents-widget" style="padding: 10px 14px; margin-bottom: 12px;">
+      <!-- Idle Talents Card (shown at top when no active battle, damage reset to 0 / N) -->
+      <div id="boss-talents-idle-card" class="card boss-talents-widget" style="padding: 10px 14px; margin-bottom: 12px; display: none;">
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
           <div style="display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700;">
             <img src="/static/assets/icons/talents.webp?v=2" class="game-icon-sm" alt="Таланты">
@@ -374,16 +390,19 @@
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; max-width: 300px;">
             <div class="boss-talents-progress-track">
-              <div id="boss-talents-dmg-fill" class="boss-talents-progress-fill" style="width: 0%;"></div>
+              <div id="boss-talents-idle-dmg-fill" class="boss-talents-progress-fill" style="width: 0%;"></div>
             </div>
-            <span id="boss-talents-dmg-numbers" style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); white-space: nowrap;">0 / 0</span>
+            <span id="boss-talents-idle-dmg-numbers" style="font-size: 11px; font-weight: 600; color: var(--muted-foreground); white-space: nowrap;">0 / 0</span>
           </div>
           <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;">
-            <span class="boss-talents-badge">Очки: <b id="boss-talents-total">0</b></span>
-            <span id="boss-talents-new-badge" class="boss-talents-badge">Новые: <b id="boss-talents-new">0</b></span>
+            <span class="boss-talents-badge">Очки: <b id="boss-talents-idle-total">0</b></span>
+            <span id="boss-talents-idle-new-badge" class="boss-talents-badge">Новые: <b id="boss-talents-idle-new">0</b></span>
           </div>
         </div>
       </div>
+
+      <!-- Top Slot for Manual Boss Attack (when no active battle) -->
+      <div id="boss-attack-slot-top" style="margin-bottom: 12px;"></div>
 
       <!-- Melee Attacks (4 attacks) -->
       <div class="card">
@@ -1927,8 +1946,8 @@
 
   <script src="vendor/bundle-codec.js?v=20261124_03"></script>
   <script src="vendor/spine-runtime.js?v=20261124_03"></script>
-  <script src="spine_room_player.js?v=20261125_04"></script>
-  <script src="app.js?v=20261125_04"></script>
+  <script src="spine_room_player.js?v=20261125_05"></script>
+  <script src="app.js?v=20261125_05"></script>
 </body>
 
 </html>

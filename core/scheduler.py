@@ -55,6 +55,7 @@ class SchedulerController:
         self._immediate_routine_task: Optional[asyncio.Task] = None
         self._melee_timer_task: Optional[asyncio.Task] = None
         self._business_timer_task: Optional[asyncio.Task] = None
+        self._katala_timer_task: Optional[asyncio.Task] = None
 
     def set_boss_fast_mode(self, active: bool) -> None:
         """Переключает интервал проверки боссов (12с в бою / 60с в простое)."""
@@ -189,6 +190,31 @@ class SchedulerController:
         except RuntimeError:
             pass
 
+    async def _delayed_katala_run(self, delay_sec: float) -> None:
+        try:
+            await asyncio.sleep(delay_sec)
+            if not self.routine_worker:
+                return
+            await self.routine_worker.play_katala_if_ready()
+            await self.refresh_slice("profile", force=True)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("Ошибка отложенного запуска Каталы: %s", e)
+
+    def reschedule_katala_in(self, wait_seconds: float) -> None:
+        """Планирует точный одноразовый запуск Каталы секунда в секунду к моменту отката."""
+        if not self.routine_worker:
+            return
+        clamped = max(2.0, min(float(wait_seconds), 86500.0))
+        if self._katala_timer_task is not None and not self._katala_timer_task.done():
+            self._katala_timer_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            self._katala_timer_task = loop.create_task(self._delayed_katala_run(clamped))
+        except RuntimeError:
+            pass
+
     async def _run_routine_and_refresh(self) -> Any:
         if not self.routine_worker:
             return None
@@ -303,6 +329,17 @@ def create_scheduler(
         max_instances=1,
     )
     logger.info("Cron-триггер ежедневной туалетной бумаги (00:01 МСК) зарегистрирован.")
+
+    scheduler.add_job(
+        routine_worker.send_podogrev_if_ready,
+        trigger=CronTrigger(hour=0, minute=0, second=5, timezone=msk_tz),
+        id=f"daily_podogrev_send_msk_{acc_id}",
+        name=f"Daily Podogrev Send 00:00:05 MSK for account {acc_id}",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Cron-триггер ежедневной раздачи подогревов (00:00:05 МСК) зарегистрирован.")
+    routine_worker.on_katala_reschedule = controller.reschedule_katala_in
 
     if boss_worker:
         boss_worker.on_activity_change = controller.set_boss_fast_mode
