@@ -130,7 +130,7 @@ async def test_prewarm_dry_run_and_disk_guard():
 def test_sw_js_rules_and_network_only():
     root = Path(__file__).resolve().parent.parent
     sw_text = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
-    assert "prisonbot-assets-v2" in sw_text
+    assert "prisonbot-assets-v3" in sw_text
     assert "/assets_cache/" in sw_text
     assert "/api/v1/assets/proxy" in sw_text
     assert "/static/assets/icons/" in sw_text

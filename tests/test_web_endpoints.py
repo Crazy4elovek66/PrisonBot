@@ -116,3 +116,31 @@ async def test_wardrobe_room_render_endpoint():
         assert "skeleton.json" in d27["spine"]["skeletonUrl"]
         assert "skeleton.atlas" in d27["spine"]["atlasUrl"]
         assert d27["spine"]["altRootOffset"] is False
+
+
+@pytest.mark.asyncio
+async def test_brand_logo_and_favicon_endpoints():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r_index = await ac.get("/")
+        assert r_index.status_code == 200
+        html = r_index.text
+        assert "favicon-32x32.png" in html
+        assert "favicon.ico" in html
+        assert "apple-touch-icon.png" in html
+        assert "bot_logo_128.webp" in html
+        assert '<div class="drawer-logo">⛓️</div>' not in html
+
+        checks = [
+            ("/favicon.ico", ("image/x-icon", "image/vnd.microsoft.icon")),
+            ("/assets/icons/favicon-32x32.png", ("image/png",)),
+            ("/assets/icons/favicon-16x16.png", ("image/png",)),
+            ("/assets/icons/bot_logo_128.webp", ("image/webp",)),
+            ("/assets/icons/apple-touch-icon.png", ("image/png",)),
+        ]
+        for url, allowed_mimes in checks:
+            resp = await ac.get(url)
+            assert resp.status_code == 200, f"{url} returned {resp.status_code}"
+            assert len(resp.content) > 0
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            assert ctype in allowed_mimes, f"{url} unexpected content-type: {ctype}"

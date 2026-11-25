@@ -250,20 +250,40 @@ def create_app() -> FastAPI:
     app.include_router(public_router)
     app.include_router(api_router)
 
-    # Direct fallback for /assets/... requests from browser
+    # Static files directory
+    static_dir = Path(__file__).resolve().parent / "static"
+    static_dir.mkdir(parents=True, exist_ok=True)
+    local_assets_root = (static_dir / "assets").resolve()
+
+    # Direct fallback for /assets/... requests from browser (local static assets first, then game CDN proxy)
     @app.get("/assets/{rest_path:path}")
     async def root_assets_proxy(rest_path: str):
+        from fastapi.responses import FileResponse
+        try:
+            candidate = (local_assets_root / rest_path).resolve()
+            if candidate.is_relative_to(local_assets_root) and candidate.is_file():
+                return FileResponse(candidate, headers={"Cache-Control": "public, max-age=86400"})
+        except Exception:
+            pass
         return await proxy_game_asset(path=f"assets/{rest_path}")
+
+    @app.get("/favicon.ico")
+    async def serve_favicon():
+        ico_file = static_dir / "favicon.ico"
+        if not ico_file.exists():
+            return HTMLResponse("Not found", status_code=404)
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            ico_file,
+            media_type="image/x-icon",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     # Direct hashed asset cache route (local dev + Nginx @prison_asset_miss fallback)
     @app.get("/assets_cache/{filename}")
     async def root_assets_cache(filename: str, path: Optional[str] = None, url: Optional[str] = None):
         from web.routes import serve_direct_cached_asset
         return await serve_direct_cached_asset(filename=filename, path=path, url=url)
-
-    # Static files directory
-    static_dir = Path(__file__).resolve().parent / "static"
-    static_dir.mkdir(parents=True, exist_ok=True)
 
     @app.get("/sw.js")
     async def serve_service_worker():
