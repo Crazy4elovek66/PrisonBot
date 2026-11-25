@@ -736,6 +736,63 @@ async def test_social_worker_never_calls_send_gift(social_setup):
     mock_api.send_gift.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_fast_friend_requests_job_interval_and_instant_hub_sync(social_setup):
+    from core.scheduler import SchedulerController, create_scheduler
+    from core.state_hub import state_hub
+    from core.models import BotConfig
+    from unittest.mock import MagicMock
+
+    engine, acc_id = social_setup
+    state_hub.clear(acc_id)
+    q = state_hub.subscribe(acc_id)
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == acc_id))).scalar_one()
+        cfg.auto_friends = True
+        cfg.friend_accept_all = False
+        cfg.friend_min_poison_damage = 10000
+        cfg.friend_auto_decline_below = False
+        await session.commit()
+
+    reqs = [
+        {"userId": 1, "nickname": "parlik16", "poisonDamage": 21844},
+        {"userId": 2, "nickname": "strong2", "poisonDamage": 15000},
+        {"userId": 3, "nickname": "Иван", "poisonDamage": 500},
+        {"userId": 4, "nickname": "youngSniff", "poisonDamage": 400},
+        {"userId": 5, "nickname": "Июльский", "poisonDamage": 300},
+        {"userId": 6, "nickname": "Бывалый 2", "poisonDamage": 200},
+    ]
+    mock_api = MagicMock(spec=SocialAPI)
+    mock_api.get_enriched_friend_requests = AsyncMock(return_value=reqs)
+    mock_api.accept_friend = AsyncMock(return_value={"success": True})
+
+    worker = SocialWorker(account_id=acc_id, social_api=mock_api, db_engine=engine, enable_jitter=False)
+    res = await worker.check_incoming_friend_requests()
+    assert res["accepted"] == 2
+    assert res["remaining"] == 4
+
+    sl = state_hub.get_slice(acc_id, "friend_requests")
+    assert sl is not None
+    assert sl.data["total"] == 4
+    assert all(r["userId"] not in (1, 2) for r in sl.data["requests"])
+
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    social_evts = [e for e in events if e.get("type") == "social_updated"]
+    assert len(social_evts) == 1
+    assert social_evts[0]["incoming_count"] == 4
+    assert social_evts[0]["accepted_ids"] == [1, 2]
+    state_hub.unsubscribe(acc_id, q)
+
+    assert SchedulerController.FRIEND_REQUESTS_FAST_SEC <= 45
+    sched = create_scheduler(routine_worker=MagicMock(account_id=acc_id, db_engine=None), social_worker=worker)
+    job = sched.get_job(f"friend_requests_fast_{acc_id}")
+    assert job is not None
+    assert int(job.trigger.interval.total_seconds()) <= 45
+
+
 
 
 

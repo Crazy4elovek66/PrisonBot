@@ -28,6 +28,7 @@ class SchedulerController:
 
     BOSS_FAST_INTERVAL_SEC = 12
     BOSS_IDLE_INTERVAL_SEC = 60
+    FRIEND_REQUESTS_FAST_SEC = 30
     TIER1_FAST_SEC = 20
     TIER1_IDLE_SEC = 40
     TIER2_INTERVAL_SEC = 105
@@ -53,6 +54,7 @@ class SchedulerController:
         self._immediate_boss_task: Optional[asyncio.Task] = None
         self._immediate_prison_task: Optional[asyncio.Task] = None
         self._immediate_routine_task: Optional[asyncio.Task] = None
+        self._immediate_social_req_task: Optional[asyncio.Task] = None
         self._melee_timer_task: Optional[asyncio.Task] = None
         self._business_timer_task: Optional[asyncio.Task] = None
         self._katala_timer_task: Optional[asyncio.Task] = None
@@ -240,6 +242,31 @@ class SchedulerController:
         self._immediate_routine_task = asyncio.create_task(self._run_routine_and_refresh())
         return self._immediate_routine_task
 
+    async def _run_social_requests_and_refresh(self) -> Any:
+        if not self.social_worker:
+            return None
+        try:
+            res = await self.social_worker.check_incoming_friend_requests()
+            if isinstance(res, dict) and (res.get("accepted", 0) > 0 or res.get("declined", 0) > 0):
+                await asyncio.gather(
+                    self.refresh_slice("friends", force=True),
+                    self.refresh_slice("friend_requests", force=True),
+                    return_exceptions=True,
+                )
+            return res
+        except Exception as e:
+            logger.warning("Ошибка немедленной проверки заявок в друзья: %s", e)
+            return None
+
+    def trigger_social_requests_now(self) -> Optional[asyncio.Task]:
+        """Немедленно проверяет входящие заявки в друзья (при смене фильтров в UI)."""
+        if not self.social_worker:
+            return None
+        if self._immediate_social_req_task is not None and not self._immediate_social_req_task.done():
+            return self._immediate_social_req_task
+        self._immediate_social_req_task = asyncio.create_task(self._run_social_requests_and_refresh())
+        return self._immediate_social_req_task
+
     async def refresh_slice(self, slice_name: str, force: bool = True) -> None:
         try:
             from web.routes import refresh_hub_slice
@@ -252,6 +279,7 @@ class SchedulerController:
         await asyncio.gather(
             self.refresh_slice("profile", force=True),
             self.refresh_slice("boss", force=True),
+            self.refresh_slice("talents", force=True),
             self.refresh_slice("state", force=True),
             return_exceptions=True,
         )
@@ -403,6 +431,20 @@ def create_scheduler(
             max_instances=1,
         )
         logger.info(f"SocialWorker зарегистрирован с интервалом {s_interval} минут.")
+
+        scheduler.add_job(
+            social_worker.check_incoming_friend_requests,
+            trigger="interval",
+            seconds=SchedulerController.FRIEND_REQUESTS_FAST_SEC,
+            id=f"friend_requests_fast_{acc_id}",
+            name=f"Fast Friend Requests Check for account {acc_id}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(
+            f"Быстрая проверка входящих заявок в друзья зарегистрирована с интервалом {SchedulerController.FRIEND_REQUESTS_FAST_SEC}с."
+        )
 
     # Многоуровневые фоновые обновления LiveStateHub (для бесшовного SSE UI)
     scheduler.add_job(

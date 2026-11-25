@@ -52,6 +52,7 @@ class SocialWorker:
         self.enable_jitter = enable_jitter
         self.raids_api: Optional[Any] = None
         self._last_bg_guild_scan: float = 0.0
+        self._friend_req_lock: asyncio.Lock = asyncio.Lock()
 
     async def _jitter(self, min_sec: Optional[float] = None, max_sec: Optional[float] = None) -> None:
         if self.enable_jitter:
@@ -218,6 +219,156 @@ class SocialWorker:
                 )
 
         return removed_count
+
+    async def check_incoming_friend_requests(self, config: Optional[Any] = None) -> Dict[str, Any]:
+        """
+        Быстрая проверка и обработка входящих заявок в друзья (с защитой asyncio.Lock).
+        После принятия/отклонения немедленно обновляет StateHub и пушит social_updated/domain_sync в UI.
+        """
+        async with self._friend_req_lock:
+            if config is None:
+                config = await get_or_create_config(self.account_id, self.db_engine)
+            if not is_worker_active(config):
+                return {"status": "skipped", "reason": "paused_or_sleep", "accepted": 0, "declined": 0}
+            if not getattr(config, "auto_friends", False):
+                return {"status": "skipped", "reason": "auto_friends_disabled", "accepted": 0, "declined": 0}
+
+            accepted_ids: List[int] = []
+            rejected_ids: List[int] = []
+            try:
+                raw_enriched = None
+                if hasattr(self.api, "get_enriched_friend_requests"):
+                    res_enr = await self.api.get_enriched_friend_requests()
+                    if isinstance(res_enr, list):
+                        raw_enriched = res_enr
+
+                if raw_enriched is not None:
+                    req_list = raw_enriched
+                else:
+                    reqs = await self.api.get_friend_requests()
+                    req_list = reqs if isinstance(reqs, list) else reqs.get("requests", []) if isinstance(reqs, dict) else []
+
+                accept_all = getattr(config, "friend_accept_all", False)
+                filter_mode = getattr(config, "friend_filter_mode", "and")
+                min_lvl = getattr(config, "friend_min_level", 0)
+                min_auth = getattr(config, "friend_min_authority", 0)
+                min_bic = getattr(config, "friend_min_biceps", 0)
+                min_tal = getattr(config, "friend_min_talents", 0)
+                min_poi = getattr(config, "friend_min_poison_damage", 0)
+                min_tot = getattr(config, "friend_min_total_damage", 0)
+                auto_decline = getattr(config, "friend_auto_decline_below", False)
+
+                for r in req_list:
+                    if not isinstance(r, dict):
+                        continue
+                    f_id = r.get("userId") or r.get("fromUserId")
+                    if not f_id:
+                        continue
+                    f_uid = int(f_id)
+
+                    lvl = int(r.get("level") or r.get("lvl") or 0)
+                    auth = int(r.get("authority", 0) or 0)
+                    bic_raw = r.get("biceps")
+                    bic = int(bic_raw) if bic_raw is not None else None
+                    biceps_pass = (bic >= min_bic) if bic is not None else (min_bic == 0)
+                    tal = int(r.get("talents") or r.get("talentsCount") or r.get("TalentsCount") or 0)
+
+                    wep_dmg = r.get("weaponDamage") or r.get("WeaponDamage") or {}
+                    poi_dmg = int(r.get("poisonDamage") or wep_dmg.get("poison") or wep_dmg.get("Poison", 0) or 0)
+                    gun_dmg = int(wep_dmg.get("gunshot") or wep_dmg.get("Gunshot", 0) or 0)
+                    kni_dmg = int(wep_dmg.get("knife") or wep_dmg.get("Knife", 0) or 0)
+                    tot_dmg = int(r.get("totalDamage") or (poi_dmg + gun_dmg + kni_dmg) or 0)
+
+                    if accept_all:
+                        passes = True
+                    elif filter_mode == "or":
+                        has_any_threshold = (
+                            min_lvl > 0 or min_auth > 0 or min_bic > 0 or
+                            min_tal > 0 or min_poi > 0 or min_tot > 0
+                        )
+                        if not has_any_threshold:
+                            passes = True
+                        else:
+                            passes = (
+                                (min_lvl > 0 and lvl >= min_lvl) or
+                                (min_auth > 0 and auth >= min_auth) or
+                                (min_bic > 0 and bic is not None and bic >= min_bic) or
+                                (min_tal > 0 and tal >= min_tal) or
+                                (min_poi > 0 and poi_dmg >= min_poi) or
+                                (min_tot > 0 and tot_dmg >= min_tot)
+                            )
+                    else:
+                        passes = (
+                            lvl >= min_lvl and
+                            auth >= min_auth and
+                            biceps_pass and
+                            tal >= min_tal and
+                            poi_dmg >= min_poi and
+                            tot_dmg >= min_tot
+                        )
+
+                    if passes:
+                        try:
+                            await self.api.accept_friend(f_uid)
+                            accepted_ids.append(f_uid)
+                            await self._log_action("accept_friend", "/api/friendship/accept-request", 200, True, {
+                                "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal, "poisonDamage": poi_dmg
+                            })
+                            await self._jitter()
+                        except Exception as fe:
+                            logger.warning("Ошибка принятия друга %s: %s", f_uid, fe)
+                    elif auto_decline:
+                        try:
+                            await self.api.decline_friend(f_uid)
+                            rejected_ids.append(f_uid)
+                            await self._log_action("decline_friend", "/api/friendship/decline-request", 200, True, {
+                                "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal
+                            })
+                            await self._jitter()
+                        except Exception as de:
+                            logger.warning("Ошибка отклонения друга %s: %s", f_uid, de)
+
+                processed = set(accepted_ids) | set(rejected_ids)
+                remaining = [
+                    r for r in req_list
+                    if isinstance(r, dict) and int(r.get("userId") or r.get("fromUserId") or 0) not in processed
+                ]
+
+                try:
+                    from core.state_hub import state_hub
+                    state_hub.update_slice(
+                        self.account_id,
+                        "friend_requests",
+                        {"success": True, "requests": remaining, "total": len(remaining)},
+                    )
+                    if accepted_ids:
+                        state_hub.invalidate_slice(self.account_id, "friends")
+                    if processed:
+                        state_hub.emit_change(
+                            self.account_id,
+                            ["social"],
+                            patch={
+                                "social": {
+                                    "incoming_requests": remaining,
+                                    "incoming_count": len(remaining),
+                                    "accepted_ids": accepted_ids,
+                                    "rejected_ids": rejected_ids,
+                                }
+                            },
+                            reason="auto_friend_requests",
+                        )
+                except Exception as hub_err:
+                    logger.debug("check_incoming_friend_requests hub sync error: %s", hub_err)
+
+                return {
+                    "status": "ok",
+                    "accepted": len(accepted_ids),
+                    "declined": len(rejected_ids),
+                    "remaining": len(remaining),
+                }
+            except Exception as e:
+                logger.error("Ошибка получения заявок в друзья: %s", e)
+                return {"status": "error", "error": str(e), "accepted": len(accepted_ids), "declined": len(rejected_ids)}
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Один цикл выполнения социальных активностей."""
@@ -440,101 +591,12 @@ class SocialWorker:
                 results["errors"].append(f"gifts: {e}")
 
         # 3. Обработка входящих заявок в друзья
-        if getattr(config, "auto_friends", False):
-            try:
-                raw_enriched = None
-                if hasattr(self.api, "get_enriched_friend_requests"):
-                    res_enr = await self.api.get_enriched_friend_requests()
-                    if isinstance(res_enr, list) and len(res_enr) > 0:
-                        raw_enriched = res_enr
-
-                if raw_enriched is not None:
-                    req_list = raw_enriched
-                else:
-                    reqs = await self.api.get_friend_requests()
-                    req_list = reqs if isinstance(reqs, list) else reqs.get("requests", []) if isinstance(reqs, dict) else []
-
-                accept_all = getattr(config, "friend_accept_all", False)
-                filter_mode = getattr(config, "friend_filter_mode", "and")
-                min_lvl = getattr(config, "friend_min_level", 0)
-                min_auth = getattr(config, "friend_min_authority", 0)
-                min_bic = getattr(config, "friend_min_biceps", 0)
-                min_tal = getattr(config, "friend_min_talents", 0)
-                min_poi = getattr(config, "friend_min_poison_damage", 0)
-                min_tot = getattr(config, "friend_min_total_damage", 0)
-                auto_decline = getattr(config, "friend_auto_decline_below", False)
-
-                for r in req_list:
-                    if not isinstance(r, dict):
-                        continue
-                    f_id = r.get("userId") or r.get("fromUserId")
-                    if not f_id:
-                        continue
-
-                    lvl = int(r.get("level") or r.get("lvl") or 0)
-                    auth = int(r.get("authority", 0) or 0)
-                    bic_raw = r.get("biceps")
-                    bic = int(bic_raw) if bic_raw is not None else None
-                    biceps_pass = (bic >= min_bic) if bic is not None else (min_bic == 0)
-                    tal = int(r.get("talents") or r.get("talentsCount") or r.get("TalentsCount") or 0)
-
-                    wep_dmg = r.get("weaponDamage") or r.get("WeaponDamage") or {}
-                    poi_dmg = int(r.get("poisonDamage") or wep_dmg.get("poison") or wep_dmg.get("Poison", 0) or 0)
-                    gun_dmg = int(wep_dmg.get("gunshot") or wep_dmg.get("Gunshot", 0) or 0)
-                    kni_dmg = int(wep_dmg.get("knife") or wep_dmg.get("Knife", 0) or 0)
-                    tot_dmg = int(r.get("totalDamage") or (poi_dmg + gun_dmg + kni_dmg) or 0)
-
-                    if accept_all:
-                        passes = True
-                    elif filter_mode == "or":
-                        has_any_threshold = (
-                            min_lvl > 0 or min_auth > 0 or min_bic > 0 or
-                            min_tal > 0 or min_poi > 0 or min_tot > 0
-                        )
-                        if not has_any_threshold:
-                            passes = True
-                        else:
-                            passes = (
-                                (min_lvl > 0 and lvl >= min_lvl) or
-                                (min_auth > 0 and auth >= min_auth) or
-                                (min_bic > 0 and bic is not None and bic >= min_bic) or
-                                (min_tal > 0 and tal >= min_tal) or
-                                (min_poi > 0 and poi_dmg >= min_poi) or
-                                (min_tot > 0 and tot_dmg >= min_tot)
-                            )
-                    else:
-                        passes = (
-                            lvl >= min_lvl and
-                            auth >= min_auth and
-                            biceps_pass and
-                            tal >= min_tal and
-                            poi_dmg >= min_poi and
-                            tot_dmg >= min_tot
-                        )
-
-                    if passes:
-                        try:
-                            await self.api.accept_friend(int(f_id))
-                            results["friends_accepted"] += 1
-                            await self._log_action("accept_friend", "/api/friendship/accept-request", 200, True, {
-                                "fromUserId": f_id, "nickname": r.get("nickname"), "talents": tal, "poisonDamage": poi_dmg
-                            })
-                            await self._jitter()
-                        except Exception as fe:
-                            logger.warning("Ошибка принятия друга %s: %s", f_id, fe)
-                    elif auto_decline:
-                        try:
-                            await self.api.decline_friend(int(f_id))
-                            results["friends_declined"] = results.get("friends_declined", 0) + 1
-                            await self._log_action("decline_friend", "/api/friendship/decline-request", 200, True, {
-                                "fromUserId": f_id, "nickname": r.get("nickname"), "talents": tal
-                            })
-                            await self._jitter()
-                        except Exception as de:
-                            logger.warning("Ошибка отклонения друга %s: %s", f_id, de)
-            except Exception as e:
-                logger.error("Ошибка получения заявок в друзья: %s", e)
-                results["errors"].append(f"friends: {e}")
+        fr_res = await self.check_incoming_friend_requests(config=config)
+        results["friends_accepted"] += fr_res.get("accepted", 0)
+        if fr_res.get("declined", 0) > 0:
+            results["friends_declined"] = results.get("friends_declined", 0) + fr_res["declined"]
+        if fr_res.get("error"):
+            results["errors"].append(f"friends: {fr_res['error']}")
 
         # 4. Месячные делюги
         if getattr(config, "auto_events", False):

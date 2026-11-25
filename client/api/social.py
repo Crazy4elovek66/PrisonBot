@@ -714,6 +714,12 @@ class SocialAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_friend_top100(self) -> Dict[str, Any]:
+        """Получение топ-100 игроков (GET /api/friend/top100)."""
+        resp = await self.http.get("/api/friend/top100")
+        resp.raise_for_status()
+        return resp.json()
+
     async def get_monthly_state(self) -> Dict[str, Any]:
         """Получение состояния ежемесячного календаря наград."""
         resp = await self.http.get("/api/monthly/state")

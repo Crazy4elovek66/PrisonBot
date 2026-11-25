@@ -104,6 +104,7 @@ class RoutineWorker:
         self.on_katala_reschedule = on_katala_reschedule
         self._daily_interaction_done: Dict[str, Dict[str, set]] = {}
         self._daily_interaction_limit_hit: Dict[str, set] = {}
+        self._interaction_pool_cache: tuple = (0.0, [])
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -192,8 +193,24 @@ class RoutineWorker:
             logger.warning(f"Ошибка при автоигре у Каталы: {e}")
             return {"success": False, "status": "error", "error": str(e)}
 
-    async def collect_interaction_targets(self, from_user_id: int) -> List[int]:
-        """Собирает дедуплицированный пул целей (друзья + кандидаты из БД/заявок), исключая свой userId."""
+    async def collect_interaction_targets(
+        self,
+        from_user_id: int,
+        min_count: int = 80,
+        force_refresh: bool = False,
+    ) -> List[int]:
+        """
+        Собирает широкий дедуплицированный пул целей для фарма достижений (исключая свой userId):
+        1) Друзья
+        2) Кандидаты и отправленные заявки из БД (радар / рейды)
+        3) Топы игроков (weekly-top, achievements, friend/top100)
+        4) Участники бригад (recruitment + guild members)
+        """
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cached_ts, cached_list = self._interaction_pool_cache
+        if not force_refresh and cached_list and (now_ts - cached_ts) < 600.0 and len(cached_list) >= min_count:
+            return list(cached_list)
+
         targets: List[int] = []
         seen: set = {int(from_user_id)} if from_user_id else set()
 
@@ -206,15 +223,21 @@ class RoutineWorker:
             except (TypeError, ValueError):
                 pass
 
+        def _extract_from_items(items: Any) -> None:
+            if not isinstance(items, list):
+                return
+            for item in items:
+                if isinstance(item, dict):
+                    _add_uid(item.get("userId") or item.get("playerId") or item.get("id"))
+                elif isinstance(item, (int, str)):
+                    _add_uid(item)
+
         if self.social_api is not None:
-            try:
-                friends = await self.social_api.get_all_friend_profiles()
-                if isinstance(friends, list):
-                    for f in friends:
-                        if isinstance(f, dict):
-                            _add_uid(f.get("userId") or f.get("id"))
-            except Exception as e:
-                logger.debug(f"collect_interaction_targets friends error: {e}")
+            if hasattr(self.social_api, "get_all_friend_profiles"):
+                try:
+                    _extract_from_items(await self.social_api.get_all_friend_profiles())
+                except Exception as e:
+                    logger.debug(f"collect_interaction_targets friends error: {e}")
 
         if self.db_engine is not None:
             try:
@@ -238,7 +261,108 @@ class RoutineWorker:
             except Exception as e:
                 logger.debug(f"collect_interaction_targets db error: {e}")
 
+        if self.social_api is not None and len(targets) < min_count:
+            for fetcher_name in ("get_weekly_top", "get_weekly_achievements", "get_friend_top100"):
+                fetcher = getattr(self.social_api, fetcher_name, None)
+                if callable(fetcher):
+                    try:
+                        res = await fetcher(100) if fetcher_name != "get_friend_top100" else await fetcher()
+                        if isinstance(res, dict):
+                            _extract_from_items(res.get("top") or res.get("players") or res.get("users") or res.get("items") or res.get("data"))
+                        elif isinstance(res, list):
+                            _extract_from_items(res)
+                    except Exception as e:
+                        logger.debug(f"collect_interaction_targets {fetcher_name} error: {e}")
+
+        if self.social_api is not None and len(targets) < min_count and hasattr(self.social_api, "get_recruitment_list") and hasattr(self.social_api, "get_guild_members"):
+            try:
+                rec = await self.social_api.get_recruitment_list(50)
+                guilds = rec.get("guilds") or rec.get("items") or rec.get("list") or [] if isinstance(rec, dict) else (rec if isinstance(rec, list) else [])
+                guild_ids: List[int] = []
+                for g in guilds:
+                    if isinstance(g, dict):
+                        gid = g.get("guildId") or g.get("id")
+                        if gid and int(gid) not in guild_ids:
+                            guild_ids.append(int(gid))
+                for gid in guild_ids[:5]:
+                    if len(targets) >= min_count:
+                        break
+                    try:
+                        m_res = await self.social_api.get_guild_members(gid)
+                        members = m_res.get("members") or m_res.get("users") or [] if isinstance(m_res, dict) else (m_res if isinstance(m_res, list) else [])
+                        _extract_from_items(members)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"collect_interaction_targets guilds error: {e}")
+
+        if targets:
+            self._interaction_pool_cache = (now_ts, list(targets))
         return targets
+
+    async def _load_daily_interaction_groups(self, msk_today: str) -> Dict[str, set]:
+        """Загружает из SQLite отработанные за сегодня цели по группам ('biceps', 'negative') и чистит старые дни."""
+        groups: Dict[str, set] = {"biceps": set(), "negative": set()}
+        if self.db_engine is None:
+            return groups
+        try:
+            from sqlalchemy import select, delete
+            from core.models import DailyInteractionTarget
+            cutoff_day = (datetime.now(MSK_TZ) - timedelta(days=2)).strftime("%Y-%m-%d")
+            async with get_session(self.db_engine) as session:
+                await session.execute(
+                    delete(DailyInteractionTarget).where(
+                        DailyInteractionTarget.account_id == self.account_id,
+                        DailyInteractionTarget.day_msk < cutoff_day,
+                    )
+                )
+                rows = (await session.execute(
+                    select(DailyInteractionTarget.action_group, DailyInteractionTarget.target_id).where(
+                        DailyInteractionTarget.account_id == self.account_id,
+                        DailyInteractionTarget.day_msk == msk_today,
+                    )
+                )).all()
+                for grp, tid in rows:
+                    groups.setdefault(grp, set()).add(int(tid))
+                await session.commit()
+        except Exception as e:
+            logger.debug(f"_load_daily_interaction_groups error: {e}")
+        return groups
+
+    async def _record_daily_interaction_target(
+        self,
+        msk_today: str,
+        action_group: str,
+        target_id: int,
+        action_type: str,
+    ) -> None:
+        if self.db_engine is None:
+            return
+        try:
+            from sqlalchemy import select
+            from core.models import DailyInteractionTarget
+            async with get_session(self.db_engine) as session:
+                existing = (await session.execute(
+                    select(DailyInteractionTarget.id).where(
+                        DailyInteractionTarget.account_id == self.account_id,
+                        DailyInteractionTarget.day_msk == msk_today,
+                        DailyInteractionTarget.action_group == action_group,
+                        DailyInteractionTarget.target_id == int(target_id),
+                    )
+                )).scalar_one_or_none()
+                if existing is None:
+                    session.add(
+                        DailyInteractionTarget(
+                            account_id=self.account_id,
+                            day_msk=msk_today,
+                            action_group=action_group,
+                            target_id=int(target_id),
+                            action_type=action_type,
+                        )
+                    )
+                    await session.commit()
+        except Exception as e:
+            logger.debug(f"_record_daily_interaction_target error: {e}")
 
     async def process_auto_interactions(
         self,
@@ -247,7 +371,7 @@ class RoutineWorker:
     ) -> Dict[str, Any]:
         """
         Выполняет включенные ежедневные авто-взаимодействия (Качать бицуху, Плевать в баланду, Кидать дрожжи)
-        по пулу целей до достижения суточного лимита сервера (с учетом MSK даты).
+        по расширенному пулу целей до достижения суточного лимита сервера (с учетом MSK даты и правила 1 негативного действия на игрока).
         """
         if config is None and self.db_engine is not None:
             config = await get_or_create_config(self.account_id, self.db_engine)
@@ -257,26 +381,29 @@ class RoutineWorker:
             return {"status": "skipped", "reason": "no_social_api"}
 
         actions_cfg = [
-            ("auto_biceps", "UpgradeBiceps", "Качать бицуху"),
-            ("auto_spit_balanda", "Harknut", "Плевать в баланду"),
-            ("auto_throw_yeast", "TossDroj", "Кидать дрожжи"),
+            ("auto_biceps", "UpgradeBiceps", "Качать бицуху", "biceps"),
+            ("auto_spit_balanda", "Harknut", "Плевать в баланду", "negative"),
+            ("auto_throw_yeast", "TossDroj", "Кидать дрожжи", "negative"),
         ]
-        enabled = [(attr, act, title) for attr, act, title in actions_cfg if getattr(config, attr, False)]
+        enabled = [(attr, act, title, grp) for attr, act, title, grp in actions_cfg if getattr(config, attr, False)]
         if not enabled:
             return {"status": "skipped", "reason": "none_enabled"}
 
-        msk_today = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+        msk_today = datetime.now(MSK_TZ).strftime("%Y-%m-%d")
         done_today = self._daily_interaction_done.setdefault(msk_today, {})
         limit_hit_today = self._daily_interaction_limit_hit.setdefault(msk_today, set())
 
-        # Очистка старых дней
         for old_day in [k for k in list(self._daily_interaction_done.keys()) if k != msk_today]:
             self._daily_interaction_done.pop(old_day, None)
         for old_day in [k for k in list(self._daily_interaction_limit_hit.keys()) if k != msk_today]:
             self._daily_interaction_limit_hit.pop(old_day, None)
 
-        if all(act in limit_hit_today for _, act, _ in enabled):
+        if all(act in limit_hit_today for _, act, _, _ in enabled):
             return {"status": "limit_reached", "day": msk_today}
+
+        db_groups = await self._load_daily_interaction_groups(msk_today)
+        for grp in ("biceps", "negative"):
+            done_today.setdefault(grp, set()).update(db_groups.get(grp, set()))
 
         from_user_id = 0
         if isinstance(player_data, dict):
@@ -289,21 +416,20 @@ class RoutineWorker:
                 logger.warning(f"auto_interactions: не удалось получить userId игрока: {e}")
                 return {"status": "error", "error": str(e)}
 
-        targets = await self.collect_interaction_targets(from_user_id)
+        targets = await self.collect_interaction_targets(from_user_id, min_count=80)
         summary: Dict[str, Any] = {"day": msk_today, "targets_pool": len(targets), "actions": {}}
 
-        limit_markers = ("лимит", "limit", "исчерпан", "больше нельзя", "завтра", "максимум")
-        already_markers = ("уже", "already", "использовано", "недоступ")
+        limit_markers = ("лимит", "limit", "исчерпан", "больше нельзя", "максимум")
+        already_markers = ("уже", "already", "использовано", "недоступ", "негатив", "этому игроку")
 
-        for _, action_type, title in enabled:
+        async def _execute_for_targets(action_type: str, title: str, action_group: str, target_list: List[int]) -> tuple:
             if action_type in limit_hit_today:
-                summary["actions"][action_type] = {"done": 0, "limit_reached": True}
-                continue
-            acted_set = done_today.setdefault(action_type, set())
+                return 0, True
+            acted_set = done_today.setdefault(action_group, set())
             done_cnt = 0
             hit_limit = False
 
-            for uid in targets:
+            for uid in target_list:
                 if uid in acted_set:
                     continue
                 try:
@@ -313,40 +439,93 @@ class RoutineWorker:
                     if ok:
                         done_cnt += 1
                         acted_set.add(uid)
+                        await self._record_daily_interaction_target(msk_today, action_group, uid, action_type)
                         if isinstance(res, dict) and res.get("remaining") == 0:
                             hit_limit = True
                             limit_hit_today.add(action_type)
                             break
+                    elif any(m in msg for m in already_markers):
+                        acted_set.add(uid)
+                        await self._record_daily_interaction_target(msk_today, action_group, uid, action_type)
                     elif any(m in msg for m in limit_markers):
                         hit_limit = True
                         limit_hit_today.add(action_type)
                         break
-                    elif any(m in msg for m in already_markers):
-                        acted_set.add(uid)
                 except httpx.HTTPStatusError as err:
                     err_txt = (err.response.text or "").lower()
-                    if any(m in err_txt for m in limit_markers):
+                    if any(m in err_txt for m in already_markers):
+                        acted_set.add(uid)
+                        await self._record_daily_interaction_target(msk_today, action_group, uid, action_type)
+                    elif any(m in err_txt for m in limit_markers):
                         hit_limit = True
                         limit_hit_today.add(action_type)
                         break
-                    if any(m in err_txt for m in already_markers):
-                        acted_set.add(uid)
                 except Exception as e:
                     logger.debug(f"auto_interactions ({action_type} -> {uid}): {e}")
 
                 if self.enable_jitter:
                     await asyncio.sleep(random.uniform(0.3, 0.55))
 
-            summary["actions"][action_type] = {"done": done_cnt, "limit_reached": hit_limit}
-            if done_cnt > 0 or hit_limit:
-                await self._log_action(
-                    f"auto_{action_type.lower()}",
-                    "/api/interaction/perform",
-                    200,
-                    True,
-                    {"title": title, "done": done_cnt, "limit_reached": hit_limit, "day": msk_today},
-                )
-                logger.info(f"Авто-действие '{title}': выполнено={done_cnt}, лимит={hit_limit}")
+            return done_cnt, hit_limit
+
+        # 1. Бицуха (независимая группа)
+        for _, act, title, grp in enabled:
+            if grp == "biceps":
+                done_cnt, hit_limit = await _execute_for_targets(act, title, grp, targets)
+                summary["actions"][act] = {"done": done_cnt, "limit_reached": hit_limit}
+                if done_cnt > 0 or hit_limit:
+                    await self._log_action(f"auto_{act.lower()}", "/api/interaction/perform", 200, True, {"title": title, "done": done_cnt, "limit_reached": hit_limit, "day": msk_today})
+                    logger.info(f"Авто-действие '{title}': выполнено={done_cnt}, лимит={hit_limit}")
+
+        # 2. Негативные действия (Harknut / TossDroj) — общее суточное исключение по игрокам + честное разделение пула
+        neg_enabled = [(act, title) for _, act, title, grp in enabled if grp == "negative" and act not in limit_hit_today]
+        for _, act, title, grp in enabled:
+            if grp == "negative" and act in limit_hit_today:
+                summary["actions"][act] = {"done": 0, "limit_reached": True}
+
+        if neg_enabled:
+            neg_acted = done_today.setdefault("negative", set())
+            eligible_neg = [uid for uid in targets if uid not in neg_acted]
+            if len(neg_enabled) == 2:
+                (act1, title1), (act2, title2) = neg_enabled[0], neg_enabled[1]
+                slice1 = eligible_neg[0::2]
+                slice2 = eligible_neg[1::2]
+                d1, l1 = await _execute_for_targets(act1, title1, "negative", slice1)
+                d2, l2 = await _execute_for_targets(act2, title2, "negative", slice2)
+                # Если одно из действий не достигло лимита, добираем оставшиеся нетронутые цели
+                if not l1:
+                    rem = [uid for uid in eligible_neg if uid not in neg_acted]
+                    if rem:
+                        extra_d1, l1 = await _execute_for_targets(act1, title1, "negative", rem)
+                        d1 += extra_d1
+                if not l2:
+                    rem = [uid for uid in eligible_neg if uid not in neg_acted]
+                    if rem:
+                        extra_d2, l2 = await _execute_for_targets(act2, title2, "negative", rem)
+                        d2 += extra_d2
+                for act, title, done_cnt, hit_limit in ((act1, title1, d1, l1), (act2, title2, d2, l2)):
+                    summary["actions"][act] = {"done": done_cnt, "limit_reached": hit_limit}
+                    if done_cnt > 0 or hit_limit:
+                        await self._log_action(f"auto_{act.lower()}", "/api/interaction/perform", 200, True, {"title": title, "done": done_cnt, "limit_reached": hit_limit, "day": msk_today})
+                        logger.info(f"Авто-действие '{title}': выполнено={done_cnt}, лимит={hit_limit}")
+            else:
+                act, title = neg_enabled[0]
+                done_cnt, hit_limit = await _execute_for_targets(act, title, "negative", eligible_neg)
+                summary["actions"][act] = {"done": done_cnt, "limit_reached": hit_limit}
+                if done_cnt > 0 or hit_limit:
+                    await self._log_action(f"auto_{act.lower()}", "/api/interaction/perform", 200, True, {"title": title, "done": done_cnt, "limit_reached": hit_limit, "day": msk_today})
+                    logger.info(f"Авто-действие '{title}': выполнено={done_cnt}, лимит={hit_limit}")
+
+        try:
+            from core.state_hub import state_hub
+            state_hub.emit_change(
+                self.account_id,
+                ["routine", "profile"],
+                patch={"routine": {"auto_interactions": summary}},
+                reason="auto_interactions",
+            )
+        except Exception:
+            pass
 
         return summary
 

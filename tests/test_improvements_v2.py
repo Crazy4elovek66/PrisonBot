@@ -433,3 +433,60 @@ def test_auto_interactions_and_boss_talents_ui_and_config_flags():
     boss_fn_start = js.index("async function loadBoss()")
     boss_fn_end = js.index("async function ", boss_fn_start + 10)
     assert "loadTalents()" in js[boss_fn_start:boss_fn_end]
+    assert "mergeTalentsState" in js
+    assert "domain_sync" in js
+    assert "social_updated" in js
+
+
+@pytest.mark.asyncio
+async def test_auto_interactions_negative_disjoint_and_extended_pool(tmp_path):
+    from core.models import BotConfig, DailyInteractionTarget
+
+    db_path = tmp_path / "test_neg_disjoint.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79000000001", game_user_id=1000, nickname="Test"))
+        session.add(BotConfig(account_id=1, auto_biceps=False, auto_spit_balanda=True, auto_throw_yeast=True))
+        await session.commit()
+
+    calls = []
+
+    async def _perform_interaction(from_uid, to_uid, action_type):
+        calls.append((to_uid, action_type))
+        if to_uid == 202:
+            return {"success": False, "message": "Негативное действие уже применено сегодня"}
+        return {"success": True}
+
+    social_api = SimpleNamespace(
+        get_all_friend_profiles=AsyncMock(return_value=[{"userId": 101}, {"userId": 202}]),
+        get_weekly_top=AsyncMock(return_value={"top": [{"userId": 303}, {"userId": 404}, {"userId": 505}]}),
+        perform_interaction=AsyncMock(side_effect=_perform_interaction),
+    )
+    rw = RoutineWorker(
+        account_id=1,
+        player_api=SimpleNamespace(),
+        db_engine=engine,
+        social_api=social_api,
+        enable_jitter=False,
+    )
+
+    res = await rw.process_auto_interactions(player_data={"userId": 1000})
+    assert res["targets_pool"] == 5  # 101, 202 (друзья) + 303, 404, 505 (weekly top)
+
+    harknut_targets = {uid for uid, act in calls if act == "Harknut"}
+    droj_targets = {uid for uid, act in calls if act == "TossDroj"}
+    # Цели для плевка и дрожжей не пересекаются в одни сутки МСК!
+    assert harknut_targets.isdisjoint(droj_targets)
+    assert res["actions"]["Harknut"]["done"] >= 2
+    assert res["actions"]["TossDroj"]["done"] >= 1
+
+    # Повторный вызов в те же сутки не трогает уже обработанные негативные цели (включая 202)
+    calls.clear()
+    res2 = await rw.process_auto_interactions(player_data={"userId": 1000})
+    assert calls == []
+    assert res2["actions"]["Harknut"]["done"] == 0
+    assert res2["actions"]["TossDroj"]["done"] == 0
+
+    await engine.dispose()

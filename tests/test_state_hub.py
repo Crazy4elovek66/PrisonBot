@@ -122,3 +122,54 @@ async def test_player_api_init_single_flight():
     r1, r2 = await asyncio.gather(api.init_player(), api.init_player())
     assert calls == 1
     assert r1 == r2 == {"userId": 1, "calls": 1}
+
+
+def test_state_hub_talents_protection_and_idle_zeroing():
+    hub = LiveStateHub()
+    valid = {"currentDamage": 67, "requiredDamage": 90, "spentPoints": 10, "unspentPoints": 2, "totalPoints": 12}
+    res1 = hub.merge_talents_state(1, valid)
+    assert res1["currentDamage"] == 67
+    assert res1["totalPoints"] == 12
+
+    # Пустой или нулевой пакет не должен затирать валидные таланты
+    res_empty = hub.merge_talents_state(1, {})
+    assert res_empty["currentDamage"] == 67
+    assert res_empty["requiredDamage"] == 90
+    res_zero = hub.merge_talents_state(1, {"currentDamage": 0, "requiredDamage": 0, "totalPoints": 0, "unspentPoints": 0})
+    assert res_zero["currentDamage"] == 67
+    assert res_zero["totalPoints"] == 12
+
+    # При отсутствии активного боя обнуляется только currentDamage, очки и порог сохраняются
+    res_idle = hub.merge_talents_state(1, None, allow_damage_zero=True)
+    assert res_idle["currentDamage"] == 0
+    assert res_idle["requiredDamage"] == 90
+    assert res_idle["totalPoints"] == 12
+    assert res_idle["unspentPoints"] == 2
+
+
+@pytest.mark.asyncio
+async def test_state_hub_emit_change_revisions_and_domain_sync():
+    hub = LiveStateHub()
+    q = hub.subscribe(1)
+    cb_calls = []
+    hub.register_invalidation_callback(lambda acc, doms, patch, reason: cb_calls.append((acc, doms, reason)))
+
+    hub.update_slice(1, "boss", {"active": True, "hp": 500})
+    evt1 = hub.emit_change(1, ["boss", "talents"], patch={"boss": {"hp": 400}, "talents": {"currentDamage": 100, "requiredDamage": 200, "totalPoints": 5}}, reason="boss_hit")
+    assert evt1["revisions"]["boss"] == 1
+    assert evt1["revisions"]["talents"] == 1
+    assert hub.get_slice(1, "boss").data["active"] is True
+    assert hub.get_slice(1, "boss").data["hp"] == 400
+    assert cb_calls == [(1, ["boss", "talents"], "boss_hit")]
+
+    evt2 = hub.emit_change(1, ["social"], patch={"social": {"incoming_count": 4, "accepted_ids": [11, 22]}}, reason="accept")
+    assert evt2["revisions"]["social"] == 1
+
+    # Очищаем первые 2 slice_update (от update_slice("boss") и merge_talents_state) и проверяем domain_sync + social_updated
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    types = [e["type"] for e in events]
+    assert "domain_sync" in types
+    assert "social_updated" in types
+    hub.unsubscribe(1, q)

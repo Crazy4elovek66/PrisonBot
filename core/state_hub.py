@@ -78,14 +78,17 @@ class LiveStateHub:
         "profile",
         "state",
         "boss",
+        "talents",
         "presets",
         "prisons",
         "friends",
         "friend_requests",
         "friends_stats",
+        "social",
         "radar",
         "routine",
         "collections",
+        "notifications",
         "config",
     )
 
@@ -95,6 +98,8 @@ class LiveStateHub:
         self._in_flight: Dict[str, asyncio.Task] = {}
         self._versions_global: Dict[int, int] = {}
         self._preset_runs: Dict[int, PresetRunState] = {}
+        self._domain_revisions: Dict[int, Dict[str, int]] = {}
+        self._invalidation_callbacks: List[Callable[[int, List[str], Optional[Dict[str, Any]], str], Any]] = []
 
     def clear(self, account_id: Optional[int] = None) -> None:
         """Очищает кэш срезов (используется при сбросе состояния в тестах или смене аккаунта)."""
@@ -102,10 +107,27 @@ class LiveStateHub:
             self._slices.clear()
             self._versions_global.clear()
             self._preset_runs.clear()
+            self._domain_revisions.clear()
         else:
             self._slices.pop(account_id, None)
             self._versions_global.pop(account_id, None)
             self._preset_runs.pop(account_id, None)
+            self._domain_revisions.pop(account_id, None)
+
+    def register_invalidation_callback(
+        self,
+        cb: Callable[[int, List[str], Optional[Dict[str, Any]], str], Any],
+    ) -> None:
+        if cb not in self._invalidation_callbacks:
+            self._invalidation_callbacks.append(cb)
+
+    def get_domain_revisions(self, account_id: int) -> Dict[str, int]:
+        return dict(self._domain_revisions.get(account_id, {}))
+
+    def invalidate_slice(self, account_id: int, slice_name: str) -> None:
+        acc_map = self._slices.get(account_id)
+        if acc_map is not None:
+            acc_map.pop(slice_name, None)
 
     def get_preset_state(self, account_id: int) -> Optional[PresetRunState]:
         return self._preset_runs.get(account_id)
@@ -176,6 +198,7 @@ class LiveStateHub:
             "type": "snapshot",
             "accountId": account_id,
             "versions": {k: e.version for k, e in acc_slices.items()},
+            "revisions": self.get_domain_revisions(account_id),
             "updatedAt": {k: e.updated_at for k, e in acc_slices.items()},
             "slices": {k: copy.deepcopy(e.data) for k, e in acc_slices.items()},
         }
@@ -289,6 +312,135 @@ class LiveStateHub:
             updated_any = updated_any or changed_st
 
         return updated_any
+
+    @staticmethod
+    def _is_valid_talents_payload(data: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(data, dict) or not data:
+            return False
+        req = int(data.get("requiredDamage") or data.get("next_point_damage") or 0)
+        cur = int(data.get("currentDamage") or data.get("damage") or 0)
+        spent = int(data.get("spentPoints") or 0)
+        unspent = int(data.get("unspentPoints") or data.get("free_points") or 0)
+        total = int(data.get("totalPoints") if data.get("totalPoints") is not None else (data.get("points") if data.get("points") is not None else (spent + unspent)))
+        return req > 0 or total > 0 or unspent > 0 or cur > 0
+
+    def merge_talents_state(
+        self,
+        account_id: int,
+        incoming: Optional[Dict[str, Any]],
+        *,
+        allow_damage_zero: bool = False,
+        source_tag: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Защищённо обновляет срез talents: никогда не затирает валидные данные нулевым или пустым пакетом.
+        При allow_damage_zero=True (нет активного боя) обнуляет только currentDamage, сохраняя target и очки.
+        """
+        existing_entry = self.get_slice(account_id, "talents")
+        existing_data = copy.deepcopy(existing_entry.data) if (existing_entry and isinstance(existing_entry.data, dict)) else None
+
+        if allow_damage_zero and existing_data and self._is_valid_talents_payload(existing_data):
+            merged = copy.deepcopy(existing_data)
+            merged["currentDamage"] = 0
+            self.update_slice(account_id, "talents", merged, source_tag=source_tag or (existing_entry.source_tag if existing_entry else None))
+            return merged
+
+        if not self._is_valid_talents_payload(incoming):
+            return existing_data
+
+        inc = copy.deepcopy(incoming)
+        assert isinstance(inc, dict)
+        req = int(inc.get("requiredDamage") or inc.get("next_point_damage") or 0)
+        cur = int(inc.get("currentDamage") or inc.get("damage") or 0)
+        spent = int(inc.get("spentPoints") or 0)
+        unspent = int(inc.get("unspentPoints") if inc.get("unspentPoints") is not None else (inc.get("free_points") or 0))
+        total = int(inc.get("totalPoints") if inc.get("totalPoints") is not None else (inc.get("points") if inc.get("points") is not None else (spent + unspent)))
+
+        if existing_data:
+            if req <= 0 and int(existing_data.get("requiredDamage") or 0) > 0:
+                req = int(existing_data["requiredDamage"])
+            if total <= 0 and int(existing_data.get("totalPoints") or 0) > 0:
+                total = int(existing_data["totalPoints"])
+                spent = int(existing_data.get("spentPoints") or spent)
+                unspent = int(existing_data.get("unspentPoints") or unspent)
+
+        normalized = {
+            **inc,
+            "currentDamage": cur,
+            "requiredDamage": max(0, req),
+            "spentPoints": max(0, spent),
+            "unspentPoints": max(0, unspent),
+            "totalPoints": max(0, total),
+        }
+        self.update_slice(account_id, "talents", normalized, source_tag=source_tag)
+        return normalized
+
+    def emit_change(
+        self,
+        account_id: int,
+        domains: List[str],
+        patch: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Атомарно фиксирует изменения по доменам с монотонным revision,
+        мержит частичный patch (с защитой от затирания), вызывает колбэки инвалидации и рассылает domain_sync в SSE.
+        """
+        if not domains:
+            domains = []
+        revs = self._domain_revisions.setdefault(account_id, {})
+        domain_revs: Dict[str, int] = {}
+        for d in domains:
+            revs[d] = revs.get(d, 0) + 1
+            domain_revs[d] = revs[d]
+
+        safe_patch: Dict[str, Any] = copy.deepcopy(patch) if isinstance(patch, dict) else {}
+
+        if isinstance(safe_patch.get("talents"), dict):
+            merged_talents = self.merge_talents_state(account_id, safe_patch["talents"])
+            if merged_talents is not None:
+                safe_patch["talents"] = merged_talents
+
+        if isinstance(safe_patch.get("profile"), dict):
+            self.patch_profile_resources(account_id, **safe_patch["profile"])
+
+        for dom_key in ("boss", "prison", "routine", "config", "notifications"):
+            if isinstance(safe_patch.get(dom_key), dict):
+                existing = self.get_slice(account_id, dom_key)
+                if existing is not None and isinstance(existing.data, dict):
+                    merged = copy.deepcopy(existing.data)
+                    merged.update(safe_patch[dom_key])
+                    self.update_slice(account_id, dom_key, merged, source_tag=existing.source_tag)
+
+        for cb in list(self._invalidation_callbacks):
+            try:
+                cb(account_id, list(domains), safe_patch, reason)
+            except Exception as cb_err:
+                logger.debug("invalidation callback error: %s", cb_err)
+
+        ts = time.time()
+        event = {
+            "type": "domain_sync",
+            "accountId": account_id,
+            "domains": list(domains),
+            "revisions": domain_revs,
+            "ts": ts,
+            "patch": safe_patch,
+            "reason": reason,
+        }
+        self._broadcast(account_id, event)
+
+        if "social" in domains and isinstance(safe_patch.get("social"), dict):
+            social_evt = {
+                "type": "social_updated",
+                "accountId": account_id,
+                "revision": domain_revs.get("social", 1),
+                "ts": ts,
+                **safe_patch["social"],
+            }
+            self._broadcast(account_id, social_evt)
+
+        return event
 
     def subscribe(self, account_id: int = 1, maxsize: int = 32) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)

@@ -2107,10 +2107,45 @@ document.getElementById("btn-buffs-tab-brigade")?.addEventListener("click", () =
 });
 
 // --- 4.10 Talents ---
-function renderBossTalentsWidget(state) {
-  const s = state || {};
+function isValidTalentsState(s) {
+  if (!s || typeof s !== "object") return false;
+  const req = Number(s.requiredDamage || s.next_point_damage || 0);
+  const cur = Number(s.currentDamage || s.damage || 0);
+  const spent = Number(s.spentPoints || 0);
+  const unspent = Number(s.unspentPoints !== undefined ? s.unspentPoints : (s.free_points || 0));
+  const total = Number(s.totalPoints !== undefined ? s.totalPoints : (s.points !== undefined ? s.points : (spent + unspent)));
+  return req > 0 || total > 0 || unspent > 0 || cur > 0;
+}
+
+function mergeTalentsState(incoming, allowDamageZero = false) {
+  const prev = isValidTalentsState(window._lastTalentsState) ? window._lastTalentsState : null;
+  if (allowDamageZero && prev) {
+    window._lastTalentsState = { ...prev, currentDamage: 0 };
+    return window._lastTalentsState;
+  }
+  if (!isValidTalentsState(incoming)) {
+    return prev || incoming || {};
+  }
+  const s = { ...incoming };
+  if (prev) {
+    if (Number(s.requiredDamage || 0) <= 0 && Number(prev.requiredDamage || 0) > 0) {
+      s.requiredDamage = prev.requiredDamage;
+    }
+    const incTotal = s.totalPoints !== undefined ? Number(s.totalPoints) : (Number(s.spentPoints || 0) + Number(s.unspentPoints || 0));
+    const prevTotal = prev.totalPoints !== undefined ? Number(prev.totalPoints) : (Number(prev.spentPoints || 0) + Number(prev.unspentPoints || 0));
+    if (incTotal <= 0 && prevTotal > 0) {
+      s.totalPoints = prev.totalPoints;
+      s.spentPoints = prev.spentPoints;
+      s.unspentPoints = prev.unspentPoints;
+    }
+  }
   window._lastTalentsState = s;
-  const totalPts = s.totalPoints !== undefined ? s.totalPoints : ((s.spentPoints || 0) + (s.unspentPoints || 0));
+  return s;
+}
+
+function renderBossTalentsWidget(state) {
+  const s = mergeTalentsState(state);
+  const totalPts = s.totalPoints !== undefined ? Number(s.totalPoints) : (Number(s.spentPoints || 0) + Number(s.unspentPoints || 0));
   const unspentPts = Number(s.unspentPoints || 0);
   const curDmg = Number(s.currentDamage || 0);
   const reqDmg = Math.max(1, Number(s.requiredDamage || 1));
@@ -5281,6 +5316,10 @@ const liveSyncClient = (() => {
       botConfig = data;
       updateConfigUI(botConfig);
     } else if (slice === "boss") renderBossData(data);
+    else if (slice === "talents" && data) {
+      const st = data.state || data;
+      if (isValidTalentsState(st)) renderBossTalentsWidget(st);
+    }
     else if (slice === "presets" && data && Array.isArray(data.presets)) {
       bossPresets = data.presets;
       renderBossPresets();
@@ -5297,6 +5336,85 @@ const liveSyncClient = (() => {
       if (data.bauls) renderBaulsData(data.bauls);
     }
   }
+
+  const domainRevisions = {};
+  let domainRefetchTimers = {};
+  let lastHiddenAt = 0;
+
+  function scheduleDomainRefetch(domain, fn) {
+    if (domainRefetchTimers[domain]) clearTimeout(domainRefetchTimers[domain]);
+    domainRefetchTimers[domain] = setTimeout(() => {
+      delete domainRefetchTimers[domain];
+      try { fn(); } catch (e) { console.debug("domain refetch error:", e); }
+    }, 300);
+  }
+
+  function applySocialUpdatedEvent(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.revision !== undefined) {
+      const prev = domainRevisions.social || 0;
+      if (Number(payload.revision) < prev) return;
+      domainRevisions.social = Number(payload.revision);
+    }
+    const existing = liveSlices.data.friend_requests || { success: true, requests: [], total: 0 };
+    let nextReqs = Array.isArray(payload.incoming_requests) ? payload.incoming_requests : (existing.requests || []);
+    const processed = new Set([
+      ...(Array.isArray(payload.accepted_ids) ? payload.accepted_ids : []),
+      ...(Array.isArray(payload.rejected_ids) ? payload.rejected_ids : []),
+    ].map(x => Number(x)));
+    if (!Array.isArray(payload.incoming_requests) && processed.size > 0) {
+      nextReqs = nextReqs.filter(r => !processed.has(Number(r.userId || r.fromUserId || r.id || 0)));
+    }
+    const updatedPayload = { ...existing, requests: nextReqs, total: nextReqs.length };
+    renderFriendRequestsData(updatedPayload);
+    if ((payload.accepted_ids || []).length > 0 && typeof loadFriendsSummary === "function") {
+      scheduleDomainRefetch("friends_summary", () => loadFriendsSummary(true));
+    }
+  }
+
+  function applyDomainSyncEvent(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const revs = payload.revisions || {};
+    const domains = Array.isArray(payload.domains) ? payload.domains : Object.keys(revs);
+    const activeDomains = [];
+    for (const d of domains) {
+      const r = Number(revs[d] || 0);
+      if (r > 0 && r <= (domainRevisions[d] || 0)) continue;
+      if (r > 0) domainRevisions[d] = r;
+      activeDomains.push(d);
+    }
+    if (activeDomains.length === 0) return;
+
+    const patch = payload.patch || {};
+    if (patch.talents && isValidTalentsState(patch.talents)) {
+      renderBossTalentsWidget(patch.talents);
+    }
+    if (patch.config && typeof patch.config === "object") {
+      botConfig = { ...(botConfig || {}), ...patch.config };
+      updateConfigUI(botConfig);
+    }
+    if (patch.social) {
+      applySocialUpdatedEvent({ ...patch.social, revision: revs.social });
+    }
+    if (activeDomains.includes("notifications") && typeof loadNotifications === "function") {
+      scheduleDomainRefetch("notifications", () => loadNotifications());
+    }
+    if (activeDomains.includes("boss") && !patch.boss && typeof loadBoss === "function") {
+      scheduleDomainRefetch("boss", () => loadBoss());
+    }
+    if (activeDomains.includes("routine") && !patch.routine && typeof loadRoutine === "function") {
+      scheduleDomainRefetch("routine", () => loadRoutine());
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      lastHiddenAt = Date.now();
+    } else if (lastHiddenAt > 0 && Date.now() - lastHiddenAt > 5000) {
+      lastHiddenAt = 0;
+      if (typeof pollDeltaFallback === "function") pollDeltaFallback();
+    }
+  });
 
   function flushPending() {
     if (pendingUpdates.size === 0) return;
@@ -5386,6 +5504,28 @@ const liveSyncClient = (() => {
           handleIncomingSlice(payload.slice, payload.data, payload.version);
         } catch (err) {
           console.debug("SSE slice_update parse error:", err);
+        }
+      });
+
+      evtSource.addEventListener("social_updated", e => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (typeof applySocialUpdatedEvent === "function") {
+            applySocialUpdatedEvent(payload);
+          }
+        } catch (err) {
+          console.debug("SSE social_updated parse error:", err);
+        }
+      });
+
+      evtSource.addEventListener("domain_sync", e => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (typeof applyDomainSyncEvent === "function") {
+            applyDomainSyncEvent(payload);
+          }
+        } catch (err) {
+          console.debug("SSE domain_sync parse error:", err);
         }
       });
 

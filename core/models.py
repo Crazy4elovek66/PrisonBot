@@ -357,3 +357,23 @@ class BossPreset(Base):
 
     account = relationship("Account", back_populates="boss_presets")
 
+
+class DailyInteractionTarget(Base):
+    """
+    Суточный трекер целей авто-взаимодействий по МСК (biceps vs negative).
+    Гарантирует правило игры: 1 негативное действие (Harknut или TossDroj) на игрока в сутки.
+    """
+    __tablename__ = "daily_interaction_targets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    day_msk = Column(String(16), nullable=False, index=True)
+    action_group = Column(String(24), nullable=False)  # "biceps" | "negative"
+    target_id = Column(BigInteger, nullable=False)
+    action_type = Column(String(32), nullable=False)  # "UpgradeBiceps" | "Harknut" | "TossDroj"
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "day_msk", "action_group", "target_id", name="uq_daily_interaction_target"),
+    )
+

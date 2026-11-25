@@ -738,10 +738,15 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
 
     hub = _get_hub()
     hub.update_slice(account_id, "config", cfg_dict, source_tag=_hub_source_tag())
+    hub.emit_change(account_id, ["config"], patch={"config": cfg_dict}, reason="config_update")
 
-    # Мгновенное пробуждение воркеров при активации авто-боссов, авто-рукопашной или тюрем
+    # Мгновенное пробуждение воркеров при активации авто-боссов, авто-рукопашной, тюрем или фильтров друзей
     if not getattr(cfg, "is_paused", False):
         ctrl = getattr(bot_context, "scheduler_controller", None)
+        should_wake_social_reqs = bool(
+            updates.get("auto_friends")
+            or any(k.startswith("friend_") for k in updates.keys())
+        )
         should_wake_boss = bool(
             updates.get("auto_boss_enabled")
             or updates.get("auto_boss_summon")
@@ -778,6 +783,11 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
                 ctrl.trigger_routine_now()
             elif bot_context.routine_worker is not None:
                 asyncio.create_task(bot_context.routine_worker.run_cycle())
+        if should_wake_social_reqs:
+            if ctrl is not None and hasattr(ctrl, "trigger_social_requests_now"):
+                ctrl.trigger_social_requests_now()
+            elif bot_context.social_worker is not None:
+                asyncio.create_task(bot_context.social_worker.check_incoming_friend_requests())
 
     return {
         "success": True,
@@ -2637,6 +2647,32 @@ async def action_kolsik_roll(payload: Optional[Dict[str, Any]] = Body(None), acc
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _sync_social_request_decision(account_id: int, target_uid: int, accepted: bool) -> None:
+    """Мгновенно очищает обработанную заявку из кэша StateHub и пушит social_updated/domain_sync в UI."""
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    req_entry = hub.get_slice(account_id, "friend_requests")
+    updated_reqs: Optional[List[Dict[str, Any]]] = None
+    if req_entry is not None and isinstance(req_entry.data, dict):
+        raw_reqs = req_entry.data.get("requests") or []
+        updated_reqs = [
+            r for r in raw_reqs
+            if int(r.get("userId") or r.get("fromUserId") or r.get("id") or 0) != int(target_uid)
+        ]
+        new_payload = {**req_entry.data, "requests": updated_reqs, "total": len(updated_reqs)}
+        hub.update_slice(account_id, "friend_requests", new_payload, source_tag=tag)
+    if accepted:
+        hub.invalidate_slice(account_id, "friends")
+    social_patch: Dict[str, Any] = {
+        "accepted_ids": [int(target_uid)] if accepted else [],
+        "rejected_ids": [] if accepted else [int(target_uid)],
+    }
+    if updated_reqs is not None:
+        social_patch["incoming_requests"] = updated_reqs
+        social_patch["incoming_count"] = len(updated_reqs)
+    hub.emit_change(account_id, ["social"], patch={"social": social_patch}, reason="manual_friend_action")
+
+
 @api_router.post("/actions/friendship/accept")
 async def action_accept_friend(payload: Dict[str, Any] = Body(...), account_id: int = 1) -> Dict[str, Any]:
     """Ручное принятие заявки в друзья."""
@@ -2651,6 +2687,7 @@ async def action_accept_friend(payload: Dict[str, Any] = Body(...), account_id: 
     try:
         res = await social_api.accept_friend(int(from_user_id))
         await _log_action(account_id, "accept_friend", f"/api/friendship/accept-request?fromUserId={from_user_id}", 200, True, res)
+        _sync_social_request_decision(account_id, int(from_user_id), accepted=True)
         return {"success": True, "result": res}
     except Exception as e:
         await _log_action(account_id, "accept_friend", f"/api/friendship/accept-request?fromUserId={from_user_id}", 500, False, {"error": str(e)})
@@ -2671,6 +2708,7 @@ async def action_decline_friend(payload: Dict[str, Any] = Body(...), account_id:
     try:
         res = await social_api.decline_friend(int(from_user_id))
         await _log_action(account_id, "decline_friend", f"/api/friendship/decline-request?fromUserId={from_user_id}", 200, True, res)
+        _sync_social_request_decision(account_id, int(from_user_id), accepted=False)
         return {"success": True, "result": res}
     except Exception as e:
         await _log_action(account_id, "decline_friend", f"/api/friendship/decline-request?fromUserId={from_user_id}", 500, False, {"error": str(e)})
@@ -3632,17 +3670,20 @@ async def get_talents() -> Dict[str, Any]:
 
         talents_list.sort(key=lambda x: x["id"])
 
+        state_obj = {
+            "spentPoints": spent,
+            "unspentPoints": unspent,
+            "totalPoints": total_points,
+            "currentDamage": current_damage,
+            "requiredDamage": required_damage,
+            "biceps": biceps,
+            "talentLevels": talent_levels,
+        }
+        protected_state = _get_hub().merge_talents_state(1, state_obj, source_tag=_hub_source_tag()) or state_obj
+
         return {
             "success": True,
-            "state": {
-                "spentPoints": spent,
-                "unspentPoints": unspent,
-                "totalPoints": total_points,
-                "currentDamage": current_damage,
-                "requiredDamage": required_damage,
-                "biceps": biceps,
-                "talentLevels": talent_levels,
-            },
+            "state": protected_state,
             "talents": talents_list,
             "raw": res,
         }
@@ -5133,6 +5174,8 @@ async def refresh_hub_slice(account_id: int = 1, slice_name: str = "profile", fo
             return await get_state(account_id=account_id, force=force)
         elif slice_name == "boss":
             return await get_live_boss(account_id=account_id, force=force)
+        elif slice_name == "talents":
+            return await get_talents()
         elif slice_name == "presets":
             res_p = await get_boss_presets(account_id=account_id)
             hub.update_slice(account_id, "presets", res_p, source_tag=tag)
