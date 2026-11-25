@@ -31,8 +31,67 @@ const GAME_ICONS = {
   kolsik: "/static/assets/icons/kolsik.webp",
   baul: "/static/assets/icons/baul.webp",
   stash: "/static/assets/icons/stash.webp",
+  stashed_gear: "/static/assets/icons/stash.webp",
+  complect: "/static/assets/icons/complect.webp",
+  room_reward: "/static/assets/icons/room_reward.webp",
   combo: "/static/assets/icons/combo.webp",
 };
+
+function getDropIconHtml(drop) {
+  const k = String((drop && (drop.kind || drop.type)) || "").toLowerCase();
+  if (k === "stash" || k === "collection" || k === "stashed_gear") {
+    return gameIcon("stash", "📦", "game-icon-sm");
+  }
+  if (k === "tattoo" || k === "clothing" || k === "complect") {
+    return gameIcon("complect", "🧩", "game-icon-sm");
+  }
+  if (k === "room" || k === "camera") {
+    return gameIcon("room_reward", "🏠", "game-icon-sm");
+  }
+  return "<span>🎁</span>";
+}
+
+function getAppBasePrefix() {
+  if (typeof window !== "undefined" && window.location && (window.location.pathname === "/prison" || window.location.pathname.startsWith("/prison/"))) {
+    return "/prison";
+  }
+  return "";
+}
+
+function resolveAppAssetUrl(rawUrl) {
+  if (!rawUrl) return "";
+  let u = String(rawUrl).trim();
+  if (!u) return "";
+  if (/^data:/i.test(u)) return u;
+
+  const cdnPrefix = "https://oldprison-prod-assets-cdn-yandex.luckygem.online/";
+  if (u.startsWith(cdnPrefix)) {
+    u = "api/v1/assets/proxy?path=" + u.slice(cdnPrefix.length).replace(/^\/+/, "");
+  } else if (/^https?:\/\//i.test(u)) {
+    try {
+      const parsed = new URL(u);
+      if (typeof window !== "undefined" && window.location && parsed.origin === window.location.origin && (parsed.pathname.includes("assets/proxy") || parsed.pathname.includes("/prison/"))) {
+        u = parsed.pathname + parsed.search + parsed.hash;
+      } else {
+        return u;
+      }
+    } catch (e) {
+      return u;
+    }
+  }
+
+  let cleanPath = u.replace(/^(?:\.\/)+/, "").replace(/^\/+/, "");
+  while (/^prison(?:\/|$)/i.test(cleanPath)) {
+    cleanPath = cleanPath.replace(/^prison\/?/i, "");
+  }
+  if (!cleanPath) return "";
+  const base = getAppBasePrefix();
+  return `${base}/${cleanPath}`;
+}
+
+function resolveAssetUrl(rawUrl) {
+  return resolveAppAssetUrl(rawUrl);
+}
 
 function gameIcon(key, alt = "", cls = "game-icon") {
   const src = GAME_ICONS[key];
@@ -1457,6 +1516,12 @@ async function loadNotifications(category = "all") {
         `;
       }
 
+      if (meta.outcome === "victory") {
+        card.classList.add("notif-boss-victory");
+      } else if (meta.outcome === "defeat") {
+        card.classList.add("notif-boss-defeat");
+      }
+
       const rawDrops = Array.isArray(n.drops) && n.drops.length > 0
         ? n.drops
         : (Array.isArray(meta.cosmetic_drops) ? meta.cosmetic_drops : []);
@@ -1467,14 +1532,16 @@ async function loadNotifications(category = "all") {
         dropsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
             ${rawDrops.map((d, idx) => {
-          const isCosmetic = ["tattoo", "clothing", "room", "camera", "item"].includes(String(d.type || d.kind || "").toLowerCase())
-            && (d.itemId || d.setId || d.imageUrl || String(d.kind) === "tattoo" || String(d.kind) === "clothing" || String(d.type) === "room");
+          const dropKind = String(d.kind || d.type || "").toLowerCase();
+          const isCosmetic = ["tattoo", "clothing", "complect"].includes(dropKind)
+            && Boolean(d.itemId || d.setId);
           if (isCosmetic) {
             clickableDrops.push({ idx, drop: d });
           }
+          const iconHtml = getDropIconHtml(d);
           return `
                 <span class="drop-pill ${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
-                  <span>${isCosmetic ? '👕 ' : '🎁 '}${d.title || d.name || 'Дроп'}</span>
+                  <span style="display:inline-flex;align-items:center;gap:4px;">${iconHtml} ${d.title || d.name || 'Дроп'}</span>
                   ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.8;">(${d.subtitle})</span>` : ''}
                 </span>
               `;
@@ -1489,7 +1556,7 @@ async function loadNotifications(category = "all") {
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <div>
             <div style="font-weight: 700; font-size: 13px; color: #fff;">${n.title || 'Событие'}</div>
-            ${n.subtitle ? `<div style="font-size: 11px; color: var(--muted-foreground);">${n.subtitle}</div>` : ''}
+            ${n.subtitle ? `<div class="notif-subtitle" style="font-size: 11px; color: var(--muted-foreground); white-space: pre-line;">${n.subtitle}</div>` : ''}
           </div>
           <span style="font-size: 10px; color: var(--muted-foreground);">${timeStr}</span>
         </div>
@@ -2266,103 +2333,121 @@ async function loadTalents() {
 }
 
 // --- 4.11 Collections (Нычки) ---
+function renderCollectionsData(data) {
+  const container = document.getElementById("collections-list");
+  if (!container || !data) return;
+  liveSlices.data.collections = data;
+
+  const list = Array.isArray(data.collections) ? [...data.collections] : [];
+  const stashes = Array.isArray(data.stashes) ? data.stashes : [];
+  const totalOwnedItems = list.reduce(
+    (acc, c) => acc + (c.items || []).reduce((s, it) => s + Number(it.count || 0), 0),
+    0
+  );
+  const stashesCount = stashes.length > 0 ? stashes.length : totalOwnedItems;
+
+  const stashesCountEl = document.getElementById("collections-stashes-count");
+  if (stashesCountEl) stashesCountEl.textContent = formatNum(stashesCount);
+
+  const readyToExchange = list.filter(c => c.canExchange).length;
+  const chip = document.getElementById("collections-summary-chip");
+  if (chip) {
+    chip.textContent = `Нычек: ${stashesCount} | Готово к обмену: ${readyToExchange}`;
+  }
+
+  const stashesPillsEl = document.getElementById("collections-stashes-pills");
+  if (stashesPillsEl) {
+    if (stashes.length > 0) {
+      stashesPillsEl.innerHTML = stashes.map(s => `
+        <span class="reward-pill" style="background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.25); color: #fbbf24;">
+          ${gameIcon('stash', '', 'game-icon-sm')} ${s.name || 'Нычка #' + (s.id || '')}
+        </span>
+      `).join("");
+    } else if (totalOwnedItems > 0) {
+      stashesPillsEl.innerHTML = `<span style="font-size: 11px; color: var(--muted-foreground);">Всего предметов в коллекциях: <b style="color:#fbbf24;">${formatNum(totalOwnedItems)}</b></span>`;
+    } else {
+      stashesPillsEl.innerHTML = '<span style="font-size: 11px; color: var(--muted-foreground);">Нычек в инвентаре нет</span>';
+    }
+  }
+
+  if (list.length === 0) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 11px;">Нет данных о коллекциях</div>';
+    return;
+  }
+
+  list.sort((a, b) => (b.canExchange ? 1 : 0) - (a.canExchange ? 1 : 0));
+
+  container.innerHTML = "";
+  list.forEach(c => {
+    const isComplete = Boolean(c.canExchange);
+    const card = document.createElement("div");
+    card.className = `collection-card ${isComplete ? 'ready' : ''}`;
+
+    const itemsHtml = (c.items || []).map((itm, idx) => {
+      const owned = (itm.count || 0) > 0;
+      const itmNum = itm.itemNumber || (idx + 1);
+      const displayName = itm.name || `Предмет #${itmNum}`;
+      const iconUrl = resolveAppAssetUrl(itm.icon || itm.imageUrl || itm.image || "");
+      if (!iconUrl) {
+        console.warn("Collection item missing icon:", c.collectionId, itm.id, itm);
+      }
+      return `
+        <div class="col-item-thumb ${!owned ? 'unowned' : ''}" title="${displayName} (x${itm.count || 0})">
+          ${iconUrl ? `<img src="${iconUrl}" alt="${displayName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="console.warn('Collection icon load failed:', this.src)">` : `<span style="font-size:10px; font-weight:700;">#${itmNum}</span>`}
+          <span class="col-item-count">x${itm.count || 0}</span>
+        </div>
+      `;
+    }).join("");
+
+    const prisonLabel = c.prisonName ? `<span class="badge" style="background: rgba(255,255,255,0.08); font-size: 10px; margin-right: 6px;">${c.prisonName}</span>` : "";
+    const readyBadge = isComplete ? `<span class="badge-can-exchange">⚡️ Готово к обмену</span>` : "";
+
+    card.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <div>
+          <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
+            ${prisonLabel}
+            <span>${c.name}</span>
+            ${readyBadge}
+          </div>
+          <div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">Собрано предметов: <b style="color: ${isComplete ? '#34d399' : '#fff'};">${c.collected || 0}/${c.total || 7}</b></div>
+        </div>
+        <button class="btn btn-sm ${isComplete ? 'btn-primary' : 'btn-secondary'} btn-exchange-coll" ${!isComplete ? 'disabled' : ''}>
+          ${isComplete ? 'Обменять (впарить)' : 'Не собрана'}
+        </button>
+      </div>
+      <div class="collection-items-row">
+        ${itemsHtml}
+      </div>
+    `;
+
+    if (isComplete) {
+      card.querySelector(".btn-exchange-coll").addEventListener("click", async () => {
+        try {
+          const res = await apiFetch("/actions/collections/exchange", {
+            method: "POST",
+            body: JSON.stringify({ collectionId: c.collectionId, prisonId: c.prisonId }),
+          });
+          if (res.success) {
+            showToast(`Коллекция «${c.name}» успешно обменена!`, "success");
+            loadCollections();
+            loadProfile();
+          }
+        } catch (e) {
+          showToast(`Ошибка сдачи коллекции: ${e.message}`, "error");
+        }
+      });
+    }
+    container.appendChild(card);
+  });
+}
+
 async function loadCollections() {
   const container = document.getElementById("collections-list");
   if (!container) return;
   try {
     const data = await apiFetch("/collections");
-    const list = data.collections || [];
-    const stashes = data.stashes || [];
-
-    const stashesCountEl = document.getElementById("collections-stashes-count");
-    if (stashesCountEl) stashesCountEl.textContent = stashes.length;
-
-    const readyToExchange = list.filter(c => c.canExchange).length;
-    const chip = document.getElementById("collections-summary-chip");
-    if (chip) {
-      chip.textContent = `Нычек: ${stashes.length} | Готово к обмену: ${readyToExchange}`;
-    }
-
-    const stashesPillsEl = document.getElementById("collections-stashes-pills");
-    if (stashesPillsEl) {
-      if (stashes.length === 0) {
-        stashesPillsEl.innerHTML = '<span style="font-size: 11px; color: var(--muted-foreground);">Нычек в инвентаре нет</span>';
-      } else {
-        stashesPillsEl.innerHTML = stashes.map(s => `
-          <span class="reward-pill" style="background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.25); color: #fbbf24;">
-            ${gameIcon('stash', '', 'game-icon-sm')} ${s.name || 'Нычка #' + (s.id || '')}
-          </span>
-        `).join("");
-      }
-    }
-
-    if (list.length === 0) {
-      container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 11px;">Нет данных о коллекциях</div>';
-      return;
-    }
-
-    // Сортировка: готовые к обмену коллекции всегда первыми
-    list.sort((a, b) => (b.canExchange ? 1 : 0) - (a.canExchange ? 1 : 0));
-
-    container.innerHTML = "";
-    list.forEach(c => {
-      const isComplete = Boolean(c.canExchange);
-      const card = document.createElement("div");
-      card.className = `collection-card ${isComplete ? 'ready' : ''}`;
-
-      const itemsHtml = (c.items || []).map((itm, idx) => {
-        const owned = (itm.count || 0) > 0;
-        const itmNum = itm.itemNumber || (idx + 1);
-        const displayName = itm.name || `Предмет #${itmNum}`;
-        return `
-          <div class="col-item-thumb ${!owned ? 'unowned' : ''}" title="${displayName} (x${itm.count || 0})">
-            ${itm.icon ? `<img src="${itm.icon}" alt="${displayName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : `<span style="font-size:10px; font-weight:700;">#${itmNum}</span>`}
-            <span class="col-item-count">x${itm.count || 0}</span>
-          </div>
-        `;
-      }).join("");
-
-      const prisonLabel = c.prisonName ? `<span class="badge" style="background: rgba(255,255,255,0.08); font-size: 10px; margin-right: 6px;">${c.prisonName}</span>` : "";
-      const readyBadge = isComplete ? `<span class="badge-can-exchange">⚡️ Готово к обмену</span>` : "";
-
-      card.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-          <div>
-            <div style="font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
-              ${prisonLabel}
-              <span>${c.name}</span>
-              ${readyBadge}
-            </div>
-            <div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">Собрано предметов: <b style="color: ${isComplete ? '#34d399' : '#fff'};">${c.collected || 0}/${c.total || 7}</b></div>
-          </div>
-          <button class="btn btn-sm ${isComplete ? 'btn-primary' : 'btn-secondary'} btn-exchange-coll" ${!isComplete ? 'disabled' : ''}>
-            ${isComplete ? 'Обменять (впарить)' : 'Не собрана'}
-          </button>
-        </div>
-        <div class="collection-items-row">
-          ${itemsHtml}
-        </div>
-      `;
-
-      if (isComplete) {
-        card.querySelector(".btn-exchange-coll").addEventListener("click", async () => {
-          try {
-            const res = await apiFetch("/actions/collections/exchange", {
-              method: "POST",
-              body: JSON.stringify({ collectionId: c.collectionId, prisonId: c.prisonId }),
-            });
-            if (res.success) {
-              showToast(`Коллекция «${c.name}» успешно обменена!`, "success");
-              loadCollections();
-              loadProfile();
-            }
-          } catch (e) {
-            showToast(`Ошибка сдачи коллекции: ${e.message}`, "error");
-          }
-        });
-      }
-      container.appendChild(card);
-    });
+    renderCollectionsData(data);
   } catch (e) {
     console.warn("loadCollections error:", e);
   }
@@ -5328,6 +5413,7 @@ const liveSyncClient = (() => {
     else if (slice === "friend_requests") renderFriendRequestsData(data);
     else if (slice === "friends_stats") renderFriendsAuditData(data);
     else if (slice === "monthly") renderMonthlyStateData(data);
+    else if (slice === "collections") renderCollectionsData(data);
     else if (slice === "bauls") renderBaulsData(data);
     else if (slice === "radar" && typeof renderActivePlayersRadarFromData === "function") {
       renderActivePlayersRadarFromData(data);
@@ -5607,6 +5693,13 @@ function initAccordions() {
       card.classList.toggle("collapsed");
       const isNowCollapsed = card.classList.contains("collapsed");
       localStorage.setItem("prison_accordion_" + cardId, isNowCollapsed ? "collapsed" : "expanded");
+      if (!isNowCollapsed && cardId === "collections-card") {
+        const listEl = document.getElementById("collections-list");
+        if (listEl && listEl.children.length === 0) {
+          if (liveSlices.data.collections) renderCollectionsData(liveSlices.data.collections);
+          else loadCollections();
+        }
+      }
     });
   });
 }
@@ -8093,7 +8186,7 @@ async function parseRaidText() {
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     try {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
-    } catch (e) {}
+      navigator.serviceWorker.register("sw.js").catch(() => { });
+    } catch (e) { }
   });
 }

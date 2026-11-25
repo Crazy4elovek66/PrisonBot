@@ -173,3 +173,28 @@ async def test_state_hub_emit_change_revisions_and_domain_sync():
     assert "domain_sync" in types
     assert "social_updated" in types
     hub.unsubscribe(1, q)
+
+
+def test_state_hub_collections_slice_preserves_icons():
+    hub = LiveStateHub()
+    payload = {
+        "success": True,
+        "collections": [
+            {
+                "prisonId": 1,
+                "collectionId": 1,
+                "name": "Мастера закатки",
+                "items": [{"id": 1, "count": 2, "icon": "/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp"}],
+            }
+        ],
+        "stashes": [],
+    }
+    hub.update_slice(1, "collections", payload)
+    sl = hub.get_slice(1, "collections")
+    assert sl is not None
+    assert sl.data["collections"][0]["items"][0]["icon"].startswith("/api/v1/assets/proxy?path=")
+
+    # Пустой срез collections не должен затирать уже загруженные коллекции с иконками
+    changed, _ = hub.update_slice(1, "collections", {"success": True, "collections": [], "stashes": []})
+    assert changed is False
+    assert len(hub.get_slice(1, "collections").data["collections"]) == 1

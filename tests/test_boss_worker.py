@@ -989,3 +989,58 @@ async def test_boss_worker_auto_melee_and_preset_defeat_reset(boss_setup):
     assert presets_slice.data["activeRun"] is None
 
 
+@pytest.mark.asyncio
+async def test_boss_claim_defeat_does_not_emit_false_victory(tmp_path):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from core.database import get_engine, get_session, init_db
+    from core.models import Account, Notification
+    from core.state_hub import state_hub
+    from sqlalchemy import select
+    from workers.boss_worker import BossWorker
+
+    db_path = tmp_path / "boss_defeat_claim.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79001112233", nickname="Test"))
+        await session.commit()
+
+    state_hub.clear(1)
+    q = state_hub.subscribe(1)
+    notifier = SimpleNamespace(notify=AsyncMock())
+    boss_api = SimpleNamespace(
+        claim_reward=AsyncMock(return_value={"result": "defeat", "isWin": False, "message": "Время боя вышло"}),
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    worker = BossWorker(account_id=1, boss_api=boss_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    bootstrap = {
+        "state": "reward",
+        "session": {"bossId": 39, "title": "Воркута", "mode": "pacansky", "currentHp": 120000, "maxHp": 400000000, "sessionId": "sess_vorkuta_loss"},
+        "unclaimedRewards": [{"claimId": "cid_loss_1", "bossId": 39}],
+    }
+    results = {"rewards_claimed": 0, "hits_performed": [], "summoned_bosses": [], "boss_hp_remaining": 120000, "victories": [], "defeats": [], "errors": []}
+    claimed = set()
+    await worker._claim_pending_rewards(bootstrap, results, None, [], claimed)
+
+    assert results["victories"] == []
+    assert results["rewards_claimed"] == 0
+    assert len(results["defeats"]) == 1
+    assert results["defeats"][0]["boss_name"] == "Воркута"
+
+    async with get_session(engine) as session:
+        notifs = (await session.execute(select(Notification))).scalars().all()
+        assert len(notifs) == 1
+        assert notifs[0].title == "Поражение от босса: Воркута (Пацанский)"
+        assert "Босс повержен" not in notifs[0].title
+        assert "Победа над боссом" not in notifs[0].title
+
+    evts = []
+    while not q.empty():
+        evts.append(q.get_nowait())
+    sync_evts = [e for e in evts if e.get("type") == "domain_sync"]
+    assert any(set(e.get("domains", [])) >= {"boss", "profile", "talents", "notifications"} for e in sync_evts)
+    state_hub.unsubscribe(1, q)
+    await engine.dispose()
+
+

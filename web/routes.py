@@ -301,8 +301,8 @@ def _proxy_asset_url(path: str) -> str:
     return f"/api/v1/assets/proxy?path={clean}"
 
 
-@public_router.get("/assets/proxy")
-async def proxy_game_asset(path: str = Query(..., description="Относительный путь ассета игры")) -> Any:
+@public_router.api_route("/assets/proxy", methods=["GET", "HEAD"])
+async def proxy_game_asset(request: Request, path: str = Query(..., description="Относительный путь ассета игры")) -> Any:
     """
     Безопасный публичный прокси для загрузки спрайтов с CDN игры с дисковым кэшированием, LRU в RAM и CORS.
     Не требует заголовков авторизации (X-Admin-Token), чтобы теги <img> и <canvas> работали без ошибок.
@@ -342,7 +342,12 @@ async def proxy_game_asset(path: str = Query(..., description="Относите�
     mgr = get_asset_cache_manager()
     cached_file, mem_bytes, content_type = await mgr.get_or_fetch(clean_path, _fetch_asset_from_cdn)
     if cached_file is not None:
-        if mgr.nginx_accel_prefix:
+        is_behind_nginx = bool(
+            request.headers.get("x-forwarded-prefix")
+            or request.headers.get("x-real-ip")
+            or request.headers.get("x-forwarded-for")
+        )
+        if mgr.nginx_accel_prefix and is_behind_nginx:
             return Response(
                 content=b"",
                 status_code=200,

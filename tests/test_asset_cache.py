@@ -111,9 +111,12 @@ async def test_proxy_returns_x_accel_redirect_when_configured(tmp_path, monkeypa
 
     app = create_app()
     client = TestClient(app)
-    resp = client.get(f"/api/v1/assets/proxy?path={asset_rel}")
+    resp = client.get(f"/api/v1/assets/proxy?path={asset_rel}", headers={"X-Real-IP": "127.0.0.1"})
     assert resp.status_code == 200
     assert resp.headers.get("X-Accel-Redirect") == f"/_prison_asset_cache/{asset_cache_filename(asset_rel)}"
+    resp_direct = client.get(f"/api/v1/assets/proxy?path={asset_rel}")
+    assert resp_direct.status_code == 200
+    assert resp_direct.content == b"WEBP_ACCEL"
     assert resp.headers.get("X-Asset-Cache") == "HIT-ACCEL"
     assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
 
@@ -130,7 +133,7 @@ async def test_prewarm_dry_run_and_disk_guard():
 def test_sw_js_rules_and_network_only():
     root = Path(__file__).resolve().parent.parent
     sw_text = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
-    assert "prisonbot-assets-v3" in sw_text
+    assert "prisonbot-assets-v7" in sw_text
     assert "/assets_cache/" in sw_text
     assert "/api/v1/assets/proxy" in sw_text
     assert "/static/assets/icons/" in sw_text

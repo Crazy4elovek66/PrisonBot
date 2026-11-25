@@ -856,6 +856,20 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   border-left: 4px solid var(--destructive);
 }
 
+.notif-card.notif-boss-victory {
+  border-left: 4px solid var(--success);
+}
+
+.notif-card.notif-boss-defeat {
+  border-left: 4px solid var(--destructive);
+}
+
+.notif-subtitle {
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: unset;
+}
+
 .notif-card.notif-prisons {
   border-left: 4px solid var(--info);
 }

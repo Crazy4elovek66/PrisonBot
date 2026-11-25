@@ -152,23 +152,7 @@ async def run_bot(once_mode: bool = False) -> None:
     bot_context.prison_worker = prison_worker
     bot_context.social_worker = social_worker
 
-    # Запуск первого цикла сразу при старте
-    logger.info("Выполнение стартовых циклов рутины, боссов, тюрем и социалки...")
-    await routine_worker.run_cycle()
-    await boss_worker.run_cycle()
-    await prison_worker.run_cycle()
-    await social_worker.run_cycle()
-
-    scheduler.start()
-    if bot_context.scheduler_controller is not None:
-        asyncio.create_task(bot_context.scheduler_controller.warmup_all())
-    logger.info(
-        f"Воркеры успешно запущены (Рутина: {settings.ROUTINE_INTERVAL_MINUTES} мин, "
-        f"Боссы: {settings.BOSS_INTERVAL_MINUTES} мин, Тюрьмы: {settings.PRISON_INTERVAL_MINUTES} мин, "
-        f"Социалка: {settings.SOCIAL_INTERVAL_MINUTES} мин)."
-    )
-
-    # Запуск WebApp Dashboard (FastAPI / uvicorn)
+    # Запуск WebApp Dashboard (FastAPI / uvicorn) немедленно, не блокируя порт стартовыми циклами воркеров
     web_config = uvicorn.Config(
         app=web_app,
         host=settings.WEB_HOST,
@@ -179,6 +163,34 @@ async def run_bot(once_mode: bool = False) -> None:
     web_server = uvicorn.Server(web_config)
     web_server_task = asyncio.create_task(web_server.serve())
     logger.info(f"Web Dashboard запущен на http://{settings.WEB_HOST}:{settings.WEB_PORT}")
+
+    scheduler.start()
+    logger.info(
+        f"Воркеры успешно запущены (Рутина: {settings.ROUTINE_INTERVAL_MINUTES} мин, "
+        f"Боссы: {settings.BOSS_INTERVAL_MINUTES} мин, Тюрьмы: {settings.PRISON_INTERVAL_MINUTES} мин, "
+        f"Социалка: {settings.SOCIAL_INTERVAL_MINUTES} мин)."
+    )
+
+    async def _run_startup_workers() -> None:
+        await asyncio.sleep(0.5)
+        logger.info("Выполнение стартовых циклов рутины, боссов, тюрем и социалки в фоне...")
+        for name, coro in (
+            ("routine_worker", routine_worker.run_cycle()),
+            ("boss_worker", boss_worker.run_cycle()),
+            ("prison_worker", prison_worker.run_cycle()),
+            ("social_worker", social_worker.run_cycle()),
+        ):
+            try:
+                await coro
+            except Exception as w_err:
+                logger.warning(f"Ошибка стартового цикла {name}: {w_err}")
+        if bot_context.scheduler_controller is not None:
+            try:
+                await bot_context.scheduler_controller.warmup_all()
+            except Exception as wu_err:
+                logger.warning(f"Ошибка прогрева LiveStateHub: {wu_err}")
+
+    startup_workers_task = asyncio.create_task(_run_startup_workers())
 
     polling_task = None
     if bot and dp:

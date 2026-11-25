@@ -236,6 +236,11 @@ class LiveStateHub:
         fp = compute_fingerprint(data)
 
         existing = acc_map.get(slice_name)
+        if slice_name == "collections" and existing is not None and isinstance(existing.data, dict) and isinstance(data, dict):
+            old_cols = existing.data.get("collections") or []
+            new_cols = data.get("collections") or []
+            if old_cols and not new_cols:
+                return False, existing
         if existing is not None and existing.fingerprint == fp and (source_tag is None or existing.source_tag == source_tag):
             existing.updated_at = now_iso
             existing.monotonic_ts = now_mono

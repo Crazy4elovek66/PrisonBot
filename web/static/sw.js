@@ -1,4 +1,4 @@
-const ASSET_CACHE_NAME = "prisonbot-assets-v3";
+const ASSET_CACHE_NAME = "prisonbot-assets-v7";
 
 function isImmutableAssetRequest(url) {
   const path = url.pathname || "";
@@ -7,6 +7,22 @@ function isImmutableAssetRequest(url) {
   if (path.includes("/static/assets/icons/")) return true;
   if (path.includes("/static/assets/rooms/")) return true;
   return false;
+}
+
+function isCacheableAssetResponse(url, resp) {
+  if (!resp || !resp.ok || resp.status !== 200) return false;
+  const ctype = (resp.headers.get("content-type") || "").toLowerCase();
+  if ((url.pathname || "").includes("assets/proxy")) {
+    if (ctype.startsWith("image/") || ctype.startsWith("application/octet-stream") || ctype.startsWith("text/plain")) {
+      return true;
+    }
+    if (ctype.startsWith("application/json")) {
+      const targetPath = url.searchParams.get("path") || "";
+      return targetPath.toLowerCase().endsWith(".json");
+    }
+    return false;
+  }
+  return !ctype.includes("text/html");
 }
 
 self.addEventListener("install", (event) => {
@@ -39,10 +55,13 @@ self.addEventListener("fetch", (event) => {
     caches.open(ASSET_CACHE_NAME).then(async (cache) => {
       const cached = await cache.match(req);
       if (cached) {
-        return cached;
+        if (isCacheableAssetResponse(url, cached)) {
+          return cached;
+        }
+        await cache.delete(req).catch(() => {});
       }
       const resp = await fetch(req);
-      if (resp && resp.ok && resp.status === 200) {
+      if (isCacheableAssetResponse(url, resp)) {
         cache.put(req, resp.clone()).catch(() => {});
       }
       return resp;

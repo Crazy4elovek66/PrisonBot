@@ -49,7 +49,7 @@ def test_parse_boss_claim_rewards_and_tattoo():
 
     currencies = {r["label"]: r["amount"] for r in parsed["rewards"]}
     assert currencies.get("Авторитет") == 1000
-    assert currencies.get("Сигареты") == 500
+    assert currencies.get("Папиросы") == 500
     assert currencies.get("Ключи") == 2
 
     assert len(parsed["drops"]) == 1
@@ -129,3 +129,44 @@ def test_parse_boss_defeat_and_prison_day_stage_meta():
     assert p_work["subtitle"] == "Кликов: 1"
     assert p_work["meta_json"]["clicks"] == 1
     assert any(r["currency"] == "respect" and r["amount"] == 20 for r in p_work["rewards"])
+
+
+def test_zero_loss_boss_claim_all_categories_and_prison_stash_no_try_on():
+    payload = {
+        "bossId": 39,
+        "mode": "odin",
+        "rewards": {
+            "authority": 1500,
+            "cigarettes": 800,
+            "rubles": 25,
+            "keys": 2,
+            "bonusChips": 5,
+            "collectionDrop": {"itemId": 7, "title": "Компас"},
+            "hiddenItems": [{"id": 99, "name": "Телогрейка", "count": 1}],
+            "tattoo": {"id": 12, "name": "Перстень", "set": "Блатной"},
+            "clothing": {"id": 34, "name": "Кепка"},
+            "room": {"id": 54, "name": "Торт Люськи"},
+        },
+    }
+    parsed = DropParser.parse_boss_claim(payload, boss_name="Воркута", mode="odin")
+    assert parsed["title"] == "Победа над боссом: Воркута (В одного)"
+    kinds = {d["kind"] for d in parsed["drops"]}
+    assert {"stash", "stashed_gear", "tattoo", "clothing", "room", "other"}.issubset(kinds)
+    lines = "\n".join(DropParser.format_boss_rewards_lines(parsed))
+    for expected in ("Авторитет", "Папиросы", "Рубли", "Ключи", "Компас", "Телогрейка", "Перстень", "Кепка", "Торт Люськи", "bonusChips"):
+        assert expected in lines
+
+    p_stash = DropParser.parse_prison_work(
+        {
+            "rewardCigarettes": 28,
+            "collectionDrop": {"itemId": 7, "title": "Коллекция «Компас»", "imageUrl": "assets/PrisonV3/collections/4/1/7.webp"},
+        },
+        prison_name="КРЕСТЫ",
+        works_count=1,
+        is_day=True,
+        stage_num=7,
+        prison_id=4,
+    )
+    assert len(p_stash["drops"]) == 1
+    assert p_stash["drops"][0]["kind"] == "stash"
+    assert p_stash["drops"][0]["type"] == "stash"

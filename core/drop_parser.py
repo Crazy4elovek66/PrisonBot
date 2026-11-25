@@ -8,10 +8,10 @@ logger = logging.getLogger(__name__)
 CURRENCY_LABELS = {
     "authority": "Авторитет",
     "respect": "Уважение",
-    "cigarettes": "Сигареты",
+    "cigarettes": "Папиросы",
     "sugar": "Сахар",
     "rubles": "Рубли",
-    "paper": "Бумага",
+    "paper": "Туалетная бумага",
     "soap": "Мыло",
     "keys": "Ключи",
     "energy": "Энергия",
@@ -19,6 +19,29 @@ CURRENCY_LABELS = {
     "intellect": "Интеллект",
     "rating": "Уважение",
     "stash": "Нычка",
+    "talents": "Очки талантов",
+    "poison": "Яд",
+    "knife": "Финка",
+    "gunshot": "Самопал",
+}
+
+MODE_TITLES = {
+    "pacansky": "Пацанский",
+    "patsansky": "Пацанский",
+    "normal": "Пацанский",
+    "1": "Пацанский",
+    "blotnoy": "Блатной",
+    "blatnoy": "Блатной",
+    "hard": "Блатной",
+    "2": "Блатной",
+    "avtoritetny": "Авторитетный",
+    "epic": "Авторитетный",
+    "3": "Авторитетный",
+    "vorovskoy": "Воровской",
+    "odin": "В одного",
+    "solo": "В одного",
+    "alone": "В одного",
+    "brigade": "Бригадный",
 }
 
 
@@ -84,7 +107,58 @@ class DropParser:
             return "intellect"
         if k in ("rating",):
             return "rating"
+        if k in ("talents", "talentpoints", "talent_points", "freepoints"):
+            return "talents"
+        if k in ("poison", "yad"):
+            return "poison"
+        if k in ("knife", "finka"):
+            return "knife"
+        if k in ("gunshot", "samopal", "pistol"):
+            return "gunshot"
         return None
+
+    @staticmethod
+    def format_boss_mode(mode: Optional[Any] = None, is_solo: bool = False) -> str:
+        if is_solo:
+            return "В одного"
+        if mode is None:
+            return ""
+        raw = str(mode).strip()
+        if not raw:
+            return ""
+        return MODE_TITLES.get(raw.lower(), raw)
+
+    @staticmethod
+    def format_boss_rewards_lines(parsed: Dict[str, Any]) -> List[str]:
+        cur_emoji = {
+            "cigarettes": "🚬",
+            "authority": "🤘",
+            "rubles": "💵",
+            "sugar": "🍬",
+            "paper": "🧻",
+            "soap": "🧼",
+            "keys": "🔑",
+            "respect": "⭐",
+            "energy": "⚡",
+            "talents": "🧠",
+            "poison": "☠️",
+            "knife": "🔪",
+            "gunshot": "🔫",
+        }
+        lines: List[str] = []
+        for rw in parsed.get("rewards") or []:
+            em = cur_emoji.get(rw.get("currency"), "🎁")
+            lines.append(f"{em} {rw.get('label')}: +{rw.get('amount')}")
+        for dr in parsed.get("drops") or []:
+            kind = str(dr.get("kind") or "").lower()
+            em = "📦" if kind == "stash" else ("🎒" if kind == "stashed_gear" else ("🏠" if kind == "room" else ("🧩" if kind in ("tattoo", "clothing", "complect") else "🎁")))
+            title = dr.get("title") or dr.get("name") or "Предмет"
+            sub = dr.get("subtitle")
+            if sub and sub.lower() not in title.lower():
+                lines.append(f"{em} {title} ({sub})")
+            else:
+                lines.append(f"{em} {title}")
+        return lines
 
     @classmethod
     def parse_boss_claim(
@@ -144,14 +218,29 @@ class DropParser:
                             "amount": int(v),
                         })
 
-        # 3. Валюты внутри payload.get("currencies") / globalReward / personalReward (dict или list)
-        for container in (
+        # 3. Валюты внутри payload.get("currencies") / data / result / globalReward / personalReward / loot
+        data_sub = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        result_sub = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        containers = [
             payload,
+            data_sub,
+            result_sub,
             raw_rewards if isinstance(raw_rewards, dict) else {},
             payload.get("globalReward") if isinstance(payload.get("globalReward"), dict) else {},
             payload.get("personalReward") if isinstance(payload.get("personalReward"), dict) else {},
             payload.get("loot") if isinstance(payload.get("loot"), dict) else {},
-        ):
+        ]
+        consumed_keys = {
+            "success", "result", "status", "outcome", "win", "isWin", "isDefeat",
+            "bossId", "bossName", "title", "mode", "solo", "isSolo", "sessionId", "claimId",
+            "rewards", "reward", "currencies", "globalReward", "personalReward", "loot", "drops", "items",
+            "rewardSets", "soloSetReward", "tattoo", "tattoos", "clothing", "clothes", "wardrobe",
+            "complect", "complects", "room", "rooms", "camera", "chambers", "hata",
+            "collectionDrop", "collections", "stashes", "nyachki", "caches",
+            "hiddenItems", "stashedGear", "stashGear", "zanykanny", "chests", "bauls",
+            "boss", "player", "message", "error", "time", "startedAt", "endsAt", "hp", "maxHp", "currentHp",
+        }
+        for container in containers:
             if not container:
                 continue
             cur_block = container.get("currencies")
@@ -178,7 +267,11 @@ class DropParser:
                                     "label": CURRENCY_LABELS.get(c_key, c_key),
                                     "amount": int(amt),
                                 })
-            for k in ("authority", "cigarettes", "rubles", "sugar", "toiletPaper", "paper", "soap", "keys", "respect", "energy"):
+            for k in (
+                "authority", "cigarettes", "rubles", "sugar", "toiletPaper", "paper",
+                "soap", "keys", "respect", "energy", "talents", "talentPoints",
+                "poison", "knife", "gunshot",
+            ):
                 val = container.get(k)
                 if isinstance(val, (int, float)) and val > 0:
                     c_key = cls._normalize_currency(k)
@@ -187,6 +280,64 @@ class DropParser:
                             "currency": c_key,
                             "label": CURRENCY_LABELS.get(c_key, c_key),
                             "amount": int(val),
+                        })
+
+        # 3.1. Нычки / предметы коллекций, заныканный шмот, баулы
+        if not cls._collection_item_map:
+            cls.load_collection_catalog()
+        for c_src in containers:
+            if not c_src:
+                continue
+            for stash_key in ("collectionDrop", "collections", "stashes", "nyachki", "caches"):
+                raw_st = c_src.get(stash_key)
+                if not raw_st:
+                    continue
+                st_list = raw_st if isinstance(raw_st, list) else [raw_st]
+                for st in st_list:
+                    if isinstance(st, (int, str)):
+                        st = {"itemId": st}
+                    if not isinstance(st, dict):
+                        continue
+                    sid = st.get("itemId") or st.get("id")
+                    s_img = str(st.get("imageUrl") or st.get("image") or "").strip()
+                    col_lbl = (
+                        (cls._collection_item_map.get(str(sid)) if sid is not None else None)
+                        or (cls._collection_image_map.get(s_img) if s_img else None)
+                        or (cls._collection_image_map.get(s_img.rsplit("/", 1)[-1]) if s_img else None)
+                    )
+                    s_name = st.get("name") or st.get("title") or (f"Нычка: {col_lbl}" if col_lbl else f"Нычка #{sid or ''}".strip())
+                    drops.append({
+                        "kind": "stash",
+                        "type": "stash",
+                        "title": s_name if str(s_name).startswith("Нычка") else f"Нычка: {s_name}",
+                        "subtitle": f"Коллекция «{col_lbl}»" if col_lbl else "Предмет коллекции",
+                        "itemId": sid,
+                        "imageUrl": s_img or None,
+                    })
+
+            for gear_key in ("hiddenItems", "stashedGear", "stashGear", "zanykanny", "chests", "bauls"):
+                raw_gr = c_src.get(gear_key)
+                if not raw_gr:
+                    continue
+                gr_list = raw_gr if isinstance(raw_gr, list) else [raw_gr]
+                for gr in gr_list:
+                    if isinstance(gr, dict):
+                        g_name = gr.get("name") or gr.get("title") or "Трофей"
+                        g_cnt = gr.get("count") or gr.get("amount") or 1
+                        prefix = "Баул / Сундук" if gear_key in ("chests", "bauls") else "Заныканный шмот"
+                        drops.append({
+                            "kind": "stashed_gear",
+                            "type": "stashed_gear",
+                            "title": f"{prefix}: {g_name}",
+                            "subtitle": f"x{g_cnt}" if int(g_cnt or 1) > 1 else prefix,
+                            "itemId": gr.get("id") or gr.get("itemId"),
+                        })
+                    elif isinstance(gr, (str, int)):
+                        drops.append({
+                            "kind": "stashed_gear",
+                            "type": "stashed_gear",
+                            "title": f"Заныканный шмот: {gr}",
+                            "subtitle": "Заныканный шмот",
                         })
 
         # 4. Разбор дропов татуировок и сетов (rewardSets, soloSetReward, tattoo, clothing, room)
@@ -302,23 +453,30 @@ class DropParser:
                     "amount": int(keys_won),
                 })
 
-        # Заголовок
-        mode_titles = {
-            "pacansky": "Пацанский",
-            "blotnoy": "Блатной",
-            "avtoritetny": "Авторитетный",
-            "vorovskoy": "Воровской",
-            "odin": "В одного",
-            "brigade": "Бригадный",
-        }
-        mode_str = mode_titles.get(mode, mode) if mode else ""
+        # Zero-loss fallback для любых новых/нестандартных полей внутри raw_rewards / loot
+        for extra_src in (raw_rewards if isinstance(raw_rewards, dict) else {}, payload.get("loot") if isinstance(payload.get("loot"), dict) else {}):
+            for ek, ev in extra_src.items():
+                if ek in consumed_keys or cls._normalize_currency(ek):
+                    continue
+                if isinstance(ev, (int, float)) and ev > 0:
+                    logger.warning("DropParser zero-loss fallback numeric key=%s val=%s", ek, ev)
+                    drops.append({"kind": "other", "type": "other", "title": str(ek), "subtitle": f"+{int(ev)}"})
+                elif isinstance(ev, dict) and ev:
+                    nm = ev.get("name") or ev.get("title") or str(ek)
+                    logger.warning("DropParser zero-loss fallback dict key=%s", ek)
+                    drops.append({"kind": "other", "type": "other", "title": str(nm), "subtitle": str(ek)})
+
+        # Заголовок в едином формате: "Победа над боссом: <Имя> (<Режим>)"
+        mode_str = cls.format_boss_mode(mode, is_solo=bool(payload.get("isSolo") or payload.get("solo")))
         b_name = cls._resolve_boss_name(payload, boss_name)
-        title = f"Босс повержен: {b_name}" + (f" - {mode_str}" if mode_str else "")
+        title = f"Победа над боссом: {b_name}" + (f" ({mode_str})" if mode_str else "")
+        reward_lines = cls.format_boss_rewards_lines({"rewards": rewards, "drops": drops})
+        subtitle = "Босс повержен" if reward_lines else "Награда получена"
 
         return {
             "category": "bosses",
             "title": title,
-            "subtitle": "Победа в бою",
+            "subtitle": subtitle,
             "rewards": rewards,
             "drops": drops,
             "meta_json": {
@@ -327,6 +485,7 @@ class DropParser:
                 "boss_name": b_name,
                 "mode": mode_str or mode,
                 "cosmetic_drops": cosmetic_drops,
+                "reward_lines": reward_lines,
             },
         }
 
@@ -337,25 +496,19 @@ class DropParser:
         mode: Optional[str] = None,
         remaining_hp: int = 0,
         max_hp: int = 1,
+        reason: str = "Время боя вышло, босс не повержен",
+        my_damage: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Формирует структурированное уведомление о поражении от босса с полоской остатка HP."""
-        mode_titles = {
-            "pacansky": "Пацанский",
-            "blotnoy": "Блатной",
-            "avtoritetny": "Авторитетный",
-            "vorovskoy": "Воровской",
-            "odin": "В одного",
-            "brigade": "Бригадный",
-        }
-        mode_str = mode_titles.get(mode, mode) if mode else ""
+        mode_str = cls.format_boss_mode(mode)
         b_name = boss_name.strip() if boss_name and boss_name.strip() else "Босс"
-        title = f"Поражение от босса: {b_name}" + (f" - {mode_str}" if mode_str else "")
+        title = f"Поражение от босса: {b_name}" + (f" ({mode_str})" if mode_str else "")
         rem = max(0, int(remaining_hp or 0))
         mx = max(1, int(max_hp or rem or 1))
         return {
             "category": "bosses",
             "title": title,
-            "subtitle": "Бой завершен без победы",
+            "subtitle": reason,
             "rewards": [],
             "drops": [],
             "meta_json": {
@@ -499,7 +652,8 @@ class DropParser:
                 )
                 sub_txt = f"Нычка: {col_label}" if col_label else (f"Нычка ({prison_name})" if prison_name else "Нычка")
                 drops.append({
-                    "kind": "item",
+                    "kind": "stash",
+                    "type": "stash",
                     "title": c_name,
                     "subtitle": sub_txt,
                     "itemId": c_id,

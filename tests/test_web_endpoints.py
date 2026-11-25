@@ -144,3 +144,89 @@ async def test_brand_logo_and_favicon_endpoints():
             assert len(resp.content) > 0
             ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
             assert ctype in allowed_mimes, f"{url} unexpected content-type: {ctype}"
+
+        for extra_url in ("/assets/icons/complect.webp", "/assets/icons/room_reward.webp"):
+            r_ex = await ac.get(extra_url)
+            assert r_ex.status_code == 200
+            assert r_ex.headers.get("content-type", "").split(";")[0].strip().lower() == "image/webp"
+
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        css = (root / "web" / "static" / "styles.css").read_text(encoding="utf-8")
+        assert "function renderCollectionsData(" in js
+        assert "function getDropIconHtml(" in js
+        assert "complect.webp" in js
+        assert "stash.webp" in js
+        assert "white-space: pre-line" in css
+
+
+def test_collection_icons_relative_resolution_and_nonblocking_startup():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    main_py = (root / "main.py").read_text(encoding="utf-8")
+
+    assert "function resolveAssetUrl(" in js
+    col_fn_start = js.index("function renderCollectionsData(")
+    col_fn_end = js.index("async function loadCollections()", col_fn_start)
+    col_fn = js[col_fn_start:col_fn_end]
+    assert "resolveAppAssetUrl(" in col_fn
+    assert "this.style.display='none'" not in col_fn
+    assert "stash.webp" not in col_fn
+
+    # uvicorn должен запускаться ДО фоновых циклов воркеров
+    assert main_py.index("web_server.serve()") < main_py.rindex("routine_worker.run_cycle()")
+
+
+def test_resolve_app_asset_url_idempotency_and_sw_v7():
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
+
+    # Проверка sw.js
+    assert "prisonbot-assets-v7" in sw
+    assert "skipWaiting" in sw
+    assert "clients.claim" in sw
+    assert "isCacheableAssetResponse" in sw
+    assert "resp.ok" in sw
+
+    # Извлекаем getAppBasePrefix + resolveAppAssetUrl и прогоняем в Node.js
+    fn_start = js.index("function getAppBasePrefix()")
+    fn_end = js.index("function gameIcon(", fn_start)
+    fn_code = js[fn_start:fn_end]
+
+    inputs = [
+        "api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp",
+        "/api/v1/assets/proxy?path=assets/PrisonV3/collections/30/1/1.webp",
+        "prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp",
+        "/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp",
+        "/prison/prison/api/v1/assets/proxy?path=assets/PrisonV3/collections/1/1/1.webp",
+    ]
+
+    node_script = (
+        fn_code
+        + "\nconst inputs = "
+        + json.dumps(inputs)
+        + ";\nfor (const p of ['/prison/', '/prison', '/']) {\n"
+        + "  globalThis.window = { location: { pathname: p, origin: 'https://zvezdoed.space' } };\n"
+        + "  for (const inp of inputs) {\n"
+        + "    const r1 = resolveAppAssetUrl(inp);\n"
+        + "    const r2 = resolveAppAssetUrl(r1);\n"
+        + "    if (r1 !== r2) throw new Error('Not idempotent: ' + r1 + ' vs ' + r2);\n"
+        + "    if (p.startsWith('/prison')) {\n"
+        + "      if (!r1.startsWith('/prison/api/v1/assets/proxy?path=')) throw new Error('Bad prison url: ' + r1);\n"
+        + "      if (r1.includes('/prison/prison')) throw new Error('Double prefix: ' + r1);\n"
+        + "    } else {\n"
+        + "      if (!r1.startsWith('/api/v1/assets/proxy?path=')) throw new Error('Bad root url: ' + r1);\n"
+        + "    }\n"
+        + "  }\n"
+        + "}\nconsole.log('OK_NODE_IDEMPOTENT');\n"
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node failed: {proc.stderr or proc.stdout}"
+    assert "OK_NODE_IDEMPOTENT" in proc.stdout
