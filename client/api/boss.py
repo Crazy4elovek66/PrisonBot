@@ -228,10 +228,20 @@ class BossAPI:
             if pid:
                 try:
                     pid_int = int(pid)
+                    day_val = (
+                        p.get("dayRuns")
+                        if p.get("dayRuns") is not None
+                        else (p.get("dayCount") or p.get("dayCompletions") or p.get("completedDay") or p.get("runs") or 0)
+                    )
+                    night_val = (
+                        p.get("nightRuns")
+                        if p.get("nightRuns") is not None
+                        else (p.get("nightCount") or p.get("nightCompletions") or p.get("completedNight") or 0)
+                    )
                     prisons_map[pid_int] = {
                         "name": p.get("name") or p.get("title") or f"тюрьме {pid_int}",
-                        "dayRuns": int(p.get("dayRuns") or p.get("runs") or 0),
-                        "nightRuns": int(p.get("nightRuns") or 0),
+                        "dayRuns": int(day_val or 0),
+                        "nightRuns": int(night_val or 0),
                     }
                 except (ValueError, TypeError):
                     pass

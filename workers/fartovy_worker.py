@@ -142,6 +142,12 @@ class FartovyWorker:
                             pass
                     break
 
+                if (spins_done > 0 or free_spins_done > 0):
+                    try:
+                        from core.state_hub import state_hub
+                        state_hub.notify_mutation(self.account_id, "fartovy_spun", reason="fartovy_worker")
+                    except Exception:
+                        pass
                 rubles_after = await _fetch_rubles_safe(self.player_api)
                 if rubles_before is not None and rubles_after is not None and rubles_after < rubles_before:
                     cb_msg = f"rubles {rubles_before}->{rubles_after}"

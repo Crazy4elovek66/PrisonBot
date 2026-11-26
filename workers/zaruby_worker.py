@@ -111,6 +111,13 @@ class ZarubyWorker:
                     wake_dt = datetime.fromtimestamp(int(parsed["end_unix"]) + 5, tz=timezone.utc)
                     self.on_wakeup_schedule("zaruby", wake_dt)
 
+                if claimed or started or safe_actions_done > 0:
+                    try:
+                        from core.state_hub import state_hub
+                        state_hub.notify_mutation(self.account_id, "zarub_updated", reason="zaruby_worker")
+                    except Exception:
+                        pass
+
                 return {
                     "status": "ok",
                     "claimed": claimed,

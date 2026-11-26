@@ -3001,3 +3001,49 @@ async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_kresty_day_2_unlocks_lyutyy_for_catalog_and_boss_worker():
+    """
+    Регрессия бага: get_all_prisons() не содержит dayRuns/nightRuns,
+    поэтому fetch_enriched_prisons_list + BossWorker._fetch_prisons_safe обязаны
+    подтягивать dayRuns из get_prison_state(pid) и разблокировать Лютого при День: 2.
+    """
+    from unittest.mock import AsyncMock
+    from client.api.boss import BossAPI, _load_bosses_catalog
+    from client.api.prison import fetch_enriched_prisons_list
+    from core.state_hub import state_hub
+
+    state_hub.clear(1)
+    prison_api = AsyncMock()
+    prison_api.get_all_prisons.return_value = {
+        "prisons": [
+            {"id": 4, "name": "КРЕСТЫ", "isUnlocked": True},
+        ]
+    }
+    # Кейс 1: Кресты День 2 -> Лютый (id=4, requiredPrisonId=4, requiredRuns=2) разблокирован!
+    # Имитируем реальный ответ /api/player/prison/4 с обёрткой {"success": True, "data": {...}}
+    prison_api.get_prison_state.return_value = {"success": True, "data": {"dayRuns": 2, "nightRuns": 0}}
+    enriched_2 = await fetch_enriched_prisons_list(prison_api)
+    assert enriched_2[0]["dayRuns"] == 2
+
+    lyutyy = next(dict(b) for b in _load_bosses_catalog() if b["id"] == 4)
+    boot = {"playerStats": {"keys": {"3": 8}, "wins": {}, "dailyWins": {}, "dailyBossBattleLimit": 7}}
+    res_unlocked = BossAPI.evaluate_bosses_availability([dict(lyutyy)], bootstrap=boot, prisons_data=enriched_2)
+    assert res_unlocked[0]["isLocked"] is False
+    assert res_unlocked[0]["canAttack"] is True
+
+    # Кейс 2: Обратный кейс (День 1 -> Лютый закрыт, 1 из 2)
+    prison_api.get_prison_state.return_value = {"dayRuns": 1, "nightRuns": 0}
+    enriched_1 = await fetch_enriched_prisons_list(prison_api)
+    res_locked = BossAPI.evaluate_bosses_availability([dict(lyutyy)], bootstrap=boot, prisons_data=enriched_1)
+    assert res_locked[0]["isLocked"] is True
+    assert "1 из 2" in (res_locked[0].get("unlockReason") or "")
+
+    # Кейс 3: BossWorker._fetch_prisons_safe после prison_completed (dirty=True)
+    prison_api.get_prison_state.return_value = {"dayRuns": 2, "nightRuns": 0}
+    state_hub.notify_mutation(1, "prison_completed", reason="test_2nd_run")
+    bw = BossWorker(account_id=1, boss_api=AsyncMock(), prison_api=prison_api, enable_jitter=False)
+    pr_for_worker = await bw._fetch_prisons_safe()
+    assert pr_for_worker["prisons"][0]["dayRuns"] == 2

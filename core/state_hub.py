@@ -14,6 +14,48 @@ T = TypeVar("T")
 
 VOLATILE_KEYS = {"generatedAt", "updatedAt", "serverTime", "_cachedAt", "timestamp"}
 
+DOMAIN_TTL_SEC: Dict[str, float] = {
+    "player": 45.0,
+    "prisons": 90.0,
+    "boss": 30.0,
+    "katala": 60.0,
+    "poker": 90.0,
+    "fartovy": 60.0,
+    "wheel": 120.0,
+    "zaruby": 90.0,
+    "social": 120.0,
+}
+
+MUTATION_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
+    "prison_completed": ("player", "prisons", "boss", "zaruby"),
+    "prison_action": ("player", "prisons", "boss", "zaruby"),
+    "boss_finished": ("player", "boss", "zaruby"),
+    "boss_claimed": ("player", "boss", "zaruby"),
+    "boss_summoned": ("player", "boss", "zaruby"),
+    "katala_played": ("player", "katala"),
+    "poker_played": ("player", "poker"),
+    "fartovy_spun": ("player", "fartovy", "zaruby"),
+    "wheel_spun": ("player", "wheel"),
+    "zarub_updated": ("player", "zaruby"),
+    "zarub_started": ("player", "zaruby"),
+    "zarub_claimed": ("player", "zaruby"),
+    "social_changed": ("social", "player", "zaruby"),
+    "routine_action": ("player", "zaruby"),
+    "maintenance_recovered": tuple(DOMAIN_TTL_SEC.keys()),
+}
+
+
+@dataclass
+class DomainState:
+    name: str
+    stale_after_sec: float = 60.0
+    updated_at: Optional[str] = None
+    monotonic_ts: float = 0.0
+    revision: int = 0
+    dirty: bool = True
+    data: Any = None
+    last_error: Optional[str] = None
+
 
 def _strip_volatile(obj: Any) -> Any:
     """Рекурсивно удаляет эфемерные временные метки для честного сравнения payload по содержимому."""
@@ -100,6 +142,11 @@ class LiveStateHub:
         self._preset_runs: Dict[int, PresetRunState] = {}
         self._domain_revisions: Dict[int, Dict[str, int]] = {}
         self._invalidation_callbacks: List[Callable[[int, List[str], Optional[Dict[str, Any]], str], Any]] = []
+        self._domains: Dict[int, Dict[str, DomainState]] = {}
+        self._domain_locks: Dict[Tuple[int, str], asyncio.Lock] = {}
+        self._domain_fetchers: Dict[str, Callable[[int], Awaitable[Any]]] = {}
+        self._wakeup_callbacks: List[Callable[[str, Optional[datetime]], Any]] = []
+        self._state_revision: Dict[int, int] = {}
 
     def clear(self, account_id: Optional[int] = None) -> None:
         """Очищает кэш срезов (используется при сбросе состояния в тестах или смене аккаунта)."""
@@ -108,11 +155,15 @@ class LiveStateHub:
             self._versions_global.clear()
             self._preset_runs.clear()
             self._domain_revisions.clear()
+            self._domains.clear()
+            self._state_revision.clear()
         else:
             self._slices.pop(account_id, None)
             self._versions_global.pop(account_id, None)
             self._preset_runs.pop(account_id, None)
             self._domain_revisions.pop(account_id, None)
+            self._domains.pop(account_id, None)
+            self._state_revision.pop(account_id, None)
 
     def register_invalidation_callback(
         self,
@@ -501,6 +552,162 @@ class LiveStateHub:
                 q.put_nowait(event)
             except Exception:
                 pass
+
+    def get_domain_state(self, account_id: int, domain: str) -> DomainState:
+        acc_doms = self._domains.setdefault(account_id, {})
+        if domain not in acc_doms:
+            acc_doms[domain] = DomainState(
+                name=domain,
+                stale_after_sec=DOMAIN_TTL_SEC.get(domain, 60.0),
+            )
+        return acc_doms[domain]
+
+    def set_domain_data(self, account_id: int, domain: str, data: Any) -> DomainState:
+        dom = self.get_domain_state(account_id, domain)
+        dom.data = copy.deepcopy(data)
+        dom.updated_at = datetime.now(timezone.utc).isoformat()
+        dom.monotonic_ts = time.monotonic()
+        dom.dirty = False
+        dom.last_error = None
+        dom.revision += 1
+        revs = self._domain_revisions.setdefault(account_id, {})
+        revs[domain] = max(revs.get(domain, 0), dom.revision)
+        self._state_revision[account_id] = self._state_revision.get(account_id, 0) + 1
+        return dom
+
+    def mark_dirty(self, account_id: int, *domains: str) -> List[str]:
+        marked: List[str] = []
+        for d in domains:
+            if not d:
+                continue
+            dom = self.get_domain_state(account_id, d)
+            dom.dirty = True
+            dom.revision += 1
+            revs = self._domain_revisions.setdefault(account_id, {})
+            revs[d] = max(revs.get(d, 0), dom.revision)
+            marked.append(d)
+        if marked:
+            self._state_revision[account_id] = self._state_revision.get(account_id, 0) + 1
+        return marked
+
+    def register_domain_fetcher(self, domain: str, fetcher: Callable[[int], Awaitable[Any]]) -> None:
+        self._domain_fetchers[domain] = fetcher
+
+    def register_wakeup_callback(self, cb: Callable[[str, Optional[datetime]], Any]) -> None:
+        if cb not in self._wakeup_callbacks:
+            self._wakeup_callbacks.append(cb)
+
+    async def ensure_domain_fresh(
+        self,
+        account_id: int,
+        domain: str,
+        force: bool = False,
+        fetcher: Optional[Callable[[], Awaitable[Any]]] = None,
+    ) -> Any:
+        """
+        Single-flight обновление домена с per-domain asyncio.Lock.
+        При ошибке (сеть / техработы / пустой ответ) строго сохраняет последний валидный кэш.
+        """
+        dom = self.get_domain_state(account_id, domain)
+        age = time.monotonic() - dom.monotonic_ts if dom.monotonic_ts > 0 else float("inf")
+        needs_refresh = force or dom.dirty or dom.data is None or age > dom.stale_after_sec
+        if not needs_refresh:
+            return copy.deepcopy(dom.data)
+
+        lock_key = (account_id, domain)
+        lock = self._domain_locks.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._domain_locks[lock_key] = lock
+
+        async def _do_fetch():
+            async with lock:
+                # Double-check after acquiring lock
+                cur_dom = self.get_domain_state(account_id, domain)
+                cur_age = time.monotonic() - cur_dom.monotonic_ts if cur_dom.monotonic_ts > 0 else float("inf")
+                if not force and not cur_dom.dirty and cur_dom.data is not None and cur_age <= cur_dom.stale_after_sec:
+                    return copy.deepcopy(cur_dom.data)
+                fn = fetcher or (
+                    (lambda: self._domain_fetchers[domain](account_id))
+                    if domain in self._domain_fetchers
+                    else None
+                )
+                if fn is None:
+                    return copy.deepcopy(cur_dom.data)
+                try:
+                    fresh = await fn()
+                    if fresh is None:
+                        return copy.deepcopy(cur_dom.data)
+                    self.set_domain_data(account_id, domain, fresh)
+                    if domain in self.SUPPORTED_SLICES:
+                        self.update_slice(account_id, domain, fresh)
+                    return copy.deepcopy(fresh)
+                except Exception as e:
+                    cur_dom.last_error = str(e)
+                    logger.debug("ensure_domain_fresh(%s) error (preserving cached): %s", domain, e)
+                    return copy.deepcopy(cur_dom.data)
+
+        return await self.run_single_flight(f"domain:{account_id}:{domain}:{'force' if force else 'fresh'}", _do_fetch)
+
+    def notify_mutation(
+        self,
+        account_id: int,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+        extra_domains: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Событийная кросс-инвалидация зависимых доменов при мутации любого воркера или ручного POST-роута.
+        """
+        deps = list(MUTATION_DEPENDENCIES.get(event_type, ()))
+        if extra_domains:
+            for ed in extra_domains:
+                if ed and ed not in deps:
+                    deps.append(ed)
+        if deps:
+            self.mark_dirty(account_id, *deps)
+        evt = self.emit_change(
+            account_id=account_id,
+            domains=deps,
+            patch=payload,
+            reason=reason or event_type,
+        )
+        # Пробуждение зависимых воркеров при ключевых событиях
+        wake_targets: List[str] = []
+        if event_type in ("prison_completed", "prison_action"):
+            wake_targets.extend(["boss", "zaruby"])
+        elif event_type in ("fartovy_spun", "social_changed", "routine_action"):
+            wake_targets.append("zaruby")
+        for target in wake_targets:
+            for cb in list(self._wakeup_callbacks):
+                try:
+                    cb(target, datetime.now(timezone.utc))
+                except Exception:
+                    pass
+        return evt
+
+    def get_domains_telemetry(self, account_id: int) -> Dict[str, Any]:
+        now_mono = time.monotonic()
+        domains_out: Dict[str, Any] = {}
+        for d_name, ttl in DOMAIN_TTL_SEC.items():
+            dom = self.get_domain_state(account_id, d_name)
+            age = round(max(0.0, now_mono - dom.monotonic_ts), 1) if dom.monotonic_ts > 0 else None
+            domains_out[d_name] = {
+                "updated_at": dom.updated_at,
+                "age_sec": age,
+                "dirty": dom.dirty,
+                "revision": dom.revision,
+                "stale_after_sec": ttl,
+                "last_error": dom.last_error,
+            }
+        revs = {d_name: domains_out[d_name]["revision"] for d_name in DOMAIN_TTL_SEC}
+        revs.update(self.get_domain_revisions(account_id))
+        return {
+            "state_revision": self._state_revision.get(account_id, 0),
+            "domain_revisions": revs,
+            "domains": domains_out,
+        }
 
     async def run_single_flight(self, key: str, coro_fn: Callable[[], Awaitable[T]]) -> T:
         """

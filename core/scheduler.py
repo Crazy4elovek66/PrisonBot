@@ -406,6 +406,11 @@ def create_scheduler(
     controller.poker_worker = poker_worker
     controller.fartovy_worker = fartovy_worker
     controller.zaruby_worker = zaruby_worker
+    try:
+        from core.state_hub import state_hub
+        state_hub.register_wakeup_callback(controller.schedule_wakeup)
+    except Exception:
+        pass
 
     if poker_worker is not None:
         poker_worker.on_wakeup_schedule = controller.schedule_wakeup

@@ -411,13 +411,30 @@ class BossWorker:
         return bootstrap if isinstance(bootstrap, dict) else {}
 
     async def _fetch_prisons_safe(self) -> Optional[Any]:
+        from client.api.prison import fetch_enriched_prisons_list
+        from core.state_hub import state_hub
+
+        entry = state_hub.get_slice(self.account_id, "prisons", max_age_seconds=90.0)
+        dom = state_hub.get_domain_state(self.account_id, "prisons")
+        if entry is not None and not dom.dirty and isinstance(entry.data, dict):
+            pr_list = entry.data.get("prisons") or []
+            if any(isinstance(p, dict) and "dayRuns" in p for p in pr_list):
+                return entry.data
+
         if not self.prison_api:
-            return None
+            return entry.data if (entry and isinstance(entry.data, dict)) else None
         try:
+            enriched = await fetch_enriched_prisons_list(self.prison_api)
+            if enriched:
+                cur_data = dict(entry.data) if (entry and isinstance(entry.data, dict)) else {"success": True}
+                cur_data["prisons"] = enriched
+                state_hub.set_domain_data(self.account_id, "prisons", cur_data)
+                state_hub.update_slice(self.account_id, "prisons", cur_data)
+                return cur_data
             return await self.prison_api.get_all_prisons()
         except Exception as e:
             logger.debug(f"Не удалось загрузить prisons_data для оценки боссов: {e}")
-            return None
+            return entry.data if (entry and isinstance(entry.data, dict)) else None
 
     async def _fetch_evaluated_bosses(
         self,
@@ -1304,10 +1321,13 @@ class BossWorker:
 
                 try:
                     from core.state_hub import state_hub
-                    state_hub.emit_change(
+                    ev_type = "boss_finished" if outcome == "victory" else "boss_claimed"
+                    state_hub.notify_mutation(
                         self.account_id,
-                        ["boss", "profile", "talents", "notifications"],
+                        ev_type,
+                        payload={"boss": {"outcome": outcome}},
                         reason=f"boss_{outcome}",
+                        extra_domains=["profile", "talents", "notifications"],
                     )
                 except Exception:
                     pass

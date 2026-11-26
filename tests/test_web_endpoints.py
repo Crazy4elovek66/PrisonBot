@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v20" in sw
+    assert "prisonbot-assets-v21" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261126_08";' in js
+    assert 'const ASSET_VERSION = "20261126_09";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261126_08" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261126_09" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261126_08"',
-        'src="assets/icons/room_reward.webp?v=20261126_08"',
-        'src="assets/icons/complect.webp?v=20261126_08"',
-        'src="assets/icons/podogrev.webp?v=20261126_08"',
-        'src="assets/icons/authority.webp?v=20261126_08"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_08"',
+        'src="assets/icons/boss.webp?v=20261126_09"',
+        'src="assets/icons/room_reward.webp?v=20261126_09"',
+        'src="assets/icons/complect.webp?v=20261126_09"',
+        'src="assets/icons/podogrev.webp?v=20261126_09"',
+        'src="assets/icons/authority.webp?v=20261126_09"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_09"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1014,3 +1014,33 @@ console.log("OK_NEW_GAME_UI_NODE");
     proc = subprocess.run(["node"], input=test_runner, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_NEW_GAME_UI_NODE" in proc.stdout
+
+
+def test_handle_domain_revisions_sync_runtime_node():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    block = app_js[app_js.index("let _lastDomainRevisions = {};"):]
+
+    test_runner = f"""
+let activeSection = "bosses";
+let bossLoaded = 0, prisonsLoaded = 0, catalogsLoaded = 0;
+globalThis.document = {{
+  getElementById: (id) => id === "modal-boss-menu" ? {{ style: {{ display: "flex" }} }} : null,
+}};
+function loadBoss() {{ bossLoaded += 1; }}
+function loadPrisons() {{ prisonsLoaded += 1; }}
+function loadCatalogs() {{ catalogsLoaded += 1; }}
+{block}
+handleDomainRevisionsSync({{ prisons: 1, boss: 1 }});
+if (bossLoaded !== 0 || catalogsLoaded !== 0) throw new Error("Should not refresh on initial baseline");
+const res = handleDomainRevisionsSync({{ prisons: 2, boss: 2 }});
+if (bossLoaded !== 1 || prisonsLoaded !== 1 || catalogsLoaded !== 1) throw new Error("Did not trigger reactive refresh");
+if (!res.refreshed.includes("boss")) throw new Error("Missing boss in refreshed");
+console.log("OK_DOMAIN_REVS_SYNC_NODE");
+"""
+    proc = subprocess.run(["node"], input=test_runner, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_DOMAIN_REVS_SYNC_NODE" in proc.stdout

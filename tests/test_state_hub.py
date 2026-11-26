@@ -269,3 +269,48 @@ async def test_daily_resource_snapshots_persistence_msk_rollover_and_validation(
     patched = hub.get_slice(1, "profile").data
     assert patched["resource_deltas"]["deltas"]["cigarettes"] == 500
     assert patched["resource_deltas"]["deltas"]["rubles"] == 50
+
+
+@pytest.mark.asyncio
+async def test_state_hub_domain_freshness_single_flight_and_cross_invalidation():
+    from core.state_hub import LiveStateHub
+
+    hub = LiveStateHub()
+    fetch_calls = 0
+
+    async def fetch_prisons():
+        nonlocal fetch_calls
+        fetch_calls += 1
+        await asyncio.sleep(0.02)
+        return {"success": True, "prisons": [{"id": 4, "name": "КРЕСТЫ", "dayRuns": 2, "nightRuns": 0}]}
+
+    # 1. Single-flight: 5 concurrent calls -> 1 network request
+    results = await asyncio.gather(*[
+        hub.ensure_domain_fresh(1, "prisons", fetcher=fetch_prisons)
+        for _ in range(5)
+    ])
+    assert fetch_calls == 1
+    assert all(r["prisons"][0]["dayRuns"] == 2 for r in results)
+
+    # 2. Failure preservation: error during forced refresh preserves last valid cached data
+    async def fail_fetch():
+        raise RuntimeError("maintenance_503")
+
+    preserved = await hub.ensure_domain_fresh(1, "prisons", force=True, fetcher=fail_fetch)
+    assert preserved["prisons"][0]["dayRuns"] == 2
+    assert hub.get_domain_state(1, "prisons").last_error == "maintenance_503"
+
+    # 3. Cross-invalidation matrix + wakeup callback
+    woken = []
+    hub.register_wakeup_callback(lambda name, dt: woken.append(name))
+    hub.notify_mutation(1, "prison_completed", reason="test_kresty_2")
+    assert hub.get_domain_state(1, "prisons").dirty is True
+    assert hub.get_domain_state(1, "boss").dirty is True
+    assert hub.get_domain_state(1, "player").dirty is True
+    assert hub.get_domain_state(1, "zaruby").dirty is True
+    assert "boss" in woken and "zaruby" in woken
+
+    telemetry = hub.get_domains_telemetry(1)
+    assert telemetry["state_revision"] > 0
+    assert telemetry["domain_revisions"]["boss"] >= 1
+    assert "prisons" in telemetry["domains"]

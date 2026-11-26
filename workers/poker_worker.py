@@ -104,6 +104,13 @@ class PokerWorker:
                     next_midnight_msk = (now_msk.replace(hour=0, minute=0, second=5, microsecond=0) + timedelta(days=1)).astimezone(timezone.utc)
                     self.on_wakeup_schedule("poker", next_midnight_msk)
 
+                if played > 0:
+                    try:
+                        from core.state_hub import state_hub
+                        state_hub.notify_mutation(self.account_id, "poker_played", reason="poker_worker")
+                    except Exception:
+                        pass
+
                 return {"status": "ok", "played": played, "last_result": last_res}
             except GameMaintenanceError:
                 return {"status": "skipped", "reason": "maintenance"}

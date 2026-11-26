@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_08";
+const ASSET_VERSION = "20261126_09";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -688,6 +688,9 @@ function applyStateData(data) {
     if (typeof renderRoutineGameBadges === "function") {
       renderRoutineGameBadges(data.game_resources);
     }
+  }
+  if (data.domain_revisions && typeof handleDomainRevisionsSync === "function") {
+    handleDomainRevisionsSync(data.domain_revisions);
   }
 
   const isPaused = data.scheduler?.is_paused;
@@ -9385,5 +9388,49 @@ if (typeof module !== "undefined" && module.exports) {
     renderWheelState,
     renderZarubyState,
     renderRoutineGameBadges,
+    handleDomainRevisionsSync,
   };
+}
+
+let _lastDomainRevisions = {};
+
+function handleDomainRevisionsSync(nextRevs) {
+  if (!nextRevs || typeof nextRevs !== "object") return { refreshed: [] };
+  const refreshed = [];
+  const changed = (dom) => {
+    const nxt = Number(nextRevs[dom] || 0);
+    const prev = Number(_lastDomainRevisions[dom] || 0);
+    return nxt > 0 && prev > 0 && nxt > prev;
+  };
+
+  if (changed("prisons") || changed("boss")) {
+    refreshed.push("boss", "prisons");
+    if (typeof loadBoss === "function") loadBoss();
+    if (typeof loadPrisons === "function") loadPrisons();
+    if (typeof loadCatalogs === "function") {
+      const bossModal = document.getElementById("modal-boss-menu");
+      if (activeSection === "bosses" || (bossModal && bossModal.style.display === "flex")) {
+        loadCatalogs();
+      }
+    }
+  }
+  if (changed("poker") && activeSection === "poker" && typeof loadPokerState === "function") {
+    refreshed.push("poker");
+    loadPokerState();
+  }
+  if (changed("fartovy") && activeSection === "fartovy" && typeof loadFartovyState === "function") {
+    refreshed.push("fartovy");
+    loadFartovyState();
+  }
+  if (changed("wheel") && activeSection === "wheel" && typeof loadWheelState === "function") {
+    refreshed.push("wheel");
+    loadWheelState();
+  }
+  if (changed("zaruby") && (activeSection === "zaruby" || activeSection === "routine") && typeof loadZarubyState === "function") {
+    refreshed.push("zaruby");
+    loadZarubyState();
+  }
+
+  _lastDomainRevisions = { ..._lastDomainRevisions, ...nextRevs };
+  return { refreshed };
 }

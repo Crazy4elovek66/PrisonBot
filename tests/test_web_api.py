@@ -3177,3 +3177,27 @@ async def test_new_game_endpoints_and_workers_status(web_setup):
     r_workers = await client.get("/api/v1/workers/status", headers=headers)
     assert r_workers.status_code == 200
     assert r_workers.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_state_and_workers_status_include_domain_revisions(web_setup):
+    """Проверка телеметрии domain_revisions / domains в /api/v1/state и /api/v1/workers/status."""
+    from core.state_hub import state_hub
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+    state_hub.notify_mutation(1, "prison_completed", reason="test_telemetry")
+
+    r_st = await client.get("/api/v1/state", headers=headers)
+    assert r_st.status_code == 200
+    d_st = r_st.json()
+    assert "domain_revisions" in d_st
+    assert "sync_meta" in d_st
+    assert d_st["domain_revisions"].get("boss", 0) >= 1
+
+    r_ws = await client.get("/api/v1/workers/status", headers=headers)
+    assert r_ws.status_code == 200
+    d_ws = r_ws.json()
+    assert "state_revision" in d_ws
+    assert "domains" in d_ws
+    assert "prisons" in d_ws["domains"]

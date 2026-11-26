@@ -71,3 +71,69 @@ class PrisonAPI:
         resp = await self.http.post(f"/api/player/masters/{master_id}/work", json={})
         resp.raise_for_status()
         return resp.json()
+
+
+async def fetch_enriched_prisons_list(prison_api: Any) -> List[Dict[str, Any]]:
+    """
+    Загружает список всех тюрем (/api/prisons/all) и обогащает каждую открытую тюрьму
+    реальными счетчиками dayRuns / nightRuns из /api/player/prison/{pid}.
+    """
+    import asyncio
+
+    p_res = await prison_api.get_all_prisons()
+    raw_prisons = p_res.get("prisons", []) if isinstance(p_res, dict) else p_res
+    if not isinstance(raw_prisons, list):
+        return []
+
+    unlocked_ids = [
+        int(p["id"])
+        for p in raw_prisons
+        if isinstance(p, dict) and p.get("id") is not None and p.get("isUnlocked", True)
+    ]
+
+    states_by_id: Dict[int, Dict[str, Any]] = {}
+    if unlocked_ids and hasattr(prison_api, "get_prison_state"):
+        sem = asyncio.Semaphore(6)
+
+        async def _fetch_one(pid: int):
+            async with sem:
+                try:
+                    st = await prison_api.get_prison_state(pid)
+                    if isinstance(st, dict):
+                        if isinstance(st.get("data"), dict):
+                            st = st["data"]
+                        elif isinstance(st.get("state"), dict):
+                            st = st["state"]
+                        return pid, st
+                    return pid, {}
+                except Exception:
+                    return pid, {}
+
+        pairs = await asyncio.gather(*(_fetch_one(pid) for pid in unlocked_ids))
+        states_by_id = {pid: st for pid, st in pairs}
+
+    enriched: List[Dict[str, Any]] = []
+    for p in raw_prisons:
+        if not isinstance(p, dict):
+            continue
+        p_copy = dict(p)
+        pid = p_copy.get("id") or p_copy.get("prisonId")
+        try:
+            pid_int = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            pid_int = None
+        st = states_by_id.get(pid_int, {}) if pid_int is not None else {}
+        day_runs = int(
+            st.get("dayRuns")
+            if st.get("dayRuns") is not None
+            else (p_copy.get("dayRuns") or p_copy.get("dayCount") or p_copy.get("dayCompletions") or 0)
+        )
+        night_runs = int(
+            st.get("nightRuns")
+            if st.get("nightRuns") is not None
+            else (p_copy.get("nightRuns") or p_copy.get("nightCount") or p_copy.get("nightCompletions") or 0)
+        )
+        p_copy["dayRuns"] = day_runs
+        p_copy["nightRuns"] = night_runs
+        enriched.append(p_copy)
+    return enriched

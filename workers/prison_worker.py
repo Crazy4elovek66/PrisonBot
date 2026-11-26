@@ -473,6 +473,11 @@ class PrisonWorker:
                 master_id = getattr(config, "master_target_id", 1)
                 try:
                     await self.prison_api.do_master_work(master_id=master_id)
+                    try:
+                        from core.state_hub import state_hub
+                        state_hub.notify_mutation(self.account_id, "prison_completed", reason="master_work")
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.warning("Ошибка тренировки у мастера %s: %s", master_id, e)
 
@@ -492,6 +497,11 @@ class PrisonWorker:
                     logger.debug("Ошибка переназначения расписания PrisonWorker: %s", e)
 
             if works_done > 0:
+                try:
+                    from core.state_hub import state_hub
+                    state_hub.notify_mutation(self.account_id, "prison_completed", reason="prison_work")
+                except Exception:
+                    pass
                 p_data = stage_info.get("prison_data") if isinstance(stage_info, dict) else {}
                 cp_idx = int((p_data.get("dayCurrentCheckpoint" if is_day else "nightCurrentCheckpoint")) or 0) if isinstance(p_data, dict) else 0
                 cur_stage = cp_idx + 1 if cp_idx >= 0 else None

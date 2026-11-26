@@ -605,11 +605,14 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
 
     from core.server_health import server_health_monitor
     game_res_entry = hub.get_slice(account_id, "game_resources", max_age_seconds=300.0, source_tag=tag)
+    sync_meta = hub.get_domains_telemetry(account_id)
     payload = {
         "success": True,
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
         "game_resources": game_res_entry.data if game_res_entry else None,
+        "domain_revisions": sync_meta["domain_revisions"],
+        "sync_meta": sync_meta,
         "config": cfg_data,
         "katala_guard": katala_guard,
         "maintenance": server_health_monitor.to_dict(),
@@ -940,11 +943,22 @@ async def get_catalogs() -> Dict[str, Any]:
     masters_data = []
     player_stats = {}
 
-    # 1. Тюрьмы
+    # 1. Тюрьмы (строго с реальными dayRuns / nightRuns для точной проверки разблокировки боссов)
     if bot_context.prison_api:
         try:
-            p_res = await bot_context.prison_api.get_all_prisons()
-            prisons_data = p_res.get("prisons", []) if isinstance(p_res, dict) else p_res
+            from client.api.prison import fetch_enriched_prisons_list
+            hub = _get_hub()
+            tag = _hub_source_tag()
+            p_entry = hub.get_slice(1, "prisons", max_age_seconds=90.0, source_tag=tag)
+            p_dom = hub.get_domain_state(1, "prisons")
+            if p_entry is not None and not p_dom.dirty and isinstance(p_entry.data, dict):
+                cached_p = p_entry.data.get("prisons") or []
+                if any(isinstance(x, dict) and "dayRuns" in x for x in cached_p):
+                    prisons_data = cached_p
+            if not prisons_data:
+                prisons_data = await fetch_enriched_prisons_list(bot_context.prison_api)
+                if prisons_data:
+                    hub.set_domain_data(1, "prisons", {"success": True, "prisons": prisons_data})
         except Exception as e:
             logger.warning("Ошибка получения каталога тюрем: %s", e)
 
@@ -2313,6 +2327,8 @@ async def action_prison_work(payload: Dict[str, Any] = Body(...), account_id: in
             pass
 
     p_title_name = prison_name or f"Тюрьма #{prison_id}"
+    if completed > 0:
+        _get_hub().notify_mutation(account_id, "prison_completed", reason="manual_prison_work")
     shift_word = "День" if is_day else "Ночь"
     parsed = {
         "category": "prisons",
@@ -4582,6 +4598,7 @@ async def post_poker_play(payload: Dict[str, Any] = Body(default_factory=dict), 
     )
     if res.get("success"):
         _update_game_resources_hub(account_id, {"poker_chips": int(res.get("chips_left") or 0)})
+        _get_hub().notify_mutation(account_id, "poker_played", reason="manual_poker")
     return {"success": bool(res.get("success")), "result": res}
 
 
@@ -4645,6 +4662,7 @@ async def post_fartovy_spin(account_id: int = 1) -> Dict[str, Any]:
         "fartovy_seconds_to_next": parsed["seconds_to_next_green_match"],
         "fartovy_red": parsed["red_matches"],
     })
+    _get_hub().notify_mutation(account_id, "fartovy_spun", reason="manual_fartovy")
     return {"success": True, "spin": res, "bonuses": bon, "state": parsed}
 
 
@@ -4688,6 +4706,7 @@ async def post_wheel_spin(account_id: int = 1) -> Dict[str, Any]:
         "wheel_tickets": parsed["tickets"],
         "wheel_blue_matches": parsed["blue_matches"],
     })
+    _get_hub().notify_mutation(account_id, "wheel_spun", reason="manual_wheel")
     return {"success": True, "spin": res, "state": parsed}
 
 
@@ -4734,6 +4753,7 @@ async def post_zaruby_start(payload: Dict[str, Any] = Body(default_factory=dict)
     res = await z_api.start_zarub(tier=tier)
     cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
     parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
+    _get_hub().notify_mutation(account_id, "zarub_started", reason="manual_zaruby_start")
     return {"success": True, "result": res, "state": parsed}
 
 
@@ -4744,15 +4764,24 @@ async def post_zaruby_claim(account_id: int = 1) -> Dict[str, Any]:
     res = await z_api.claim_reward()
     cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
     parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
+    _get_hub().notify_mutation(account_id, "zarub_claimed", reason="manual_zaruby_claim")
     return {"success": True, "result": res, "state": parsed}
 
 
 @api_router.get("/workers/status")
 async def get_workers_status() -> Dict[str, Any]:
-    """Диагностическая сводка по всем независимым real-time воркерам."""
+    """Диагностическая сводка по всем независимым real-time воркерам и свежести доменов StateHub."""
     ctrl = getattr(bot_context, "scheduler_controller", None)
     statuses = dict(getattr(ctrl, "worker_status", {}) or {}) if ctrl else {}
-    return {"success": True, "workers": statuses}
+    hub = _get_hub()
+    sync_meta = hub.get_domains_telemetry(1)
+    return {
+        "success": True,
+        "workers": statuses,
+        "state_revision": sync_meta["state_revision"],
+        "domain_revisions": sync_meta["domain_revisions"],
+        "domains": sync_meta["domains"],
+    }
 
 
 @api_router.post("/daily/katala-guard/reset")
