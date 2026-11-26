@@ -195,6 +195,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     await engine.dispose()
 
 
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
     """
@@ -462,6 +558,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     assert "Авторитет +500" in tg_msg
     assert "получены" not in tg_msg
 
+    await engine.dispose()
+
+
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
     await engine.dispose()
 
 
@@ -1633,6 +1825,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     await engine.dispose()
 
 
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
     """
@@ -1900,6 +2188,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     assert "Авторитет +500" in tg_msg
     assert "получены" not in tg_msg
 
+    await engine.dispose()
+
+
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
     await engine.dispose()
 
 
@@ -2153,6 +2537,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     await engine.dispose()
 
 
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
+    await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
     """
@@ -2420,6 +2900,102 @@ async def test_boss_victory_empty_claim_uses_fresh_profile_currencies_delta(tmp_
     assert "Авторитет +500" in tg_msg
     assert "получены" not in tg_msg
 
+    await engine.dispose()
+
+
+def test_night_mode_windows_msk_and_worker_isolation():
+    """Проверка окон Ночного режима по МСК и того, что is_worker_active не блокирует другие воркеры."""
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core.database import is_night_mode_active, is_worker_active
+
+    # 23:00-08:00 МСК: 02:30 МСК = 23:30 UTC предыдущего дня
+    cfg_cross = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=23, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 25, 23, 30, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_cross, now_utc=datetime(2026, 11, 26, 9, 0, tzinfo=timezone.utc)) is False  # 12:00 МСК
+    assert is_worker_active(cfg_cross) is True
+
+    # 00:00-08:00 МСК: 03:00 МСК = 00:00 UTC
+    cfg_same = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=0, sleep_end_hour=8)
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc)) is True
+    assert is_night_mode_active(cfg_same, now_utc=datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)) is False  # 08:00 МСК
+    assert is_worker_active(cfg_same) is True
+
+    # start == end -> не блокирует 24/7
+    cfg_eq = SimpleNamespace(is_paused=False, sleep_mode_enabled=True, sleep_start_hour=5, sleep_end_hour=5)
+    assert is_night_mode_active(cfg_eq, now_utc=datetime(2026, 11, 26, 2, 0, tzinfo=timezone.utc)) is False
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_night_mode_allows_claim_blocks_summon_and_attack(tmp_path, monkeypatch):
+    """В Ночной режим BossWorker забирает награды (claim), но не призывает и не атакует боссов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.database import get_engine, init_db, get_or_create_config, get_session
+    from core.models import BotConfig
+    import workers.boss_worker as bw_mod
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'night_boss.db'}"
+    engine = get_engine(db_url)
+    await init_db(engine)
+
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as s:
+        db_cfg = await s.get(BotConfig, cfg.id)
+        db_cfg.sleep_mode_enabled = True
+        db_cfg.sleep_start_hour = 0
+        db_cfg.sleep_end_hour = 8
+        db_cfg.auto_boss_enabled = True
+        db_cfg.auto_boss_summon = True
+        db_cfg.auto_boss_hits = True
+        db_cfg.boss_auto_melee = True
+        db_cfg.boss_targets = [1]
+        await s.commit()
+
+    monkeypatch.setattr(bw_mod, "is_night_mode_active", lambda c: True)
+
+    bootstraps = [
+        # 1. Завершенный бой с наградой -> должен быть заклеймлен ночью!
+        {
+            "state": "reward",
+            "battle": {"bossId": 1, "title": "Кирпич", "mode": "pacansky", "currentHp": 0, "maxHp": 1000, "sessionId": "s_night_1"},
+            "prisons": [],
+        },
+        # 2. После клейма слот свободен -> призывать нового ночью НЕЛЬЗЯ!
+        {
+            "state": "idle",
+            "battle": None,
+            "prisons": [],
+        },
+    ]
+    claim_mock = AsyncMock(return_value={
+        "success": True,
+        "rewards": {"result": "victory", "globalReward": {"cigarettes": 100}},
+    })
+    summon_mock = AsyncMock()
+    attack_mock = AsyncMock()
+    notifier = SimpleNamespace(notify=AsyncMock())
+
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(side_effect=lambda: bootstraps.pop(0) if len(bootstraps) > 1 else bootstraps[0]),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=claim_mock,
+        start_boss=summon_mock,
+        attack_boss=attack_mock,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=AsyncMock(return_value={"currencies": {"cigarettes": 500, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0, "authority": 0}}))
+
+    worker = BossWorker(account_id=1, boss_api=boss_api, player_api=player_api, db_engine=engine, notifier=notifier, enable_jitter=False)
+    res = await worker.run_cycle()
+
+    assert res["rewards_claimed"] == 1
+    assert res.get("night_mode_paused") is True
+    assert claim_mock.await_count == 1
+    assert summon_mock.await_count == 0
+    assert attack_mock.await_count == 0
+    assert notifier.notify.await_count == 1
     await engine.dispose()
 
 

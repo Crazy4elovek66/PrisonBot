@@ -6,8 +6,11 @@
 
 from typing import Dict, Any, List, Optional, Tuple
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 import httpx
+
+from core.config import MSK_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,131 @@ COMBO_SCORES = {
 }
 
 
+def _parse_iso_utc_safe(raw: Any) -> Optional[datetime]:
+    """
+    Безопасный парсинг ISO-8601 даты (в т.ч. .NET ticks с 7 цифрами дробных секунд на Python 3.10).
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    # Нормализуем дробную часть секунд до 6 цифр для совместимости с Python <= 3.10
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _extract_paid_cost(payload: Dict[str, Any]) -> float:
+    """Извлекает стоимость игры в рублях/валюте, если сервер передал цену."""
+    for key in ("price", "cost", "rublesCost", "betRubles", "entryCost", "rubles"):
+        val = payload.get(key)
+        if val is not None and not isinstance(val, bool):
+            try:
+                num = float(val)
+                if num > 0:
+                    return num
+            except (TypeError, ValueError):
+                return 1.0
+    return 0.0
+
+
+def is_free_game_available(
+    status_payload: Any,
+    now_utc: Optional[datetime] = None,
+) -> Tuple[bool, str]:
+    """
+    Fail-Closed проверка доступности бесплатной игры у Каталы.
+    Возвращает (True, reason) ТОЛЬКО при явном подтверждении бесплатности и цене 0.
+    """
+    if not isinstance(status_payload, dict) or not status_payload:
+        return False, "invalid_or_empty_state"
+
+    if status_payload.get("freeGameAvailable") is False or status_payload.get("canPlayFree") is False:
+        return False, "explicit_free_disabled"
+
+    free_games_left = status_payload.get("freeGamesLeft")
+    if free_games_left is not None:
+        try:
+            if int(free_games_left) <= 0 and status_payload.get("freeGameAvailable") is not True:
+                return False, "no_free_games_left"
+        except (TypeError, ValueError):
+            return False, "invalid_free_games_left"
+
+    explicit_free = (
+        status_payload.get("freeGameAvailable") is True
+        or status_payload.get("canPlayFree") is True
+        or (isinstance(free_games_left, (int, float)) and free_games_left > 0)
+    )
+
+    paid_cost = _extract_paid_cost(status_payload)
+    if paid_cost > 0 and not explicit_free:
+        return False, f"non_zero_cost_{paid_cost}"
+
+    ref_now = now_utc or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+
+    for cd_key in ("cooldownSec", "secondsLeft", "remainingSec", "nextFreeInSec"):
+        if status_payload.get(cd_key) is not None:
+            try:
+                cd_val = float(status_payload[cd_key])
+                if cd_val > 0:
+                    return False, f"cooldown_{int(cd_val)}s"
+            except (TypeError, ValueError):
+                return False, f"invalid_{cd_key}"
+
+    for ts_key in ("nextFreeGameAt", "nextFreeAt", "nextGameAt", "availableAt"):
+        raw_ts = status_payload.get(ts_key)
+        if raw_ts:
+            dt = _parse_iso_utc_safe(str(raw_ts))
+            if dt is None:
+                return False, f"unparseable_{ts_key}"
+            rem = (dt - ref_now).total_seconds()
+            if rem > 0:
+                return False, f"next_free_in_future_{int(rem)}s"
+
+    last_game_str = (
+        status_payload.get("lastFreePlayTime")
+        or status_payload.get("lastGameTime")
+        or status_payload.get("lastFreeGameAt")
+        or status_payload.get("lastPlayTime")
+    )
+    if last_game_str:
+        last_dt = _parse_iso_utc_safe(str(last_game_str))
+        if last_dt is None:
+            return False, "unparseable_last_free_play_time"
+        diff = (ref_now - last_dt).total_seconds()
+        if diff < 86400:
+            rem = max(1, int(86400.0 - diff))
+            return False, f"cooldown_24h_{rem}s"
+        if paid_cost > 0:
+            return False, f"non_zero_cost_{paid_cost}"
+        return True, "ok_24h_elapsed"
+
+    if explicit_free and paid_cost == 0:
+        return True, "ok_explicit_free"
+
+    # Первый запуск на аккаунте: lastFreePlayTime еще null, но ответ /api/card/state валиден и totalPlays == 0
+    if (
+        "lastFreePlayTime" in status_payload
+        and status_payload.get("lastFreePlayTime") in (None, "")
+        and status_payload.get("totalPlays") == 0
+        and status_payload.get("level") is not None
+        and paid_cost == 0
+    ):
+        return True, "ok_first_ever_game"
+
+    return False, "missing_free_confirmation"
+
+
 class KatalaAPI:
     """Клиент эндпоинтов мини-игры «Катала»."""
 
@@ -40,13 +168,22 @@ class KatalaAPI:
         resp.raise_for_status()
         return resp.json()
 
-    async def start_game(self) -> Dict[str, Any]:
-        """Старт игры (POST /api/card/start)."""
+    async def start_game(self, allow_paid: bool = False) -> Dict[str, Any]:
+        """
+        Старт игры (POST /api/card/start).
+        При allow_paid=False обязательно проверяет /api/card/state и блокирует любой платный старт.
+        """
+        if not allow_paid:
+            state = await self.get_state()
+            ok, reason = is_free_game_available(state)
+            if not ok:
+                logger.warning(f"Катала: старт заблокирован (allow_paid=False, reason={reason})")
+                return {"skipped": True, "reason": "paid_blocked", "detail": reason}
         resp = await self.http.post("/api/card/start", json={})
         resp.raise_for_status()
         return resp.json()
 
-    async def reroll_card(self, card_index: int) -> Dict[str, Any]:
+    async def reroll_card(self, card_index: int, allow_paid: bool = False) -> Dict[str, Any]:
         """
         Шульмовка / переворот выбранной карты (POST /api/card/reroll).
         card_index: 0 для card1, 1 для card2.
@@ -217,113 +354,129 @@ class KatalaSolver:
         }
 
 
+async def _fetch_rubles_safe(player_api: Any) -> Optional[int]:
+    """Безопасно получает текущий баланс рублей игрока."""
+    if not player_api or not hasattr(player_api, "init_player"):
+        return None
+    try:
+        init_d = await player_api.init_player()
+        if not isinstance(init_d, dict):
+            return None
+        cur = init_d.get("currencies")
+        if isinstance(cur, dict) and cur.get("rubles") is not None:
+            return int(cur["rubles"])
+        p_inf = init_d.get("player")
+        if isinstance(p_inf, dict):
+            p_cur = p_inf.get("currencies")
+            if isinstance(p_cur, dict) and p_cur.get("rubles") is not None:
+                return int(p_cur["rubles"])
+            if p_inf.get("rubles") is not None:
+                return int(p_inf["rubles"])
+        if init_d.get("rubles") is not None:
+            return int(init_d["rubles"])
+    except Exception:
+        return None
+    return None
+
+
 async def play_free_daily_game(
     katala_api: KatalaAPI,
     force: bool = False,
     player_api: Optional[Any] = None,
-    account_id: int = 1
+    account_id: int = 1,
+    allow_paid: bool = False,
+    db_engine: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
-    Выполняет строго 1 бесплатную суточную партию у Каталы.
+    Выполняет строго 1 бесплатную суточную партию у Каталы (Fail-Closed).
     Строгий запрет на любые платные ставки за рубли/сахар/мыло.
-    Использует бесплатные шульмовки по уровню и забирает выигрыш.
     """
+    now_utc = datetime.now(timezone.utc)
+    today_msk = now_utc.astimezone(MSK_TZ).strftime("%Y-%m-%d")
+
+    # 1. Персистентный лимит МСК + Circuit Breaker в SQLite
+    if db_engine is not None:
+        try:
+            from core.database import get_katala_guard_state
+            guard = await get_katala_guard_state(account_id=account_id, engine=db_engine)
+            if guard.get("rubles_guard_tripped"):
+                logger.warning("Катала: заблокирована сработавшим Circuit Breaker по рублям (%s)", guard.get("guard_reason"))
+                return {
+                    "success": False,
+                    "skipped": True,
+                    "status": "guard_tripped",
+                    "reason": "rubles_guard_tripped",
+                    "message": f"Авто-Катала остановлена защитой рублей: {guard.get('guard_reason') or 'обнаружено списание'}",
+                }
+            if guard.get("last_free_day_msk") == today_msk and not allow_paid:
+                logger.info(f"Катала: суточный лимит МСК ({today_msk}) уже использован в БД")
+                return {
+                    "success": False,
+                    "skipped": True,
+                    "status": "already_played",
+                    "reason": "already_played_today_msk",
+                    "message": "Бесплатная суточная игра у Каталы уже сыграна сегодня (МСК)",
+                }
+        except Exception as db_err:
+            logger.warning(f"Катала: ошибка чтения guard_state из БД: {db_err}")
+
     try:
         state = await katala_api.get_state()
     except Exception as e:
         logger.warning(f"Катала: ошибка получения состояния: {e}")
-        return {"success": False, "status": "error", "error": f"state_error: {e}"}
+        return {"success": False, "skipped": True, "status": "error", "error": f"state_error: {e}"}
 
-    # Проверка бесплатной попытки и точного серверного таймера отката (1-в-1 с bundle.js calcFreeBy24h)
-    from datetime import timezone as _tz
-    explicit_free = (
-        state.get("freeGameAvailable") is True
-        or state.get("canPlayFree") is True
-        or (state.get("freeGamesLeft") or 0) > 0
-    )
-    explicit_blocked = (
-        state.get("freeGameAvailable") is False
-        or state.get("canPlayFree") is False
-    )
-    now_utc = datetime.now(_tz.utc)
-    seconds_left: Optional[float] = None
-    for cd_key in ("cooldownSec", "secondsLeft", "remainingSec", "nextFreeInSec"):
-        if state.get(cd_key) is not None:
-            try:
-                seconds_left = max(0.0, float(state[cd_key]))
-                break
-            except (TypeError, ValueError):
-                pass
-    if seconds_left is None:
-        for ts_key in ("nextFreeGameAt", "nextFreeAt", "nextGameAt", "availableAt"):
-            raw_ts = state.get(ts_key)
-            if raw_ts:
-                try:
-                    dt = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=_tz.utc)
-                    seconds_left = max(0.0, (dt - now_utc).total_seconds())
-                    break
-                except Exception:
-                    pass
-
-    last_game_str = (
-        state.get("lastFreePlayTime")
-        or state.get("lastGameTime")
-        or state.get("lastFreeGameAt")
-        or state.get("lastPlayTime")
-    )
-    free_available = explicit_free
-    if not free_available and last_game_str and not force:
-        try:
-            # Проверка 24ч (calcFreeBy24h в bundle.js)
-            last_dt = datetime.fromisoformat(str(last_game_str).replace("Z", "+00:00"))
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=_tz.utc)
-            diff = (now_utc - last_dt).total_seconds()
-            if diff >= 86400:
-                free_available = True
-            else:
-                rem = seconds_left if seconds_left is not None else max(1.0, 86400.0 - diff)
-                logger.info(f"Катала: бесплатная суточная игра еще на кулдауне (осталось {int(rem)}с)")
-                return {
-                    "success": False,
-                    "status": "already_played",
-                    "seconds_left": int(rem),
-                    "message": "Бесплатная попытка у Каталы сегодня уже использована",
-                }
-        except Exception:
-            free_available = not explicit_blocked
-    elif not free_available and not explicit_blocked and not force:
-        if seconds_left is not None and seconds_left > 0:
-            logger.info(f"Катала: бесплатная игра на кулдауне ({int(seconds_left)}с)")
+    ok, reason = is_free_game_available(state, now_utc=now_utc)
+    seconds_left: Optional[int] = None
+    if not ok:
+        m_cd = re.search(r"_(\d+)s$", reason)
+        if m_cd:
+            seconds_left = int(m_cd.group(1))
+        elif isinstance(state, dict):
+            for cd_key in ("cooldownSec", "secondsLeft", "remainingSec", "nextFreeInSec"):
+                if state.get(cd_key) is not None:
+                    try:
+                        val = int(float(state[cd_key]))
+                        if val > 0:
+                            seconds_left = val
+                            break
+                    except (TypeError, ValueError):
+                        pass
+        if not allow_paid:
+            logger.info(f"Катала пропущена (fail-closed): reason={reason}, seconds_left={seconds_left}")
             return {
                 "success": False,
-                "status": "already_played",
-                "seconds_left": int(seconds_left),
-                "message": "Бесплатная суточная игра у Каталы на кулдауне",
+                "skipped": True,
+                "status": "already_played" if ("cooldown" in reason or "future" in reason or "disabled" in reason or "no_free" in reason) else "paid_blocked",
+                "reason": reason,
+                "seconds_left": seconds_left,
+                "message": "Бесплатная суточная попытка у Каталы недоступна или уже использована",
             }
-        # Если lastFreePlayTime отсутствует/пустой и нет явного запрета — бесплатная игра доступна (как в bundle.js)
-        free_available = True
 
-    if not free_available and not force:
-        return {
-            "success": False,
-            "status": "already_played",
-            "seconds_left": int(seconds_left) if seconds_left is not None else None,
-            "message": "Бесплатная суточная игра у Каталы недоступна",
-        }
+    rubles_before = await _fetch_rubles_safe(player_api)
 
-    # Старт игры (строго free)
+    # Старт игры (строго allow_paid=False по умолчанию)
     try:
         import inspect
-        if "bet_type" in inspect.signature(katala_api.start_game).parameters:
+        sig_params = inspect.signature(katala_api.start_game).parameters
+        if "allow_paid" in sig_params:
+            start_res = await katala_api.start_game(allow_paid=allow_paid)
+        elif "bet_type" in sig_params:
             start_res = await katala_api.start_game(bet_type="free")
         else:
             start_res = await katala_api.start_game()
     except Exception as e:
         logger.error(f"Катала: ошибка старта игры: {e}")
         return {"success": False, "status": "error", "error": f"start_error: {e}"}
+
+    if isinstance(start_res, dict) and start_res.get("skipped"):
+        return {
+            "success": False,
+            "skipped": True,
+            "status": "paid_blocked",
+            "reason": start_res.get("detail") or start_res.get("reason") or "paid_blocked",
+            "message": "Старт Каталы заблокирован защитой от траты рублей",
+        }
 
     card1 = ""
     card2 = ""
@@ -350,7 +503,7 @@ async def play_free_daily_game(
 
     logger.info(f"Катала: старт партии, уровень={level}, карты=[{card1}, {card2}], доступно шульмовок={shulmovki_left}")
 
-    # Цикл принятия решений
+    # Цикл принятия решений (только бесплатные шульмовки)
     while shulmovki_left > 0:
         decision = KatalaSolver.choose_best_action(card1, card2, shulmovki_left)
         if decision["action"] == "finish":
@@ -359,6 +512,8 @@ async def play_free_daily_game(
         idx = decision["card_index"]
         try:
             reroll_res = await katala_api.reroll_card(idx)
+            if isinstance(reroll_res, dict) and reroll_res.get("skipped"):
+                break
             if "cards" in reroll_res and isinstance(reroll_res["cards"], list) and len(reroll_res["cards"]) >= 2:
                 r_c1 = reroll_res["cards"][0]
                 r_c2 = reroll_res["cards"][1]
@@ -379,6 +534,47 @@ async def play_free_daily_game(
         finish_res = await katala_api.finish_game()
         final_combo = KatalaSolver.evaluate_combination(card1, card2)
         reward = finish_res.get("result") or finish_res.get("reward") or finish_res
+
+        rubles_after = await _fetch_rubles_safe(player_api)
+        logger.info(
+            f"Katala free check -> status={reason}, rubles_before={rubles_before} -> rubles_after={rubles_after}"
+        )
+
+        # Circuit Breaker: неожиданное списание рублей
+        if rubles_before is not None and rubles_after is not None and rubles_after < rubles_before:
+            lost = rubles_before - rubles_after
+            cb_reason = f"rubles decreased {rubles_before} -> {rubles_after} (-{lost})"
+            logger.critical(f"CRITICAL: Катала списала рубли! {cb_reason}; raw_finish={finish_res}")
+            if db_engine is not None:
+                try:
+                    from core.database import trip_katala_rubles_guard
+                    from core.drop_parser import DropParser
+                    await trip_katala_rubles_guard(account_id=account_id, reason=cb_reason, engine=db_engine)
+                    await DropParser.save_notification(
+                        account_id,
+                        {
+                            "category": "other",
+                            "event_type": "katala_rubles_guard",
+                            "title": "🚨 Катала заблокирована: списание рублей",
+                            "body": f"Зафиксировано списание {lost} руб. ({rubles_before} → {rubles_after}). Авто-Катала остановлена.",
+                            "meta_json": {"rubles_before": rubles_before, "rubles_after": rubles_after},
+                        },
+                        db_engine,
+                    )
+                except Exception as cb_err:
+                    logger.error(f"Не удалось записать trip_katala_rubles_guard: {cb_err}")
+        elif db_engine is not None:
+            try:
+                from core.database import mark_katala_free_played_today
+                await mark_katala_free_played_today(
+                    account_id=account_id,
+                    day_msk=today_msk,
+                    last_play_at=now_utc.isoformat(),
+                    engine=db_engine,
+                )
+            except Exception as mk_err:
+                logger.warning(f"Не удалось сохранить отметку дня Каталы: {mk_err}")
+
         logger.info(f"Катала: партия завершена! Итог: комбо={final_combo}, награда={reward}")
         return {
             "success": True,
@@ -389,6 +585,8 @@ async def play_free_daily_game(
             "shulmovki_used": shulmovki_used,
             "reward": reward,
             "finish_result": finish_res,
+            "rubles_before": rubles_before,
+            "rubles_after": rubles_after,
             "next_cooldown_sec": int(finish_res.get("cooldownSec") or 86400),
         }
     except Exception as e:

@@ -303,23 +303,35 @@ async def get_or_create_config(account_id: int, engine: Optional[AsyncEngine] = 
 
 
 def is_worker_active(config) -> bool:
-    """Проверка активности воркера с учетом паузы и режима сна (время МСК)."""
-    from datetime import datetime, timezone, timedelta
+    """Проверка глобальной активности воркера (без учета ночного режима боссов)."""
+    return not bool(getattr(config, "is_paused", False))
 
-    if getattr(config, "is_paused", False):
+
+def is_night_mode_active(config, now_utc=None) -> bool:
+    """
+    Проверка активности Ночного режима (строго по МСК, Europe/Moscow).
+    Отключает ТОЛЬКО автопризыв и автоатаку боссов.
+    """
+    from datetime import timezone
+    from core.config import MSK_TZ
+
+    if not getattr(config, "sleep_mode_enabled", False):
         return False
-    if getattr(config, "sleep_mode_enabled", False):
-        now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
-        current_hour = now_msk.hour
-        start = getattr(config, "sleep_start_hour", 2)
-        end = getattr(config, "sleep_end_hour", 7)
-        if start <= end:
-            if start <= current_hour < end:
-                return False
-        else:
-            if current_hour >= start or current_hour < end:
-                return False
-    return True
+
+    ref_utc = now_utc or datetime.now(timezone.utc)
+    if ref_utc.tzinfo is None:
+        ref_utc = ref_utc.replace(tzinfo=timezone.utc)
+    now_msk = ref_utc.astimezone(MSK_TZ)
+    current_hour = now_msk.hour
+
+    start = int(getattr(config, "sleep_start_hour", 2) or 0) % 24
+    end = int(getattr(config, "sleep_end_hour", 7) or 0) % 24
+
+    if start == end:
+        return False
+    if start < end:
+        return start <= current_hour < end
+    return current_hour >= start or current_hour < end
 
 
 async def prune_old_notifications(engine: Optional[AsyncEngine] = None, days: int = 7) -> int:
@@ -476,3 +488,106 @@ async def compute_daily_resource_deltas(
         "baseline": baseline,
         "deltas": deltas,
     }
+
+
+async def get_katala_guard_state(account_id: int = 1, engine: Optional[AsyncEngine] = None) -> dict:
+    """Читает персистентное состояние суточного лимита МСК и Circuit Breaker Каталы."""
+    from sqlalchemy import select
+    from core.models import KatalaGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(KatalaGuardState).where(KatalaGuardState.account_id == account_id)
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            return {
+                "account_id": account_id,
+                "last_free_day_msk": None,
+                "last_free_play_at": None,
+                "rubles_guard_tripped": False,
+                "guard_reason": None,
+            }
+        return {
+            "account_id": row.account_id,
+            "last_free_day_msk": row.last_free_day_msk,
+            "last_free_play_at": row.last_free_play_at,
+            "rubles_guard_tripped": bool(row.rubles_guard_tripped),
+            "guard_reason": row.guard_reason,
+        }
+
+
+async def mark_katala_free_played_today(
+    account_id: int,
+    day_msk: str,
+    last_play_at: Optional[str] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Персистентно фиксирует сыгранную сегодня (МСК) бесплатную партию Каталы."""
+    from sqlalchemy import select
+    from core.models import KatalaGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(KatalaGuardState).where(KatalaGuardState.account_id == account_id)
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            row = KatalaGuardState(
+                account_id=account_id,
+                last_free_day_msk=day_msk,
+                last_free_play_at=last_play_at,
+                rubles_guard_tripped=False,
+            )
+            session.add(row)
+        else:
+            row.last_free_day_msk = day_msk
+            if last_play_at:
+                row.last_free_play_at = last_play_at
+        await session.commit()
+
+
+async def trip_katala_rubles_guard(
+    account_id: int,
+    reason: str,
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Активирует персистентный Circuit Breaker при неожиданном списании рублей в Катале."""
+    from sqlalchemy import select
+    from core.models import KatalaGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(KatalaGuardState).where(KatalaGuardState.account_id == account_id)
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            row = KatalaGuardState(
+                account_id=account_id,
+                rubles_guard_tripped=True,
+                guard_reason=reason,
+            )
+            session.add(row)
+        else:
+            row.rubles_guard_tripped = True
+            row.guard_reason = reason
+        await session.commit()
+
+
+async def reset_katala_rubles_guard(
+    account_id: int = 1,
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Сбрасывает Circuit Breaker Каталы по явному запросу пользователя."""
+    from sqlalchemy import select
+    from core.models import KatalaGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(KatalaGuardState).where(KatalaGuardState.account_id == account_id)
+        )
+        row = res.scalar_one_or_none()
+        if row:
+            row.rubles_guard_tripped = False
+            row.guard_reason = None
+            await session.commit()

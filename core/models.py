@@ -397,3 +397,17 @@ class DailyInteractionTarget(Base):
         UniqueConstraint("account_id", "day_msk", "action_group", "target_id", name="uq_daily_interaction_target"),
     )
 
+
+class KatalaGuardState(Base):
+    """
+    Персистентный суточный лимит (МСК) и Circuit Breaker на трату рублей для авто-Каталы.
+    """
+    __tablename__ = "katala_guard_state"
+
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    last_free_day_msk = Column(String(16), nullable=True)  # "YYYY-MM-DD"
+    last_free_play_at = Column(String(64), nullable=True)
+    rubles_guard_tripped = Column(Boolean, default=False, nullable=False)
+    guard_reason = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+

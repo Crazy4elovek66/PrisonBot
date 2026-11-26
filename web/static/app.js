@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_03";
+const ASSET_VERSION = "20261126_04";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -666,6 +666,8 @@ function applyStateData(data) {
 
   botConfig = data.config || {};
   updateConfigUI(botConfig);
+  updateNightModeBanner(botConfig, data.scheduler || {});
+  updateKatalaStatusBadge(data.katala_guard || {});
 
   const isPaused = data.scheduler?.is_paused;
   const badge = document.getElementById("hud-status-badge");
@@ -712,6 +714,36 @@ function updateNotificationCounts(counts) {
     const el = document.getElementById(`cnt-${cat}`);
     if (el) el.textContent = counts[cat] || 0;
   });
+}
+
+function updateNightModeBanner(cfg, scheduler) {
+  const banner = document.getElementById("boss-night-mode-banner");
+  const textEl = document.getElementById("boss-night-mode-text");
+  if (!banner || !textEl) return;
+  const active = Boolean(scheduler && scheduler.night_mode_active);
+  if (!active) {
+    banner.style.display = "none";
+    return;
+  }
+  const endHour = Number(cfg?.sleep_end_hour ?? 7) % 24;
+  const endStr = String(endHour).padStart(2, "0") + ":00";
+  setTextIfChanged(textEl, `🌙 Ночной режим до ${endStr} МСК (автобой боссов на паузе)`);
+  banner.style.display = "block";
+}
+
+function updateKatalaStatusBadge(guard) {
+  const el = document.getElementById("katala-free-status-badge");
+  if (!el) return;
+  if (guard && guard.rubles_guard_tripped) {
+    setTextIfChanged(el, "🚨 Заблокировано защитой рублей (обнаружено списание)");
+    el.style.color = "#f87171";
+  } else if (guard && guard.played_today_msk) {
+    setTextIfChanged(el, "✅ Бесплатная игра сегодня сыграна (МСК)");
+    el.style.color = "#9ca3af";
+  } else {
+    setTextIfChanged(el, "🟢 Бесплатная игра доступна (0 ₽)");
+    el.style.color = "#34d399";
+  }
 }
 
 function updateConfigUI(cfg) {
@@ -2895,8 +2927,10 @@ document.querySelectorAll(".btn-routine-action").forEach(btn => {
       } else if (target === "katala") {
         res = await apiFetch("/daily/katala-play", { method: "POST" });
         const r = res.result || {};
-        if (r.status === "already_played") {
-          msg = "Бесплатная суточная партия уже была сыграна!";
+        if (r.status === "guard_tripped") {
+          msg = r.message || "Авто-Катала заблокирована защитой рублей!";
+        } else if (r.status === "already_played" || r.status === "paid_blocked" || r.skipped) {
+          msg = r.message || "Бесплатная суточная партия уже была сыграна (платный старт заблокирован)!";
         } else {
           msg = `Партия у Каталы завершена! Комбинация: ${r.hand_name || r.reward || 'Успех'}`;
         }

@@ -585,6 +585,14 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
         getattr(cfg, "auto_boss_enabled", False) or cfg.auto_boss_hits or cfg.auto_boss_summon
     )
 
+    from core.database import is_night_mode_active, get_katala_guard_state
+    from core.config import MSK_TZ
+    from datetime import datetime as _dt
+    night_active = is_night_mode_active(cfg)
+    today_msk = _dt.now(MSK_TZ).strftime("%Y-%m-%d")
+    katala_guard = await get_katala_guard_state(account_id=account_id, engine=engine)
+    katala_guard["today_msk"] = today_msk
+    katala_guard["played_today_msk"] = bool(katala_guard.get("last_free_day_msk") == today_msk)
     scheduler_status = "paused" if bot_context.is_paused() else "active"
 
     resource_deltas = None
@@ -600,9 +608,11 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
         "config": cfg_data,
+        "katala_guard": katala_guard,
         "scheduler": {
             "is_paused": bot_context.is_paused(),
             "status": scheduler_status,
+            "night_mode_active": night_active,
         },
         "counts": counts,
     }
@@ -4251,19 +4261,81 @@ async def action_send_podogrev(account_id: int = 1) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@api_router.get("/daily/katala-status")
+async def get_katala_status(account_id: int = 1) -> Dict[str, Any]:
+    """Read-only проверка статуса бесплатной игры у Каталы (без траты рублей)."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+    try:
+        from client.api.katala import KatalaAPI, is_free_game_available
+        from core.database import get_katala_guard_state
+        from core.config import MSK_TZ
+        from datetime import datetime as _dt
+
+        game_client = (
+            getattr(player_api, "http", None)
+            or getattr(player_api, "client", None)
+            or getattr(player_api, "_client", None)
+        )
+        if not game_client and hasattr(bot_context, "game_client"):
+            game_client = bot_context.game_client
+        katala_api = KatalaAPI(client=game_client)
+        raw_state = await katala_api.get_state()
+        free_ok, free_reason = is_free_game_available(raw_state)
+
+        today_msk = _dt.now(MSK_TZ).strftime("%Y-%m-%d")
+        guard = await get_katala_guard_state(account_id=account_id, engine=bot_context.db_engine) if bot_context.db_engine else {}
+        played_today_msk = bool(guard.get("last_free_day_msk") == today_msk)
+        guard_tripped = bool(guard.get("rubles_guard_tripped"))
+
+        return {
+            "success": True,
+            "free_available": bool(free_ok and not played_today_msk and not guard_tripped),
+            "server_free_ok": bool(free_ok),
+            "reason": "rubles_guard_tripped" if guard_tripped else ("already_played_today_msk" if played_today_msk else free_reason),
+            "played_today_msk": played_today_msk,
+            "guard": guard,
+            "state": raw_state,
+        }
+    except Exception as e:
+        logger.error("Ошибка чтения статуса Каталы: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/daily/katala-guard/reset")
+async def reset_katala_guard(account_id: int = 1) -> Dict[str, Any]:
+    """Ручной сброс Circuit Breaker Каталы пользователем."""
+    if not bot_context.db_engine:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    from core.database import reset_katala_rubles_guard
+    await reset_katala_rubles_guard(account_id=account_id, engine=bot_context.db_engine)
+    return {"success": True, "message": "Circuit Breaker Каталы сброшен"}
+
+
 @api_router.post("/daily/katala-play")
 async def action_play_katala(account_id: int = 1) -> Dict[str, Any]:
-    """Ручной запуск бесплатной суточной игры у Каталы."""
+    """Ручной запуск бесплатной суточной игры у Каталы (строго allow_paid=False)."""
     player_api = bot_context.player_api
     if not player_api:
         raise HTTPException(status_code=503, detail="PlayerAPI not available")
     try:
         from client.api.katala import KatalaAPI, play_free_daily_game
-        game_client = getattr(player_api, "client", None) or getattr(player_api, "_client", None)
+        game_client = (
+            getattr(player_api, "http", None)
+            or getattr(player_api, "client", None)
+            or getattr(player_api, "_client", None)
+        )
         if not game_client and hasattr(bot_context, "game_client"):
             game_client = bot_context.game_client
         katala_api = KatalaAPI(client=game_client)
-        res = await play_free_daily_game(katala_api=katala_api, player_api=player_api, account_id=account_id)
+        res = await play_free_daily_game(
+            katala_api=katala_api,
+            player_api=player_api,
+            account_id=account_id,
+            allow_paid=False,
+            db_engine=bot_context.db_engine,
+        )
         return {"success": True, "result": res}
     except Exception as e:
         logger.error("Ошибка игры у Каталы: %s", e)

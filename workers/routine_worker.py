@@ -171,7 +171,13 @@ class RoutineWorker:
         try:
             from client.api.katala import KatalaAPI, play_free_daily_game
             katala_api = KatalaAPI(self.api.http)
-            katala_res = await play_free_daily_game(katala_api)
+            katala_res = await play_free_daily_game(
+                katala_api,
+                player_api=self.api,
+                account_id=self.account_id,
+                allow_paid=False,
+                db_engine=self.db_engine,
+            )
             if katala_res.get("success"):
                 await self._log_action("katala_game", "/api/card/finish", 200, True, katala_res)
                 logger.info(f"Успешно сыграна бесплатная суточная партия у Каталы: комбо={katala_res.get('combo')}")

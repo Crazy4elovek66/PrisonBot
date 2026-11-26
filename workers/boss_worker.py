@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import select
 
 from core.config import settings
-from core.database import get_session, get_or_create_config, is_worker_active
+from core.database import get_session, get_or_create_config, is_worker_active, is_night_mode_active
 from core.models import ActionLog, FriendStats, BossFriendDamageLog, BossPreset, BossBattleSnapshot
 from client.api.boss import BossAPI, _load_bosses_catalog, FALLBACK_BOSSES
 from workers.routine_worker import parse_iso_utc
@@ -1052,7 +1052,7 @@ class BossWorker:
             return None
 
         config = await get_or_create_config(self.account_id, self.db_engine)
-        if not is_worker_active(config):
+        if not is_worker_active(config) or is_night_mode_active(config):
             return None
 
         now_utc_dt = now_utc or datetime.now(timezone.utc)
@@ -1849,8 +1849,9 @@ class BossWorker:
 
             config = await get_or_create_config(self.account_id, self.db_engine)
             if not force_manual and not is_worker_active(config):
-                logger.info("Планировщик на паузе или активен режим сна. Пропуск боссов.")
-                return {"status": "skipped", "reason": "paused_or_sleep"}
+                logger.info("Планировщик на паузе. Пропуск боссов.")
+                return {"status": "skipped", "reason": "paused"}
+            night_paused = (not force_manual) and is_night_mode_active(config)
 
             results: Dict[str, Any] = {
                 "status": "success",
@@ -1968,6 +1969,11 @@ class BossWorker:
                     and int(current_hp) > 0
                 )
                 if not is_battle_alive:
+                    if night_paused:
+                        logger.info("Ночной режим (МСК): автопризыв боссов на паузе.")
+                        results["night_mode_paused"] = True
+                        boss_active = False
+                        break
                     summoned, bootstrap, active_preset = await self._try_summon_next_boss(
                         bootstrap=bootstrap,
                         config=config,
@@ -2006,6 +2012,11 @@ class BossWorker:
                 logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
 
                 await self.record_friends_damage(bootstrap)
+
+                if night_paused:
+                    logger.info("Ночной режим (МСК): автоатака боссов на паузе (бой активен, отслеживаем завершение).")
+                    results["night_mode_paused"] = True
+                    break
 
                 is_hits_enabled = bool(
                     getattr(config, "boss_auto_melee", False)

@@ -134,9 +134,9 @@ class SchedulerController:
             if not self.boss_worker:
                 return
             if self.boss_worker.db_engine:
-                from core.database import get_or_create_config, is_worker_active
+                from core.database import get_or_create_config, is_worker_active, is_night_mode_active
                 cfg = await get_or_create_config(self.account_id, self.boss_worker.db_engine)
-                if not is_worker_active(cfg) or not (
+                if not is_worker_active(cfg) or is_night_mode_active(cfg) or not (
                     getattr(cfg, "boss_auto_melee", False) or getattr(cfg, "auto_boss_enabled", False)
                 ):
                     return
