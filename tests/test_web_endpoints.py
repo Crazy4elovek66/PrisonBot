@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v16" in sw
+    assert "prisonbot-assets-v17" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261126_04";' in js
+    assert 'const ASSET_VERSION = "20261126_05";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261126_04" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261126_05" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261126_04"',
-        'src="assets/icons/room_reward.webp?v=20261126_04"',
-        'src="assets/icons/complect.webp?v=20261126_04"',
-        'src="assets/icons/podogrev.webp?v=20261126_04"',
-        'src="assets/icons/authority.webp?v=20261126_04"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_04"',
+        'src="assets/icons/boss.webp?v=20261126_05"',
+        'src="assets/icons/room_reward.webp?v=20261126_05"',
+        'src="assets/icons/complect.webp?v=20261126_05"',
+        'src="assets/icons/podogrev.webp?v=20261126_05"',
+        'src="assets/icons/authority.webp?v=20261126_05"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_05"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -745,4 +745,79 @@ console.log("OK_RESOURCE_DELTAS_RUNTIME");
     proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_RESOURCE_DELTAS_RUNTIME" in proc.stdout
+
+
+def test_katala_fail_closed_ui_and_node_runtime():
+    """Проверка Fail-Closed дефолта в HTML, корректного URL /daily/katala-status и node runtime-теста renderKatalaFreeStatus."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    # 1. В исходном HTML нет ложного зеленого статуса и кнопка изначально disabled
+    badge_idx = index_html.index('id="katala-free-status-badge"')
+    badge_snippet = index_html[badge_idx:badge_idx + 180]
+    assert "Бесплатная игра доступна (0 ₽)" not in badge_snippet
+    assert "Проверяем статус" in badge_snippet
+    assert 'id="btn-katala-play"' in index_html
+    btn_idx = index_html.index('id="btn-katala-play"')
+    btn_snippet = index_html[btn_idx:btn_idx + 140]
+    assert "disabled" in btn_snippet
+
+    # 2. Запрос к /daily/katala-status идет через apiFetch (не голый fetch('/api/...'))
+    assert 'apiFetch("/daily/katala-status")' in js
+
+    # 3. Node runtime-тест formatKatalaWaitTime + renderKatalaFreeStatus
+    fn_start = js.index("function formatKatalaWaitTime(")
+    fn_end = js.index("async function loadKatalaStatus()", fn_start)
+    fn_code = js[fn_start:fn_end]
+
+    node_script = (
+        fn_code
+        + """
+const badgeEl = { textContent: "", style: {}, title: "" };
+const btnEl = { disabled: false };
+global.setTextIfChanged = (el, txt) => { el.textContent = txt; };
+global.document = {
+  getElementById: (id) => (id === "katala-free-status-badge" ? badgeEl : id === "btn-katala-play" ? btnEl : null),
+  querySelector: () => btnEl,
+};
+
+// (a) Кулдаун 47647с -> 13ч 14м, кнопка disabled
+const rCd = renderKatalaFreeStatus({
+  success: true,
+  free_available: false,
+  seconds_left: 47647,
+  next_free_at_msk: "2026-11-27 06:57 МСК",
+  reason: "cooldown_24h_47647s",
+});
+if (rCd.disabled !== true || btnEl.disabled !== true) throw new Error("Cooldown should disable button");
+if (!rCd.text.includes("13ч 14м") || !rCd.text.includes("использована")) throw new Error("Bad cooldown text: " + rCd.text);
+
+// (b) Доступна бесплатная -> 0 ₽, кнопка активна
+const rOk = renderKatalaFreeStatus({ success: true, free_available: true });
+if (rOk.disabled !== false || btnEl.disabled !== false) throw new Error("Free available should enable button");
+if (!rOk.text.includes("Бесплатная игра доступна (0 ₽)")) throw new Error("Bad free text: " + rOk.text);
+
+// (c) Сработал Circuit Breaker -> красный статус, кнопка disabled
+const rGuard = renderKatalaFreeStatus({ success: true, free_available: false, guard_tripped: true });
+if (rGuard.disabled !== true || btnEl.disabled !== true) throw new Error("Guard tripped should disable button");
+if (!rGuard.text.includes("остановлена защитой рублей")) throw new Error("Bad guard text: " + rGuard.text);
+
+// (d) Ошибка / null -> fail-closed, кнопка disabled
+const rErr = renderKatalaFreeStatus(null);
+if (rErr.disabled !== true || btnEl.disabled !== true) throw new Error("Null status should disable button");
+if (!rErr.text.includes("не проверен")) throw new Error("Bad null text: " + rErr.text);
+
+const rFail = renderKatalaFreeStatus({ success: false, free_available: false, error: "timeout" });
+if (rFail.disabled !== true || btnEl.disabled !== true) throw new Error("Failed status should disable button");
+
+console.log("OK_KATALA_FAIL_CLOSED_RUNTIME");
+"""
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_KATALA_FAIL_CLOSED_RUNTIME" in proc.stdout
 

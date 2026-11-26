@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Body, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy import select, update, delete, func
 
 from core.database import get_session, get_or_create_config, get_engine
@@ -4262,45 +4262,141 @@ async def action_send_podogrev(account_id: int = 1) -> Dict[str, Any]:
 
 
 @api_router.get("/daily/katala-status")
-async def get_katala_status(account_id: int = 1) -> Dict[str, Any]:
-    """Read-only проверка статуса бесплатной игры у Каталы (без траты рублей)."""
-    player_api = bot_context.player_api
-    if not player_api:
-        raise HTTPException(status_code=503, detail="PlayerAPI not available")
-    try:
-        from client.api.katala import KatalaAPI, is_free_game_available
-        from core.database import get_katala_guard_state
-        from core.config import MSK_TZ
-        from datetime import datetime as _dt
+async def get_katala_status(account_id: int = 1) -> JSONResponse:
+    """Read-only проверка статуса бесплатной игры у Каталы (без траты рублей, строго fail-closed)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from client.api.katala import KatalaAPI, is_free_game_available, _parse_iso_utc_safe
+    from core.database import get_katala_guard_state
+    from core.config import MSK_TZ
 
-        game_client = (
-            getattr(player_api, "http", None)
-            or getattr(player_api, "client", None)
-            or getattr(player_api, "_client", None)
+    no_store = {"Cache-Control": "no-store"}
+    now_utc = _dt.now(_tz.utc)
+    today_msk = now_utc.astimezone(MSK_TZ).strftime("%Y-%m-%d")
+
+    guard: Dict[str, Any] = {}
+    if bot_context.db_engine:
+        try:
+            guard = await get_katala_guard_state(account_id=account_id, engine=bot_context.db_engine)
+        except Exception as g_err:
+            logger.warning("Ошибка чтения guard_state Каталы: %s", g_err)
+
+    guard_tripped = bool(guard.get("rubles_guard_tripped"))
+    last_free_day_msk = guard.get("last_free_day_msk")
+    played_today_msk = bool(last_free_day_msk == today_msk)
+
+    player_api = bot_context.player_api
+    game_client = (
+        getattr(player_api, "http", None)
+        or getattr(player_api, "client", None)
+        or getattr(player_api, "_client", None)
+    ) if player_api else None
+    if not game_client and hasattr(bot_context, "game_client"):
+        game_client = bot_context.game_client
+
+    if not player_api or not game_client:
+        return JSONResponse(
+            status_code=200,
+            headers=no_store,
+            content={
+                "success": False,
+                "free_available": False,
+                "server_free_ok": False,
+                "guard_tripped": guard_tripped,
+                "already_played_today": played_today_msk,
+                "played_today_msk": played_today_msk,
+                "last_free_day_msk": last_free_day_msk,
+                "seconds_left": None,
+                "next_free_at_msk": None,
+                "reason": "player_api_unavailable",
+                "error": "PlayerAPI not available",
+                "guard": guard,
+            },
         )
-        if not game_client and hasattr(bot_context, "game_client"):
-            game_client = bot_context.game_client
+
+    try:
         katala_api = KatalaAPI(client=game_client)
         raw_state = await katala_api.get_state()
-        free_ok, free_reason = is_free_game_available(raw_state)
+        free_ok, free_reason = is_free_game_available(raw_state, now_utc=now_utc)
 
-        today_msk = _dt.now(MSK_TZ).strftime("%Y-%m-%d")
-        guard = await get_katala_guard_state(account_id=account_id, engine=bot_context.db_engine) if bot_context.db_engine else {}
-        played_today_msk = bool(guard.get("last_free_day_msk") == today_msk)
-        guard_tripped = bool(guard.get("rubles_guard_tripped"))
+        seconds_left: Optional[int] = None
+        next_free_at_msk: Optional[str] = None
+        if not free_ok and isinstance(raw_state, dict):
+            import re as _re
+            m_cd = _re.search(r"_(\d+)s$", free_reason or "")
+            if m_cd:
+                seconds_left = int(m_cd.group(1))
+            else:
+                for cd_key in ("cooldownSec", "secondsLeft", "remainingSec", "nextFreeInSec"):
+                    if raw_state.get(cd_key) is not None:
+                        try:
+                            val = int(float(raw_state[cd_key]))
+                            if val > 0:
+                                seconds_left = val
+                                break
+                        except (TypeError, ValueError):
+                            pass
 
-        return {
-            "success": True,
-            "free_available": bool(free_ok and not played_today_msk and not guard_tripped),
-            "server_free_ok": bool(free_ok),
-            "reason": "rubles_guard_tripped" if guard_tripped else ("already_played_today_msk" if played_today_msk else free_reason),
-            "played_today_msk": played_today_msk,
-            "guard": guard,
-            "state": raw_state,
-        }
+            last_play_raw = (
+                raw_state.get("lastFreePlayTime")
+                or raw_state.get("lastGameTime")
+                or raw_state.get("lastFreeGameAt")
+                or raw_state.get("lastPlayTime")
+            )
+            last_dt = _parse_iso_utc_safe(str(last_play_raw)) if last_play_raw else None
+            if last_dt is not None:
+                next_dt = last_dt + _td(hours=24)
+                if seconds_left is None:
+                    rem = int((next_dt - now_utc).total_seconds())
+                    if rem > 0:
+                        seconds_left = rem
+                next_free_at_msk = next_dt.astimezone(MSK_TZ).strftime("%Y-%m-%d %H:%M МСК")
+            elif seconds_left is not None and seconds_left > 0:
+                next_free_at_msk = (now_utc + _td(seconds=seconds_left)).astimezone(MSK_TZ).strftime("%Y-%m-%d %H:%M МСК")
+
+        already_played_today = bool(played_today_msk or not free_ok)
+        resolved_reason = (
+            "rubles_guard_tripped"
+            if guard_tripped
+            else ("already_played_today_msk" if played_today_msk and free_ok else free_reason)
+        )
+        return JSONResponse(
+            status_code=200,
+            headers=no_store,
+            content={
+                "success": True,
+                "free_available": bool(free_ok and not played_today_msk and not guard_tripped),
+                "server_free_ok": bool(free_ok),
+                "guard_tripped": guard_tripped,
+                "already_played_today": already_played_today,
+                "played_today_msk": played_today_msk,
+                "last_free_day_msk": last_free_day_msk,
+                "seconds_left": seconds_left,
+                "next_free_at_msk": next_free_at_msk,
+                "reason": resolved_reason,
+                "guard": guard,
+                "state": raw_state,
+            },
+        )
     except Exception as e:
-        logger.error("Ошибка чтения статуса Каталы: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("Ошибка чтения статуса Каталы (fail-closed): %s", e)
+        return JSONResponse(
+            status_code=200,
+            headers=no_store,
+            content={
+                "success": False,
+                "free_available": False,
+                "server_free_ok": False,
+                "guard_tripped": guard_tripped,
+                "already_played_today": played_today_msk,
+                "played_today_msk": played_today_msk,
+                "last_free_day_msk": last_free_day_msk,
+                "seconds_left": None,
+                "next_free_at_msk": None,
+                "reason": "katala_state_error",
+                "error": str(e),
+                "guard": guard,
+            },
+        )
 
 
 @api_router.post("/daily/katala-guard/reset")

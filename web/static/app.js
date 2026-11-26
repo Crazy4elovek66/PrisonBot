@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_04";
+const ASSET_VERSION = "20261126_05";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -537,6 +537,7 @@ function switchSection(secName) {
     else loadMonthlyState();
     if (liveSlices.data.bauls) renderBaulsData(liveSlices.data.bauls);
     else loadBauls();
+    loadKatalaStatus();
   }
   if (secName === "friends") {
     if (liveSlices.data.friends) renderFriendsSummaryData(liveSlices.data.friends);
@@ -667,7 +668,9 @@ function applyStateData(data) {
   botConfig = data.config || {};
   updateConfigUI(botConfig);
   updateNightModeBanner(botConfig, data.scheduler || {});
-  updateKatalaStatusBadge(data.katala_guard || {});
+  if (data.katala_guard && data.katala_guard.rubles_guard_tripped) {
+    renderKatalaFreeStatus({ success: true, guard_tripped: true, free_available: false });
+  }
 
   const isPaused = data.scheduler?.is_paused;
   const badge = document.getElementById("hud-status-badge");
@@ -731,18 +734,81 @@ function updateNightModeBanner(cfg, scheduler) {
   banner.style.display = "block";
 }
 
-function updateKatalaStatusBadge(guard) {
-  const el = document.getElementById("katala-free-status-badge");
-  if (!el) return;
-  if (guard && guard.rubles_guard_tripped) {
-    setTextIfChanged(el, "🚨 Заблокировано защитой рублей (обнаружено списание)");
-    el.style.color = "#f87171";
-  } else if (guard && guard.played_today_msk) {
-    setTextIfChanged(el, "✅ Бесплатная игра сегодня сыграна (МСК)");
-    el.style.color = "#9ca3af";
+let _katalaStatusSeq = 0;
+
+function formatKatalaWaitTime(secondsLeft) {
+  const sec = Math.max(0, Math.floor(Number(secondsLeft) || 0));
+  if (sec <= 0) return "";
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return `${h}ч ${String(m).padStart(2, "0")}м`;
+  }
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}м ${String(s).padStart(2, "0")}с`;
+}
+
+function renderKatalaFreeStatus(statusData) {
+  let text = "";
+  let color = "#9ca3af";
+  let disabled = true;
+  let title = "";
+
+  if (!statusData || statusData.success === false) {
+    text = "⚠️ Статус Каталы не проверен (запуск заблокирован)";
+    color = "#fbbf24";
+    disabled = true;
+    title = statusData && statusData.error ? String(statusData.error) : "";
+  } else if (statusData.guard_tripped === true) {
+    text = "🛑 Авто-Катала остановлена защитой рублей";
+    color = "#f87171";
+    disabled = true;
+    title = (statusData.guard && statusData.guard.guard_reason) ? String(statusData.guard.guard_reason) : "";
+  } else if (statusData.free_available === true) {
+    text = "🟢 Бесплатная игра доступна (0 ₽)";
+    color = "#34d399";
+    disabled = false;
   } else {
-    setTextIfChanged(el, "🟢 Бесплатная игра доступна (0 ₽)");
-    el.style.color = "#34d399";
+    disabled = true;
+    color = "#f59e0b";
+    const waitStr = formatKatalaWaitTime(statusData.seconds_left);
+    if (waitStr) {
+      text = `⚪ Бесплатная игра использована · следующая через ${waitStr}`;
+    } else {
+      text = "⚪ Бесплатная игра сегодня уже использована";
+    }
+    title = [statusData.next_free_at_msk, statusData.reason].filter(Boolean).join(" · ");
+  }
+
+  if (typeof document !== "undefined") {
+    const el = document.getElementById("katala-free-status-badge");
+    if (el) {
+      if (typeof setTextIfChanged === "function") setTextIfChanged(el, text);
+      else el.textContent = text;
+      el.style.color = color;
+      el.title = title;
+    }
+    const btn = document.getElementById("btn-katala-play") || document.querySelector('button[data-target="katala"]');
+    if (btn) {
+      btn.disabled = disabled;
+    }
+  }
+
+  return { text, color, disabled, title };
+}
+
+async function loadKatalaStatus() {
+  const seq = ++_katalaStatusSeq;
+  try {
+    const data = await apiFetch("/daily/katala-status");
+    if (seq !== _katalaStatusSeq) return null;
+    renderKatalaFreeStatus(data);
+    return data;
+  } catch (e) {
+    if (seq !== _katalaStatusSeq) return null;
+    renderKatalaFreeStatus({ success: false, free_available: false, error: e.message });
+    return null;
   }
 }
 
@@ -2950,6 +3016,7 @@ document.querySelectorAll(".btn-routine-action").forEach(btn => {
         loadProfile();
         refreshState();
         if (target === "monthly") loadMonthlyState();
+        if (target === "katala") loadKatalaStatus();
       } else if (res && res.message) {
         showToast(res.message, "info");
       }
@@ -3295,6 +3362,7 @@ document.getElementById("btn-run-all-workers")?.addEventListener("click", async 
 // Profile Refresh Button
 document.getElementById("btn-refresh-profile")?.addEventListener("click", () => {
   loadProfile();
+  loadKatalaStatus();
   showToast("Профиль обновляется...", "info");
 });
 
@@ -6088,6 +6156,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   measurePing();
   await refreshState();
   await loadProfile();
+  loadKatalaStatus();
 
   // Prioritize loading active section data first
   if (savedSec === "wardrobe") {

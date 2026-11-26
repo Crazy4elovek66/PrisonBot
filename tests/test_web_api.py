@@ -2916,6 +2916,77 @@ async def test_new_dashboard_contracts_prisons_business_config_and_assets(web_se
     await close_asset_client()
 
 
+@pytest.mark.asyncio
+async def test_katala_status_endpoint_fail_closed_4_states(web_setup):
+    """Проверка GET /api/v1/daily/katala-status в 4 состояниях + Cache-Control: no-store."""
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta, timezone
+    from core.database import trip_katala_rubles_guard, reset_katala_rubles_guard
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    class _Resp:
+        def __init__(self, data):
+            self._data = data
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self._data
+
+    class _HttpOk:
+        def __init__(self, state_payload):
+            self.payload = state_payload
+        async def get(self, url):
+            return _Resp(self.payload)
+
+    # (a) Бесплатная игра доступна
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%S.1234567Z")
+    bot_context.player_api = SimpleNamespace(http=_HttpOk({"level": 7, "lastFreePlayTime": old_ts, "totalPlays": 10}))
+    r1 = await client.get("/api/v1/daily/katala-status", headers=headers)
+    assert r1.status_code == 200
+    assert r1.headers.get("cache-control") == "no-store"
+    j1 = r1.json()
+    assert j1["success"] is True
+    assert j1["free_available"] is True
+    assert j1["guard_tripped"] is False
+
+    # (b) Идет кулдаун / уже сыграна сегодня
+    recent_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.5039281Z")
+    bot_context.player_api = SimpleNamespace(http=_HttpOk({"level": 7, "lastFreePlayTime": recent_ts, "totalPlays": 11}))
+    r2 = await client.get("/api/v1/daily/katala-status", headers=headers)
+    assert r2.status_code == 200
+    assert r2.headers.get("cache-control") == "no-store"
+    j2 = r2.json()
+    assert j2["success"] is True
+    assert j2["free_available"] is False
+    assert j2["seconds_left"] > 70000
+    assert j2["next_free_at_msk"] and "МСК" in j2["next_free_at_msk"]
+
+    # (c) Сработал guard_tripped
+    await trip_katala_rubles_guard(account_id=1, reason="test_guard", engine=engine)
+    bot_context.player_api = SimpleNamespace(http=_HttpOk({"level": 7, "lastFreePlayTime": old_ts, "totalPlays": 10}))
+    r3 = await client.get("/api/v1/daily/katala-status", headers=headers)
+    j3 = r3.json()
+    assert j3["free_available"] is False
+    assert j3["guard_tripped"] is True
+    await reset_katala_rubles_guard(account_id=1, engine=engine)
+
+    # (d) Сбой игрового API -> fail-closed
+    class _HttpErr:
+        async def get(self, url):
+            raise RuntimeError("upstream_timeout")
+
+    bot_context.player_api = SimpleNamespace(http=_HttpErr())
+    r4 = await client.get("/api/v1/daily/katala-status", headers=headers)
+    assert r4.status_code == 200
+    assert r4.headers.get("cache-control") == "no-store"
+    j4 = r4.json()
+    assert j4["success"] is False
+    assert j4["free_available"] is False
+    assert "upstream_timeout" in j4["error"]
+
+
 
 
 
