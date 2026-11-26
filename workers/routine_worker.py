@@ -6,6 +6,7 @@ from typing import Callable, Dict, Any, List, Optional
 import httpx
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
+from core.server_health import server_health_monitor, GameMaintenanceError
 from core.models import PlayerSnapshot, ActionLog
 from client.api.player import PlayerAPI
 from bot.notifier import TelegramNotifier
@@ -135,6 +136,8 @@ class RoutineWorker:
 
     async def send_podogrev_if_ready(self, config: Optional[Any] = None) -> Dict[str, Any]:
         """Отправляет бесплатные подогревы всем доступным друзьям, если включен тумблер auto_podogrev_send."""
+        if server_health_monitor.is_maintenance:
+            return {"success": False, "sent": 0, "skipped": True, "reason": "maintenance"}
         if config is None and self.db_engine:
             config = await get_or_create_config(self.account_id, self.db_engine)
         if config is not None and (not is_worker_active(config) or not getattr(config, "auto_podogrev_send", False)):
@@ -164,6 +167,8 @@ class RoutineWorker:
 
     async def play_katala_if_ready(self, config: Optional[Any] = None) -> Dict[str, Any]:
         """Запускает бесплатную партию у Каталы и перепланирует точный таймер следующего запуска."""
+        if server_health_monitor.is_maintenance:
+            return {"success": False, "status": "skipped", "reason": "maintenance"}
         if config is None and self.db_engine:
             config = await get_or_create_config(self.account_id, self.db_engine)
         if config is not None and (not is_worker_active(config) or not getattr(config, "auto_katala", False)):
@@ -541,6 +546,11 @@ class RoutineWorker:
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Выполняет один полный цикл рутинных задач."""
+        if server_health_monitor.is_maintenance:
+            if server_health_monitor.should_log_worker_skip():
+                logger.debug("Игровые сервера на техработах — RoutineWorker на паузе.")
+            return {"status": "skipped", "reason": "maintenance"}
+
         logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла рутинных задач ===")
 
         # Проверка живого BotConfig

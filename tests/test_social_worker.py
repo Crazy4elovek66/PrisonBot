@@ -900,6 +900,97 @@ async def test_friends_stats_and_summary_auto_sync_from_api(social_setup):
         bot_context.boss_api = old_boss
 
 
+@pytest.mark.asyncio
+async def test_accept_friend_400_classification_and_retries():
+    """Проверка классификации 400 Bad Request, ретраев на 429/503 и остановки при лимите."""
+    from client.api.social import SocialAPI, extract_player_combat_stats
+
+    class _Resp:
+        def __init__(self, status_code, data):
+            self.status_code = status_code
+            self._data = data
+            self.text = str(data)
+        def json(self):
+            return self._data
+
+    class _FakeHttp:
+        def __init__(self, seq):
+            self.seq = list(seq)
+            self.calls = 0
+        async def post(self, url):
+            self.calls += 1
+            return self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+
+    # 1. 400 Bad Request (лимит у игрока 966716319) -> структурированный ответ без падения
+    api_target_lim = SocialAPI(_FakeHttp([
+        _Resp(400, {"success": False, "message": "У этого игрока уже максимальное количество друзей (5000). Он не может принять новые заявки."})
+    ]))
+    r_lim = await api_target_lim.accept_friend(966716319)
+    assert r_lim["success"] is False
+    assert r_lim["code"] == "target_friends_limit_reached"
+    assert r_lim["remove_from_list"] is False
+
+    # 2. Заявка не найдена / уже в друзьях -> remove_from_list=True
+    api_gone = SocialAPI(_FakeHttp([_Resp(400, {"message": "Заявка не найдена или отозвана"})]))
+    r_gone = await api_gone.accept_friend(111)
+    assert r_gone["code"] == "request_not_found"
+    assert r_gone["remove_from_list"] is True
+
+    # 3. Ретрай при 429 -> 200 OK
+    http_retry = _FakeHttp([_Resp(429, {"message": "Too many"}), _Resp(200, {"success": True})])
+    api_retry = SocialAPI(http_retry)
+    r_ok = await api_retry.accept_friend(222)
+    assert r_ok["success"] is True
+    assert http_retry.calls == 2
+
+    # 4. Кейс 966716319: извлечение authority & level из /api/player/view/{uid} без затирания
+    stats = extract_player_combat_stats({
+        "userId": 966716319,
+        "nickname": "Режиссер",
+        "authority": 9657926,
+        "tattooZones": {"1": "a"},
+    })
+    assert stats["authority"] == 9657926
+    assert stats["level"] > 500
+
+
+@pytest.mark.asyncio
+async def test_social_worker_stops_on_friends_limit_and_filters_real_stats():
+    """SocialWorker останавливает массовый прием при friends_limit_reached и использует реальные level/authority."""
+    from types import SimpleNamespace
+    from workers.social_worker import SocialWorker
+
+    accepted_calls = []
+
+    class _MockAPI:
+        async def get_enriched_friend_requests(self):
+            return [
+                {"userId": 101, "nickname": "A", "level": 694, "authority": 9657926, "talents": 408, "totalDamage": 5000},
+                {"userId": 102, "nickname": "B", "level": 694, "authority": 9657926, "talents": 408, "totalDamage": 5000},
+            ]
+        async def accept_friend(self, uid):
+            accepted_calls.append(uid)
+            return {"success": False, "code": "friends_limit_reached", "message": "Достигнут ваш лимит друзей.", "remove_from_list": False}
+
+    worker = SocialWorker(account_id=1, social_api=_MockAPI(), db_engine=None, enable_jitter=False)
+    cfg = SimpleNamespace(
+        is_paused=False,
+        auto_friends=True,
+        friend_accept_all=False,
+        friend_filter_mode="and",
+        friend_min_level=500,
+        friend_min_authority=1000000,
+        friend_min_biceps=0,
+        friend_min_talents=100,
+        friend_min_poison_damage=0,
+        friend_min_total_damage=0,
+        friend_auto_decline_below=False,
+    )
+    res = await worker.check_incoming_friend_requests(config=cfg)
+    assert res["status"] == "ok"
+    assert accepted_calls == [101]  # Остановился сразу на первом friends_limit_reached!
+
+
 
 
 

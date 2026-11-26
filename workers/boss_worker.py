@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active, is_night_mode_active
+from core.server_health import server_health_monitor, GameMaintenanceError
 from core.models import ActionLog, FriendStats, BossFriendDamageLog, BossPreset, BossBattleSnapshot
 from client.api.boss import BossAPI, _load_bosses_catalog, FALLBACK_BOSSES
 from workers.routine_worker import parse_iso_utc
@@ -1048,7 +1049,7 @@ class BossWorker:
         """
         Проверка и запуск сохраненных пресетов боссов по расписанию МСК (UTC+3).
         """
-        if self.is_paused:
+        if self.is_paused or server_health_monitor.is_maintenance:
             return None
 
         config = await get_or_create_config(self.account_id, self.db_engine)
@@ -1845,6 +1846,11 @@ class BossWorker:
         При убийстве босса или сборе награды сразу призывает следующего в том же цикле.
         """
         async with self._cycle_lock:
+            if not force_manual and server_health_monitor.is_maintenance:
+                if server_health_monitor.should_log_worker_skip():
+                    logger.debug("Игровые сервера на техработах — BossWorker поставлен на паузу.")
+                return {"status": "skipped", "reason": "maintenance"}
+
             logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла проверки боссов (force_manual={force_manual}) ===")
 
             config = await get_or_create_config(self.account_id, self.db_engine)
@@ -1877,6 +1883,9 @@ class BossWorker:
                 # 1. Получение состояния боя
                 try:
                     bootstrap = await self._fetch_bootstrap_ready()
+                except GameMaintenanceError:
+                    logger.debug("BossWorker: выход из цикла из-за режима техработ (состояние боя сохранено).")
+                    break
                 except Exception as e:
                     logger.error(f"Ошибка при получении bootstrap босса: {e}")
                     results["errors"].append(f"get_bootstrap: {str(e)}")

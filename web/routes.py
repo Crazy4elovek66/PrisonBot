@@ -603,12 +603,14 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
         except Exception as rd_err:
             logger.debug("compute_daily_resource_deltas in get_state failed: %s", rd_err)
 
+    from core.server_health import server_health_monitor
     payload = {
         "success": True,
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
         "config": cfg_data,
         "katala_guard": katala_guard,
+        "maintenance": server_health_monitor.to_dict(),
         "scheduler": {
             "is_paused": bot_context.is_paused(),
             "status": scheduler_status,
@@ -2718,25 +2720,114 @@ def _sync_social_request_decision(account_id: int, target_uid: int, accepted: bo
     hub.emit_change(account_id, ["social"], patch={"social": social_patch}, reason="manual_friend_action")
 
 
+async def _get_current_friends_count(account_id: int) -> Optional[int]:
+    engine = bot_context.db_engine
+    if not engine:
+        return None
+    try:
+        async with get_session(engine) as session:
+            cnt = (
+                await session.execute(
+                    select(func.count(FriendStats.id)).where(
+                        FriendStats.account_id == account_id,
+                        FriendStats.is_current_friend == True,
+                    )
+                )
+            ).scalar()
+            return int(cnt or 0)
+    except Exception:
+        return None
+
+
+async def _handle_friendship_decision(
+    *,
+    account_id: int,
+    from_user_id: int,
+    accepted: bool,
+) -> Dict[str, Any]:
+    social_api = bot_context.social_api
+    if not social_api:
+        raise HTTPException(status_code=503, detail="SocialAPI not available")
+
+    action_type = "accept_friend" if accepted else "decline_friend"
+    endpoint = (
+        f"/api/friendship/accept-request?fromUserId={from_user_id}"
+        if accepted
+        else f"/api/friendship/decline-request?fromUserId={from_user_id}"
+    )
+
+    try:
+        res = (
+            await social_api.accept_friend(int(from_user_id))
+            if accepted
+            else await social_api.decline_friend(int(from_user_id))
+        )
+        if isinstance(res, dict) and res.get("success") is False:
+            code = str(res.get("code") or "bad_request")
+            msg = str(res.get("message") or "Не удалось обработать заявку")
+            remove_from_list = bool(res.get("remove_from_list", False))
+            status_code = int(res.get("status_code") or 400)
+            await _log_action(account_id, action_type, endpoint, status_code, False, {"code": code, "message": msg})
+            if remove_from_list:
+                _sync_social_request_decision(account_id, int(from_user_id), accepted=(code == "already_friends"))
+            friends_count = await _get_current_friends_count(account_id)
+            return {
+                "success": False,
+                "code": code,
+                "message": msg,
+                "remove_from_list": remove_from_list,
+                "friends_count": friends_count,
+            }
+
+        await _log_action(account_id, action_type, endpoint, 200, True, res)
+        _sync_social_request_decision(account_id, int(from_user_id), accepted=accepted)
+        friends_count = await _get_current_friends_count(account_id)
+        if accepted and friends_count is not None:
+            friends_count += 1
+        return {
+            "success": True,
+            "code": "ok",
+            "message": "Заявка принята" if accepted else "Заявка отклонена",
+            "remove_from_list": True,
+            "friends_count": friends_count,
+            "result": res,
+        }
+    except Exception as e:
+        from client.api.social import SocialAPI
+        import httpx
+        if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+            try:
+                err_json = e.response.json()
+            except Exception:
+                err_json = None
+            classified = SocialAPI.classify_friendship_error(e.response.status_code, e.response.text or "", err_json)
+            await _log_action(account_id, action_type, endpoint, e.response.status_code, False, classified)
+            if classified.get("remove_from_list"):
+                _sync_social_request_decision(account_id, int(from_user_id), accepted=(classified.get("code") == "already_friends"))
+            return {
+                "success": False,
+                "code": classified["code"],
+                "message": classified["message"],
+                "remove_from_list": bool(classified.get("remove_from_list")),
+                "friends_count": await _get_current_friends_count(account_id),
+            }
+        await _log_action(account_id, action_type, endpoint, 500, False, {"error": str(e)})
+        return {
+            "success": False,
+            "code": "temporary_error",
+            "message": "Временная ошибка при обращении к серверу игры. Повторите попытку.",
+            "remove_from_list": False,
+            "friends_count": await _get_current_friends_count(account_id),
+        }
+
+
 @api_router.post("/actions/friendship/accept")
 async def action_accept_friend(payload: Dict[str, Any] = Body(...), account_id: int = 1) -> Dict[str, Any]:
     """Ручное принятие заявки в друзья."""
     from_user_id = payload.get("fromUserId") or payload.get("userId")
     if not from_user_id:
         raise HTTPException(status_code=400, detail="fromUserId обязателен")
-
-    social_api = bot_context.social_api
-    if not social_api:
-        raise HTTPException(status_code=503, detail="SocialAPI not available")
-
-    try:
-        res = await social_api.accept_friend(int(from_user_id))
-        await _log_action(account_id, "accept_friend", f"/api/friendship/accept-request?fromUserId={from_user_id}", 200, True, res)
-        _sync_social_request_decision(account_id, int(from_user_id), accepted=True)
-        return {"success": True, "result": res}
-    except Exception as e:
-        await _log_action(account_id, "accept_friend", f"/api/friendship/accept-request?fromUserId={from_user_id}", 500, False, {"error": str(e)})
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _handle_friendship_decision(account_id=account_id, from_user_id=int(from_user_id), accepted=True)
 
 
 @api_router.post("/actions/friendship/decline")
@@ -2745,19 +2836,7 @@ async def action_decline_friend(payload: Dict[str, Any] = Body(...), account_id:
     from_user_id = payload.get("fromUserId") or payload.get("userId")
     if not from_user_id:
         raise HTTPException(status_code=400, detail="fromUserId обязателен")
-
-    social_api = bot_context.social_api
-    if not social_api:
-        raise HTTPException(status_code=503, detail="SocialAPI not available")
-
-    try:
-        res = await social_api.decline_friend(int(from_user_id))
-        await _log_action(account_id, "decline_friend", f"/api/friendship/decline-request?fromUserId={from_user_id}", 200, True, res)
-        _sync_social_request_decision(account_id, int(from_user_id), accepted=False)
-        return {"success": True, "result": res}
-    except Exception as e:
-        await _log_action(account_id, "decline_friend", f"/api/friendship/decline-request?fromUserId={from_user_id}", 500, False, {"error": str(e)})
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _handle_friendship_decision(account_id=account_id, from_user_id=int(from_user_id), accepted=False)
 
 
 @api_router.get("/boss/buffs")
@@ -4399,6 +4478,29 @@ async def get_katala_status(account_id: int = 1) -> JSONResponse:
         )
 
 
+@api_router.get("/server-health")
+async def get_server_health() -> JSONResponse:
+    """Текущее состояние доступности игрового сервера (online / maintenance)."""
+    from core.server_health import server_health_monitor
+    return JSONResponse(
+        status_code=200,
+        headers={"Cache-Control": "no-store"},
+        content=server_health_monitor.to_dict(),
+    )
+
+
+@api_router.post("/server-health/check")
+async def check_server_health_now() -> JSONResponse:
+    """Внеочередная живая проверка доступности игрового сервера (кнопка 'Проверить снова')."""
+    from core.server_health import server_health_monitor
+    res = await server_health_monitor.probe_now(bypass_debounce=False)
+    return JSONResponse(
+        status_code=200,
+        headers={"Cache-Control": "no-store"},
+        content=res,
+    )
+
+
 @api_router.post("/daily/katala-guard/reset")
 async def reset_katala_guard(account_id: int = 1) -> Dict[str, Any]:
     """Ручной сброс Circuit Breaker Каталы пользователем."""
@@ -5520,13 +5622,13 @@ async def _sync_friends_stats_to_db(account_id: int, engine: Any, force: bool = 
 @api_router.get("/friends/stats")
 async def get_friends_stats(
     sort: str = Query("damage_7d"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=1000),
     account_id: int = 1,
     force: bool = Query(False),
 ) -> Dict[str, Any]:
     """
-    Выгрузка списка друзей с боевой статистикой, уроном за 7 дней и статусом неактивности.
-    sort: 'damage_7d' | 'total_damage' | 'inactive'
+    Выгрузка списка друзей с боевой статистикой, уроном за 7 дней, средним уроном,
+    процентом участия в боях и категоризацией для безопасной чистки.
     """
     engine = bot_context.db_engine
     if not engine:
@@ -5534,13 +5636,15 @@ async def get_friends_stats(
 
     hub = _get_hub()
     tag = _hub_source_tag()
-    if not force and sort == "damage_7d" and limit == 100:
+    if not force and sort == "damage_7d" and limit == 500:
         warm = hub.get_slice(account_id, "friends_stats", max_age_seconds=120.0, source_tag=tag)
         if warm is not None:
             return warm.data
 
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
+    cfg = await get_or_create_config(account_id, engine)
+    grace_days = int(getattr(cfg, "friend_cleanup_inactive_days", 14) or 14)
 
     async with get_session(engine) as session:
         cur_cnt = int(
@@ -5565,6 +5669,18 @@ async def get_friends_stats(
         )
         friends = (await session.execute(stmt)).scalars().all()
 
+        tracked_battles = int(
+            (
+                await session.execute(
+                    select(func.count(func.distinct(BossFriendDamageLog.boss_session_id))).where(
+                        BossFriendDamageLog.account_id == account_id,
+                        BossFriendDamageLog.recorded_damage > 0,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
         dmg_7d_stmt = (
             select(BossFriendDamageLog.user_id, func.sum(BossFriendDamageLog.recorded_damage))
             .where(
@@ -5577,11 +5693,50 @@ async def get_friends_stats(
         dmg_7d_rows = (await session.execute(dmg_7d_stmt)).all()
         dmg_7d_map = {row[0]: int(row[1] or 0) for row in dmg_7d_rows}
 
+        summary_counts = {
+            "total": len(friends),
+            "active": 0,
+            "low_damage": 0,
+            "newbie_protected": 0,
+            "whitelisted": 0,
+            "candidates": 0,
+            "tracked_battles": tracked_battles,
+            "grace_days": grace_days,
+            "updated_at": now.isoformat() + "Z",
+        }
+
         results = []
         for f in friends:
             d7 = dmg_7d_map.get(f.user_id, 0)
+            tot_dmg = int(f.total_damage_to_my_bosses or 0)
+            hits_cnt = int(f.boss_hits_count or 0)
+            avg_dmg = round(tot_dmg / hits_cnt) if hits_cnt > 0 else 0
+            conv_pct = round(min(100.0, (hits_cnt / tracked_battles) * 100.0), 1) if tracked_battles > 0 else 0.0
             wep_power = (f.poison_damage or 0) + (f.gunshot_damage or 0) + (f.knife_damage or 0)
             days_inactive = (now - f.last_active_at).days if f.last_active_at else 0
+            days_added = (now - f.first_seen_at).days if f.first_seen_at else 0
+
+            if f.is_whitelisted:
+                f_status = "whitelisted"
+                f_reason = "В белом списке — защищён от чистки"
+                summary_counts["whitelisted"] += 1
+            elif f.first_seen_at and days_added < grace_days and tot_dmg <= 0:
+                f_status = "newbie_protected"
+                f_reason = f"Новичок (в друзьях {days_added} дн., защита {grace_days} дн.)"
+                summary_counts["newbie_protected"] += 1
+            elif tot_dmg > 0 or d7 > 0:
+                if hits_cnt <= 1 and tot_dmg < 10000:
+                    f_status = "low_damage"
+                    f_reason = f"Слабый урон: {tot_dmg} за {hits_cnt} бой"
+                    summary_counts["low_damage"] += 1
+                else:
+                    f_status = "active"
+                    f_reason = f"Активный: бьёт боссов ({hits_cnt} боёв, {conv_pct}% конв.)"
+                    summary_counts["active"] += 1
+            else:
+                f_status = "candidate"
+                f_reason = "0 урона по вашим боссам"
+                summary_counts["candidates"] += 1
 
             results.append({
                 "userId": f.user_id,
@@ -5596,27 +5751,42 @@ async def get_friends_stats(
                 "gunshotDamage": f.gunshot_damage,
                 "knifeDamage": f.knife_damage,
                 "damage7d": d7,
-                "totalDamageToMyBosses": f.total_damage_to_my_bosses,
-                "bossHitsCount": f.boss_hits_count,
+                "totalDamageToMyBosses": tot_dmg,
+                "avgDamage": avg_dmg,
+                "bossHitsCount": hits_cnt,
+                "conversionPct": conv_pct,
                 "lastBossHitAt": f.last_boss_hit_at.isoformat() + "Z" if f.last_boss_hit_at else None,
                 "lastActiveAt": f.last_active_at.isoformat() + "Z" if f.last_active_at else None,
                 "daysInactive": days_inactive,
+                "daysSinceAdded": days_added,
                 "isWhitelisted": f.is_whitelisted,
+                "status": f_status,
+                "statusReason": f_reason,
             })
 
-        if sort == "damage_7d":
-            results.sort(key=lambda x: (x["damage7d"], x["totalDamageToMyBosses"]), reverse=True)
+        if sort == "candidates_first":
+            order_map = {"candidate": 0, "low_damage": 1, "newbie_protected": 2, "active": 3, "whitelisted": 4}
+            results.sort(key=lambda x: (order_map.get(x["status"], 9), x["totalDamageToMyBosses"], -x["daysInactive"]))
         elif sort == "total_damage":
             results.sort(key=lambda x: (x["totalDamageToMyBosses"], x["damage7d"]), reverse=True)
+        elif sort == "avg_damage":
+            results.sort(key=lambda x: (x["avgDamage"], x["totalDamageToMyBosses"]), reverse=True)
+        elif sort == "hits":
+            results.sort(key=lambda x: (x["bossHitsCount"], x["totalDamageToMyBosses"]), reverse=True)
+        elif sort == "authority":
+            results.sort(key=lambda x: (x["authority"], x["level"]), reverse=True)
         elif sort == "inactive":
             results.sort(key=lambda x: x["daysInactive"], reverse=True)
+        else:
+            results.sort(key=lambda x: (x["damage7d"], x["totalDamageToMyBosses"]), reverse=True)
 
         payload = {
             "success": True,
             "total": len(results),
+            "summary": summary_counts,
             "friends": results[:limit],
         }
-        if sort == "damage_7d" and limit == 100:
+        if sort == "damage_7d" and limit == 500:
             hub.update_slice(account_id, "friends_stats", payload, source_tag=tag)
         return payload
 
@@ -5772,6 +5942,10 @@ async def run_friends_cleanup(
         enable_jitter=False,
     )
 
+    removed_ids: List[int] = []
+    skipped_ids: List[int] = []
+    errors: List[Dict[str, Any]] = []
+
     if user_ids and isinstance(user_ids, list):
         now = datetime.utcnow()
         day_ago = now - timedelta(hours=24)
@@ -5792,21 +5966,28 @@ async def run_friends_cleanup(
 
         removed_count = 0
         for uid in user_ids[:budget]:
+            uid_int = int(uid)
             try:
                 async with get_session(engine) as session:
                     fs = (await session.execute(
-                        select(FriendStats).where(FriendStats.account_id == account_id, FriendStats.user_id == int(uid))
+                        select(FriendStats).where(FriendStats.account_id == account_id, FriendStats.user_id == uid_int)
                     )).scalar_one_or_none()
                     if fs and fs.is_whitelisted:
+                        skipped_ids.append(uid_int)
                         continue
 
-                res = await social_api.remove_friend(int(uid))
+                res = await social_api.remove_friend(uid_int)
                 is_ok = bool(res.get("success", True)) if isinstance(res, dict) else True
-                if is_ok:
-                    removed_count += 1
+                is_already_gone = isinstance(res, dict) and bool(res.get("remove_from_list"))
+                if is_ok or is_already_gone:
+                    if is_ok:
+                        removed_count += 1
+                        removed_ids.append(uid_int)
+                    else:
+                        skipped_ids.append(uid_int)
                     async with get_session(engine) as session:
                         fs_upd = (await session.execute(
-                            select(FriendStats).where(FriendStats.account_id == account_id, FriendStats.user_id == int(uid))
+                            select(FriendStats).where(FriendStats.account_id == account_id, FriendStats.user_id == uid_int)
                         )).scalar_one_or_none()
                         if fs_upd:
                             fs_upd.is_current_friend = False
@@ -5814,23 +5995,33 @@ async def run_friends_cleanup(
                         log_entry = ActionLog(
                             account_id=account_id,
                             action_type="friend_remove",
-                            endpoint=f"/api/friendship/remove-friend?friendUserId={uid}",
+                            endpoint=f"/api/friendship/remove-friend?friendUserId={uid_int}",
                             status_code=200,
                             success=True,
-                            details={"userId": uid, "manual": True},
+                            details={"userId": uid_int, "manual": True},
                         )
                         session.add(log_entry)
                         await session.commit()
-                await asyncio.sleep(0.5)
+                else:
+                    errors.append({"userId": uid_int, "message": (res or {}).get("message") or "Ошибка удаления"})
+                await asyncio.sleep(0.35)
             except Exception as e:
-                logger.warning("Ошибка ручного удаления друга %s: %s", uid, e)
+                logger.warning("Ошибка ручного удаления друга %s: %s", uid_int, e)
+                errors.append({"userId": uid_int, "message": str(e)})
     else:
         removed_count = await worker.cleanup_inactive_friends(config=cfg)
+
+    hub = _get_hub()
+    hub.invalidate_slice(account_id, "friends_stats")
+    hub.invalidate_slice(account_id, "friends")
 
     return {
         "success": True,
         "removedCount": removed_count,
-        "message": f"Удалено {removed_count} неактивных друзей.",
+        "removedIds": removed_ids,
+        "skippedIds": skipped_ids,
+        "errors": errors,
+        "message": f"Удалено: {removed_count}, пропущено/ошибок: {len(skipped_ids) + len(errors)}.",
     }
 
 

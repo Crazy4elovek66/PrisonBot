@@ -13,6 +13,8 @@ from core.database import init_db, get_session, get_engine
 from core.models import Account, SessionData
 from core.scheduler import create_scheduler
 from core.state_hub import state_hub
+from core.server_health import server_health_monitor, classify_server_failure, format_outage_duration
+from core.drop_parser import DropParser
 from telegram.session_manager import interactive_login
 from client.auth_provider import AuthProvider
 from client.http_client import GameHttpClient
@@ -61,7 +63,7 @@ async def run_bot(once_mode: bool = False) -> None:
 
     account = await ensure_default_account()
     auth_provider = AuthProvider(account_id=account.id)
-    http_client = GameHttpClient(auth_provider=auth_provider)
+    http_client = GameHttpClient(auth_provider=auth_provider, health_monitor=server_health_monitor)
     player_api = PlayerAPI(http_client=http_client)
     boss_api = BossAPI(http_client=http_client)
     prison_api = PrisonAPI(http_client=http_client)
@@ -151,6 +153,90 @@ async def run_bot(once_mode: bool = False) -> None:
     bot_context.boss_worker = boss_worker
     bot_context.prison_worker = prison_worker
     bot_context.social_worker = social_worker
+    bot_context.server_health = server_health_monitor
+
+    async def _probe_game_server():
+        try:
+            resp = await http_client.post("/api/player/init", bypass_maintenance_gate=True, max_retries=0, timeout=5.5)
+            if resp.status_code == 401:
+                return False, 401, "HTTP 401"
+            ctype = resp.headers.get("content-type", "")
+            txt = resp.text[:1000] if resp.status_code != 200 or "html" in ctype.lower() else ""
+            is_out, _, rsn = classify_server_failure(status_code=resp.status_code, content_type=ctype, body_text=txt)
+            if is_out:
+                return False, resp.status_code, rsn
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    if isinstance(data, dict) and (data.get("userId") or data.get("id") or data.get("player")):
+                        return True, 200, "ok"
+                except Exception:
+                    return False, 200, "Некорректный JSON от сервера"
+            return False, resp.status_code, f"HTTP {resp.status_code}"
+        except Exception as exc:
+            _, _, rsn = classify_server_failure(exc=exc)
+            return False, None, rsn or str(exc)
+
+    async def _on_maintenance_start(snap):
+        reason = snap.get("reason") or "Сервер не отвечает"
+        tg_msg = (
+            f"🔧 <b>В игре технические работы</b>\n"
+            f"Игровой сервер не отвечает (причина: {reason}).\n"
+            f"Все воркеры поставлены на паузу без сброса таймеров. Дежурный мониторинг проверяет доступность каждые 10 сек."
+        )
+        try:
+            await notifier.notify(tg_msg)
+        except Exception:
+            pass
+        try:
+            await DropParser.save_notification(
+                account.id,
+                {
+                    "category": "other",
+                    "event_type": "maintenance_start",
+                    "title": "🔧 В игре технические работы",
+                    "body": f"Игровой сервер не отвечает ({reason}). Воркеры поставлены на паузу.",
+                    "meta_json": snap,
+                },
+                bot_context.db_engine,
+            )
+        except Exception:
+            pass
+        state_hub.emit_change(account.id, ["state"], patch={"maintenance": snap}, reason="maintenance_start")
+
+    async def _on_maintenance_end(snap):
+        dur_str = format_outage_duration(snap.get("last_outage_duration_sec"))
+        tg_msg = (
+            f"✅ <b>Игровой сервер снова онлайн!</b>\n"
+            f"Технические работы длились: <b>{dur_str}</b>.\n"
+            f"Все задачи и воркеры автоматически возобновлены."
+        )
+        try:
+            await notifier.notify(tg_msg)
+        except Exception:
+            pass
+        try:
+            await DropParser.save_notification(
+                account.id,
+                {
+                    "category": "other",
+                    "event_type": "maintenance_end",
+                    "title": "✅ Игровой сервер снова онлайн",
+                    "body": f"Технические работы длились {dur_str}. Воркеры автоматически возобновлены.",
+                    "meta_json": snap,
+                },
+                bot_context.db_engine,
+            )
+        except Exception:
+            pass
+        state_hub.emit_change(account.id, ["state"], patch={"maintenance": snap}, reason="maintenance_end")
+        if bot_context.scheduler_controller is not None:
+            asyncio.create_task(bot_context.scheduler_controller.refresh_tier1())
+
+    server_health_monitor.probe_fn = _probe_game_server
+    server_health_monitor.refresh_token_fn = lambda: auth_provider.refresh_or_relogin(force=True)
+    server_health_monitor.on_maintenance_start = _on_maintenance_start
+    server_health_monitor.on_maintenance_end = _on_maintenance_end
 
     # Запуск WebApp Dashboard (FastAPI / uvicorn) немедленно, не блокируя порт стартовыми циклами воркеров
     web_config = uvicorn.Config(
@@ -180,6 +266,9 @@ async def run_bot(once_mode: bool = False) -> None:
             ("prison_worker", prison_worker.run_cycle()),
             ("social_worker", social_worker.run_cycle()),
         ):
+            if server_health_monitor.is_maintenance:
+                logger.info("Стартовый прогон воркеров остановлен: активен режим техработ.")
+                break
             try:
                 await coro
             except Exception as w_err:
@@ -228,6 +317,7 @@ async def run_bot(once_mode: bool = False) -> None:
             await web_server_task
         except Exception:
             pass
+        await server_health_monitor.stop_watchdog()
         scheduler.shutdown(wait=False)
         await http_client.aclose()
         if bot:

@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_05";
+const ASSET_VERSION = "20261126_07";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -668,6 +668,9 @@ function applyStateData(data) {
   botConfig = data.config || {};
   updateConfigUI(botConfig);
   updateNightModeBanner(botConfig, data.scheduler || {});
+  if (data.maintenance) {
+    renderMaintenanceOverlay(data.maintenance);
+  }
   if (data.katala_guard && data.katala_guard.rubles_guard_tripped) {
     renderKatalaFreeStatus({ success: true, guard_tripped: true, free_available: false });
   }
@@ -733,6 +736,123 @@ function updateNightModeBanner(cfg, scheduler) {
   setTextIfChanged(textEl, `🌙 Ночной режим до ${endStr} МСК (автобой боссов на паузе)`);
   banner.style.display = "block";
 }
+
+let _maintenancePollTimer = null;
+let _maintenanceTickTimer = null;
+let _maintenanceStartedAtMs = null;
+let _maintenanceActive = false;
+
+function formatMaintenanceDuration(seconds) {
+  const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (sec < 60) return "Длится меньше минуты";
+  if (sec < 3600) {
+    return `Длится ${Math.floor(sec / 60)} мин`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return `Длится ${h} ч ${m} мин`;
+}
+
+function stopMaintenanceTimers() {
+  if (_maintenancePollTimer) {
+    clearInterval(_maintenancePollTimer);
+    _maintenancePollTimer = null;
+  }
+  if (_maintenanceTickTimer) {
+    clearInterval(_maintenanceTickTimer);
+    _maintenanceTickTimer = null;
+  }
+}
+
+function renderMaintenanceOverlay(maintenanceState) {
+  const isActive = Boolean(maintenanceState && (maintenanceState.active || maintenanceState.is_maintenance));
+  const wasActive = _maintenanceActive;
+  _maintenanceActive = isActive;
+
+  let durText = "";
+  let metaText = "";
+  if (isActive) {
+    let durSec = Number(maintenanceState.duration_sec || 0);
+    if (maintenanceState.started_at) {
+      const parsedMs = Date.parse(maintenanceState.started_at);
+      if (!Number.isNaN(parsedMs)) {
+        _maintenanceStartedAtMs = parsedMs;
+        durSec = Math.max(durSec, Math.floor((Date.now() - parsedMs) / 1000));
+      }
+    } else if (_maintenanceStartedAtMs == null) {
+      _maintenanceStartedAtMs = Date.now() - durSec * 1000;
+    }
+    durText = formatMaintenanceDuration(durSec);
+    const attempts = Number(maintenanceState.check_attempts || 0);
+    metaText = `Проверок: ${attempts} · автопроверка каждые 10 сек`;
+  } else {
+    _maintenanceStartedAtMs = null;
+  }
+
+  if (typeof document !== "undefined") {
+    const overlay = document.getElementById("maintenance-overlay");
+    const durEl = document.getElementById("maintenance-duration");
+    const metaEl = document.getElementById("maintenance-meta");
+    if (overlay) {
+      overlay.style.display = isActive ? "flex" : "none";
+    }
+    if (isActive) {
+      if (durEl) durEl.textContent = durText;
+      if (metaEl) {
+        metaEl.textContent = metaText;
+        metaEl.title = maintenanceState.reason ? String(maintenanceState.reason) : "";
+      }
+      if (!_maintenanceTickTimer && typeof setInterval === "function") {
+        _maintenanceTickTimer = setInterval(() => {
+          if (_maintenanceStartedAtMs != null && durEl) {
+            const s = Math.max(0, Math.floor((Date.now() - _maintenanceStartedAtMs) / 1000));
+            durEl.textContent = formatMaintenanceDuration(s);
+          }
+        }, 1000);
+      }
+      if (!_maintenancePollTimer && typeof setInterval === "function" && typeof apiFetch === "function") {
+        _maintenancePollTimer = setInterval(async () => {
+          try {
+            const st = await apiFetch("/server-health");
+            renderMaintenanceOverlay(st);
+          } catch (e) { }
+        }, 5000);
+      }
+    } else {
+      stopMaintenanceTimers();
+      if (wasActive && typeof refreshState === "function") {
+        if (typeof showToast === "function") showToast("Игра ожила! Все воркеры возобновлены", "success");
+        refreshState();
+        if (typeof loadProfile === "function") loadProfile();
+        if (typeof switchSection === "function" && typeof activeSection !== "undefined") {
+          switchSection(activeSection);
+        }
+      }
+    }
+  }
+
+  return { active: isActive, durText, metaText, recovered: Boolean(wasActive && !isActive) };
+}
+
+document.getElementById("btn-maintenance-recheck")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-maintenance-recheck");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "Проверяем...";
+  try {
+    const res = await apiFetch("/server-health/check", { method: "POST" });
+    renderMaintenanceOverlay(res);
+    if (res && res.active) {
+      showToast("Игровой сервер пока не отвечает", "info");
+    }
+  } catch (e) {
+    showToast("Ошибка проверки сервера", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+});
 
 let _katalaStatusSeq = 0;
 
@@ -1969,34 +2089,175 @@ async function loadFriendsSummary() {
 
 // --- 4.8.2 Friends Audit & Cleanup ---
 let currentAuditSort = "damage_7d";
+let currentAuditFilter = "all";
+let currentAuditSearch = "";
+let auditAllFriends = [];
+let auditLastSummary = null;
+const auditSelectedIds = new Set();
+
+function getAuditStatusMeta(status) {
+  const map = {
+    active: { label: "Активный", cls: "audit-status-active" },
+    low_damage: { label: "Слабый урон", cls: "audit-status-low_damage" },
+    newbie_protected: { label: "Новичок", cls: "audit-status-newbie_protected" },
+    whitelisted: { label: "В белом списке", cls: "audit-status-whitelisted" },
+    candidate: { label: "Кандидат на чистку", cls: "audit-status-candidate" },
+  };
+  return map[status] || map.candidate;
+}
+
+function filterAndSortAuditFriends(friends, filterStatus, searchText, sortKey) {
+  const list = Array.isArray(friends) ? friends.slice() : [];
+  const q = String(searchText || "").trim().toLowerCase();
+
+  const filtered = list.filter(f => {
+    if (filterStatus && filterStatus !== "all") {
+      if (filterStatus === "active") {
+        if (f.status !== "active" && f.status !== "low_damage") return false;
+      } else if (f.status !== filterStatus) {
+        return false;
+      }
+    }
+    if (q) {
+      const nick = String(f.nickname || "").toLowerCase();
+      const uid = String(f.userId || "");
+      if (!nick.includes(q) && !uid.includes(q)) return false;
+    }
+    return true;
+  });
+
+  if (sortKey === "candidates_first") {
+    const order = { candidate: 0, low_damage: 1, newbie_protected: 2, active: 3, whitelisted: 4 };
+    filtered.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || (a.totalDamageToMyBosses || 0) - (b.totalDamageToMyBosses || 0));
+  } else if (sortKey === "total_damage") {
+    filtered.sort((a, b) => (b.totalDamageToMyBosses || 0) - (a.totalDamageToMyBosses || 0));
+  } else if (sortKey === "avg_damage") {
+    filtered.sort((a, b) => (b.avgDamage || 0) - (a.avgDamage || 0));
+  } else if (sortKey === "hits") {
+    filtered.sort((a, b) => (b.bossHitsCount || 0) - (a.bossHitsCount || 0));
+  } else if (sortKey === "authority") {
+    filtered.sort((a, b) => (b.authority || 0) - (a.authority || 0));
+  } else if (sortKey === "inactive") {
+    filtered.sort((a, b) => (b.daysInactive || 0) - (a.daysInactive || 0));
+  } else {
+    filtered.sort((a, b) => (b.damage7d || 0) - (a.damage7d || 0) || (b.totalDamageToMyBosses || 0) - (a.totalDamageToMyBosses || 0));
+  }
+  return filtered;
+}
+
+function updateAuditSelectionButtons() {
+  const candidatesCount = auditAllFriends.filter(f => f.status === "candidate" && !f.isWhitelisted).length;
+  const selBtn = document.getElementById("btn-audit-select-candidates");
+  if (selBtn) selBtn.textContent = `☑️ Выбрать кандидатов (${candidatesCount})`;
+
+  const validSet = new Set(auditAllFriends.filter(f => !f.isWhitelisted).map(f => Number(f.userId)));
+  for (const id of Array.from(auditSelectedIds)) {
+    if (!validSet.has(id)) auditSelectedIds.delete(id);
+  }
+
+  const runBtn = document.getElementById("btn-run-cleanup");
+  if (runBtn) {
+    runBtn.textContent = `🗑️ Удалить выбранных (${auditSelectedIds.size})`;
+    runBtn.disabled = auditSelectedIds.size === 0;
+  }
+}
+
+function openCleanupModal(targetIds) {
+  const modal = document.getElementById("friends-cleanup-modal");
+  const sumEl = document.getElementById("cleanup-modal-summary");
+  const listEl = document.getElementById("cleanup-modal-list");
+  const confirmBtn = document.getElementById("btn-cleanup-modal-confirm");
+  if (!modal || !sumEl || !listEl || !confirmBtn) return;
+
+  const ids = Array.from(new Set(targetIds.map(Number).filter(Boolean)));
+  if (ids.length === 0) return;
+
+  const byId = new Map(auditAllFriends.map(f => [Number(f.userId), f]));
+  sumEl.textContent = `Будет удалено корешей: ${ids.length}. Защищённые и белосписочные игроки не затрагиваются.`;
+  listEl.innerHTML = ids.map(id => {
+    const f = byId.get(id);
+    const name = f ? f.nickname : `ID ${id}`;
+    const dmg = f ? (f.totalDamageToMyBosses || 0) : 0;
+    const reason = f ? (f.statusReason || "") : "";
+    return `<div style="padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.06);"><b>${name}</b> (ID: ${id}) — урон: ${formatNum(dmg)}${reason ? ` · ${reason}` : ""}</div>`;
+  }).join("");
+
+  modal.dataset.pendingIds = JSON.stringify(ids);
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = `Удалить (${ids.length})`;
+  modal.style.display = "flex";
+}
 
 function renderFriendsAuditData(data) {
   const container = document.getElementById("friends-audit-list");
   if (!container || !data) return;
   liveSlices.data.friends_stats = data;
-  const friends = data.friends || [];
+  auditAllFriends = Array.isArray(data.friends) ? data.friends : [];
+  auditLastSummary = data.summary || null;
+
+  if (auditLastSummary) {
+    setTextIfChanged(document.getElementById("audit-sum-total"), formatNum(auditLastSummary.total || auditAllFriends.length));
+    setTextIfChanged(document.getElementById("audit-sum-active"), formatNum((auditLastSummary.active || 0) + (auditLastSummary.low_damage || 0)));
+    setTextIfChanged(document.getElementById("audit-sum-candidates"), formatNum(auditLastSummary.candidates || 0));
+    setTextIfChanged(document.getElementById("audit-sum-battles"), formatNum(auditLastSummary.tracked_battles || 0));
+    const updTime = auditLastSummary.updated_at ? formatMoscowTime(auditLastSummary.updated_at) : "";
+    const ctxEl = document.getElementById("audit-context-line");
+    if (ctxEl) {
+      setTextIfChanged(
+        ctxEl,
+        `Обновлено: ${updTime || "сейчас"} · Защита новичков: ${auditLastSummary.grace_days || 14} дн. · Белый список: ${auditLastSummary.whitelisted || 0}`
+      );
+    }
+  }
+
+  updateAuditSelectionButtons();
+  const friends = filterAndSortAuditFriends(auditAllFriends, currentAuditFilter, currentAuditSearch, currentAuditSort);
 
   const patchCard = (card, f) => {
     const isWl = Boolean(f.isWhitelisted);
-    card.setAttribute("data-user-id", String(f.userId));
-    card.style.border = isWl ? "1px solid rgba(234, 179, 8, 0.4)" : "1px solid var(--border-color, #383838)";
+    const uid = Number(f.userId);
+    const stMeta = getAuditStatusMeta(f.status || "candidate");
+    card.setAttribute("data-user-id", String(uid));
+    card.style.border = isWl ? "1px solid rgba(168, 85, 247, 0.45)" : "1px solid var(--border-color, #383838)";
     const cb = card.querySelector(".audit-friend-cb");
-    if (cb) cb.disabled = isWl;
+    if (cb) {
+      cb.disabled = isWl;
+      cb.checked = !isWl && auditSelectedIds.has(uid);
+    }
     setTextIfChanged(card.querySelector(".fa-nick"), f.nickname);
-    setTextIfChanged(card.querySelector(".fa-meta"), `ID: ${f.userId} · Ур. ${f.level} · 👑 ${formatNum(f.authority)}`);
+    const lvlTxt = f.level > 0 ? `Ур. ${f.level}` : "Ур. —";
+    const authTxt = f.authority > 0 ? formatNum(f.authority) : "—";
+    setTextIfChanged(card.querySelector(".fa-meta"), `ID: ${uid} · ${lvlTxt} · 👑 ${authTxt}`);
+
+    const stEl = card.querySelector(".fa-status-badge");
+    if (stEl) {
+      stEl.className = `audit-status-badge fa-status-badge ${stMeta.cls}`;
+      setTextIfChanged(stEl, stMeta.label);
+      stEl.title = f.statusReason || stMeta.label;
+    }
+
     const btnWl = card.querySelector(".btn-toggle-whitelist");
     if (btnWl) {
       btnWl.className = `btn btn-xs ${isWl ? "btn-warning btn-whitelist-active" : "btn-secondary"} btn-toggle-whitelist`;
       btnWl.setAttribute("data-whitelisted", String(isWl));
       btnWl.disabled = false;
-      setTextIfChanged(btnWl, isWl ? "🛡️ Защищен" : "⭐ Защитить");
+      btnWl.title = isWl ? "Убрать из белого списка" : "Защитить от чистки";
+      setTextIfChanged(btnWl, isWl ? "🛡️" : "⭐");
     }
-    setTextIfChanged(card.querySelector(".fa-dmg7"), f.damage7d > 0 ? formatNum(f.damage7d) : "-");
-    setTextIfChanged(card.querySelector(".fa-dmgtot"), f.totalDamageToMyBosses > 0 ? formatNum(f.totalDamageToMyBosses) : "-");
+    const btnDel = card.querySelector(".btn-audit-remove-one");
+    if (btnDel) {
+      btnDel.disabled = isWl;
+      btnDel.title = isWl ? "Сначала снимите защиту белого списка" : "Удалить кореша";
+    }
+
+    setTextIfChanged(card.querySelector(".fa-dmgtot"), f.totalDamageToMyBosses > 0 ? formatNum(f.totalDamageToMyBosses) : "0");
+    setTextIfChanged(card.querySelector(".fa-avgdmg"), f.avgDamage > 0 ? formatNum(f.avgDamage) : "0");
+    const convStr = f.conversionPct > 0 ? ` (${f.conversionPct}%)` : "";
+    setTextIfChanged(card.querySelector(".fa-hits"), `${f.bossHitsCount || 0}${convStr}`);
     const inactEl = card.querySelector(".fa-inact");
     if (inactEl) {
-      setTextIfChanged(inactEl, `${f.daysInactive} дн.`);
-      inactEl.style.color = f.daysInactive >= 14 ? "#e62e1e" : "var(--muted-foreground)";
+      setTextIfChanged(inactEl, `${f.daysInactive || 0} дн.`);
+      inactEl.style.color = (f.daysInactive || 0) >= 14 ? "#f87171" : "var(--muted-foreground)";
     }
   };
 
@@ -2004,7 +2265,7 @@ function renderFriendsAuditData(data) {
     container,
     friends,
     f => f.userId,
-    f => `${f.userId}|${f.nickname}|${f.level}|${f.authority}|${f.damage7d}|${f.totalDamageToMyBosses}|${f.daysInactive}|${Boolean(f.isWhitelisted)}`,
+    f => `${f.userId}|${f.nickname}|${f.level}|${f.authority}|${f.totalDamageToMyBosses}|${f.avgDamage}|${f.bossHitsCount}|${f.daysInactive}|${f.status}|${Boolean(f.isWhitelisted)}|${auditSelectedIds.has(Number(f.userId))}`,
     f => {
       const initial = (f.nickname || "К")[0].toUpperCase();
       const avatarHtml = f.photoUrl
@@ -2017,31 +2278,48 @@ function renderFriendsAuditData(data) {
       card.style.cssText = "display: flex; flex-direction: column; gap: 6px; padding: 10px;";
       card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
             <input type="checkbox" class="audit-friend-cb" data-user-id="${f.userId}" ${isWl ? 'disabled' : ''}>
             ${avatarHtml}
-            <div>
-              <div class="fa-nick" style="font-weight: 700; font-size: 13px; color: #fff;"></div>
+            <div style="min-width: 0;">
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span class="fa-nick" style="font-weight: 700; font-size: 13px; color: #fff;"></span>
+                <span class="audit-status-badge fa-status-badge"></span>
+              </div>
               <div class="fa-meta" style="font-size: 10px; color: var(--muted-foreground);"></div>
             </div>
           </div>
-          <button class="btn btn-xs btn-toggle-whitelist" data-user-id="${f.userId}"></button>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 4px;">
-          <div class="stat-chip" style="padding: 4px;">
-            <div class="stat-chip-lbl" style="font-size: 9px;">Урон 7д</div>
-            <div class="stat-chip-val fa-dmg7" style="color: #22c55e; font-size: 12px;"></div>
+          <div style="display: flex; gap: 4px; align-items: center;">
+            <button type="button" class="btn btn-xs btn-toggle-whitelist" data-user-id="${f.userId}"></button>
+            <button type="button" class="btn btn-xs btn-secondary btn-audit-remove-one" data-user-id="${f.userId}" style="color: #f87171;">🗑️</button>
           </div>
-          <div class="stat-chip" style="padding: 4px;">
-            <div class="stat-chip-lbl" style="font-size: 9px;">Всего в боссов</div>
+        </div>
+        <div class="audit-metrics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 2px;">
+          <div class="stat-chip" style="padding: 4px;" title="Суммарный урон по вашим боссам">
+            <div class="stat-chip-lbl" style="font-size: 9px;">Сумм. урон</div>
             <div class="stat-chip-val fa-dmgtot" style="color: #fbbf24; font-size: 12px;"></div>
           </div>
-          <div class="stat-chip" style="padding: 4px;">
+          <div class="stat-chip" style="padding: 4px;" title="Средний урон за бой с участием кореша">
+            <div class="stat-chip-lbl" style="font-size: 9px;">Ср. урон</div>
+            <div class="stat-chip-val fa-avgdmg" style="color: #22c55e; font-size: 12px;"></div>
+          </div>
+          <div class="stat-chip" style="padding: 4px;" title="Участие в боях и процент от всех учтенных боев">
+            <div class="stat-chip-lbl" style="font-size: 9px;">Бои (% конв)</div>
+            <div class="stat-chip-val fa-hits" style="color: #60a5fa; font-size: 12px;"></div>
+          </div>
+          <div class="stat-chip" style="padding: 4px;" title="Дней без активности">
             <div class="stat-chip-lbl" style="font-size: 9px;">Неактивен</div>
             <div class="stat-chip-val fa-inact" style="font-size: 12px;"></div>
           </div>
         </div>
       `;
+      const cb = card.querySelector(".audit-friend-cb");
+      cb?.addEventListener("change", () => {
+        const uid = Number(f.userId);
+        if (cb.checked) auditSelectedIds.add(uid);
+        else auditSelectedIds.delete(uid);
+        updateAuditSelectionButtons();
+      });
       const btnWl = card.querySelector(".btn-toggle-whitelist");
       btnWl?.addEventListener("click", async () => {
         btnWl.disabled = true;
@@ -2051,18 +2329,23 @@ function renderFriendsAuditData(data) {
             method: "POST",
             body: JSON.stringify({ userId: f.userId, whitelisted: !curWl }),
           });
+          if (!curWl) auditSelectedIds.delete(Number(f.userId));
           showToast(!curWl ? `Друг ${f.nickname} защищен от кика` : `Защита снята с ${f.nickname}`, "info");
-          loadFriendsAudit();
+          loadFriendsAudit(true);
         } catch (e) {
           showToast(`Ошибка: ${e.message}`, "error");
           btnWl.disabled = false;
         }
       });
+      const btnDel = card.querySelector(".btn-audit-remove-one");
+      btnDel?.addEventListener("click", () => {
+        openCleanupModal([Number(f.userId)]);
+      });
       patchCard(card, f);
       return card;
     },
     (card, f) => patchCard(card, f),
-    '<div style="color: var(--muted-foreground); text-align: center; padding: 16px; font-size: 12px;">Список друзей пуст. Запустите цикл или обновите профили.</div>'
+    '<div style="color: var(--muted-foreground); text-align: center; padding: 16px; font-size: 12px;">Нет корешей по выбранному фильтру.</div>'
   );
 }
 
@@ -2070,7 +2353,7 @@ async function loadFriendsAudit(force = false) {
   const container = document.getElementById("friends-audit-list");
   if (!container) return;
   try {
-    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=100${force ? "&force=true" : ""}`);
+    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=500${force ? "&force=true" : ""}`);
     renderFriendsAuditData(data);
   } catch (err) {
     if (!container.querySelector(".friend-card")) {
@@ -2106,8 +2389,10 @@ function renderFriendRequestsData(data) {
       const poison = r.poisonDamage !== undefined ? r.poisonDamage : (wDmg.poison || wDmg.Poison || 0);
       const gunshot = r.gunshotDamage !== undefined ? r.gunshotDamage : (wDmg.gunshot || wDmg.Gunshot || 0);
       const knife = r.knifeDamage !== undefined ? r.knifeDamage : (wDmg.knife || wDmg.Knife || 0);
-      const lvl = r.level !== undefined ? r.level : (r.lvl || 0);
-      const auth = r.authority !== undefined ? r.authority : 0;
+      const lvl = Number(r.level !== undefined ? r.level : (r.lvl || 0));
+      const auth = Number(r.authority !== undefined ? r.authority : 0);
+      const lvlText = lvl > 0 ? String(lvl) : "—";
+      const authText = auth > 0 ? formatNum(auth) : "—";
       const biceps = (r.biceps !== null && r.biceps !== undefined && r.biceps > 0) ? r.biceps : null;
       const bicepsHtml = biceps !== null ? `
         <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('biceps', '', 'game-icon-sm')} Бицуха</div><div class="stat-chip-val" style="color: #f97316;">${formatNum(biceps)}</div></div>
@@ -2121,13 +2406,13 @@ function renderFriendRequestsData(data) {
           <div class="friend-name">
             <span style="background: var(--primary); color: #000; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800;">${nick[0].toUpperCase()}</span>
             <span>${nick}</span>
-            <span style="font-size: 10px; background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 4px;">Ур. ${lvl}</span>
+            <span style="font-size: 10px; background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 4px;">Ур. ${lvlText}</span>
           </div>
           <span style="font-size: 10px; color: var(--muted-foreground);">ID: ${uId}</span>
         </div>
         <div class="friend-stats-grid">
-          <div class="stat-chip"><div class="stat-chip-lbl">Уровень</div><div class="stat-chip-val" style="color: #a78bfa;">${lvl}</div></div>
-          <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('authority', '', 'game-icon-sm')} Авторитет</div><div class="stat-chip-val" style="color: #fbbf24;">${formatNum(auth)}</div></div>
+          <div class="stat-chip"><div class="stat-chip-lbl">Уровень</div><div class="stat-chip-val" style="color: #a78bfa;">${lvlText}</div></div>
+          <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('authority', '', 'game-icon-sm')} Авторитет</div><div class="stat-chip-val" style="color: #fbbf24;">${authText}</div></div>
           ${bicepsHtml}
           <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('talents', '', 'game-icon-sm')} Таланты</div><div class="stat-chip-val" style="color: #60a5fa;">${formatNum(talents)}</div></div>
           <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('knife', '', 'game-icon-sm')} Финка</div><div class="stat-chip-val" style="color: #f87171;">${formatNum(knife)}</div></div>
@@ -2167,59 +2452,51 @@ function renderFriendRequestsData(data) {
         }, 250);
       };
 
-      btnAccept.addEventListener("click", async () => {
+      async function handleFriendRequestAction(action) {
+        if (card.dataset.busy === "1") return;
+        card.dataset.busy = "1";
+        const targetBtn = action === "accept" ? btnAccept : btnDecline;
+        const origHtml = targetBtn.innerHTML;
         btnAccept.disabled = true;
         btnDecline.disabled = true;
-        const origText = btnAccept.innerHTML;
-        btnAccept.textContent = "...";
+        targetBtn.textContent = "...";
+        let removed = false;
         try {
-          const res = await apiFetch("/actions/friendship/accept", {
+          const endpoint = action === "accept" ? "/actions/friendship/accept" : "/actions/friendship/decline";
+          const res = await apiFetch(endpoint, {
             method: "POST",
             body: JSON.stringify({ fromUserId: uId }),
           });
-          if (res.success) {
-            showToast(`Заявка от ${nick} принята`, "success");
+          if (res && res.success) {
+            showToast(action === "accept" ? `Заявка от ${nick} принята` : `Заявка от ${nick} отклонена`, action === "accept" ? "success" : "info");
+            removed = true;
             animateCardRemoval();
+            if (action === "accept") {
+              loadFriendsSummary();
+              loadFriendsAudit();
+            }
           } else {
-            showToast(res.error || res.detail || "Не удалось принять заявку", "error");
-            btnAccept.disabled = false;
-            btnDecline.disabled = false;
-            btnAccept.innerHTML = origText;
+            const msg = (res && (res.message || res.error || res.detail)) || "Не удалось обработать заявку";
+            showToast(msg, "error");
+            if (res && res.remove_from_list) {
+              removed = true;
+              animateCardRemoval();
+            }
           }
         } catch (e) {
           showToast(`Ошибка: ${e.message}`, "error");
-          btnAccept.disabled = false;
-          btnDecline.disabled = false;
-          btnAccept.innerHTML = origText;
+        } finally {
+          card.dataset.busy = "0";
+          if (!removed) {
+            btnAccept.disabled = false;
+            btnDecline.disabled = false;
+            targetBtn.innerHTML = origHtml;
+          }
         }
-      });
+      }
 
-      btnDecline.addEventListener("click", async () => {
-        btnAccept.disabled = true;
-        btnDecline.disabled = true;
-        const origText = btnDecline.innerHTML;
-        btnDecline.textContent = "...";
-        try {
-          const res = await apiFetch("/actions/friendship/decline", {
-            method: "POST",
-            body: JSON.stringify({ fromUserId: uId }),
-          });
-          if (res.success) {
-            showToast(`Заявка от ${nick} отклонена`, "info");
-            animateCardRemoval();
-          } else {
-            showToast(res.error || res.detail || "Не удалось отклонить заявку", "error");
-            btnAccept.disabled = false;
-            btnDecline.disabled = false;
-            btnDecline.innerHTML = origText;
-          }
-        } catch (e) {
-          showToast(`Ошибка: ${e.message}`, "error");
-          btnAccept.disabled = false;
-          btnDecline.disabled = false;
-          btnDecline.innerHTML = origText;
-        }
-      });
+      btnAccept.addEventListener("click", () => handleFriendRequestAction("accept"));
+      btnDecline.addEventListener("click", () => handleFriendRequestAction("decline"));
 
       return card;
     },
@@ -3084,23 +3361,48 @@ document.getElementById("btn-refresh-friends-summary")?.addEventListener("click"
   showToast("Сводка корешей обновлена", "info");
 });
 
-document.getElementById("btn-refresh-audit")?.addEventListener("click", () => {
-  loadFriendsAudit();
-  showToast("Список аудита обновлен", "info");
+document.getElementById("btn-refresh-audit")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-refresh-audit");
+  if (btn) btn.disabled = true;
+  showToast("Синхронизация корешей с игрой...", "info");
+  try {
+    await loadFriendsAudit(true);
+    await loadFriendsSummary(true);
+    showToast("Список аудита синхронизирован", "success");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 });
 
-document.getElementById("btn-audit-tab-top")?.addEventListener("click", () => {
-  currentAuditSort = "damage_7d";
-  document.getElementById("btn-audit-tab-top")?.classList.add("active");
-  document.getElementById("btn-audit-tab-inactive")?.classList.remove("active");
-  loadFriendsAudit();
+document.querySelectorAll("#audit-filter-tabs [data-audit-filter]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    currentAuditFilter = btn.getAttribute("data-audit-filter") || "all";
+    document.querySelectorAll("#audit-filter-tabs [data-audit-filter]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
+  });
 });
 
-document.getElementById("btn-audit-tab-inactive")?.addEventListener("click", () => {
-  currentAuditSort = "inactive";
-  document.getElementById("btn-audit-tab-inactive")?.classList.add("active");
-  document.getElementById("btn-audit-tab-top")?.classList.remove("active");
-  loadFriendsAudit();
+document.getElementById("audit-search-input")?.addEventListener("input", (e) => {
+  currentAuditSearch = e.target.value || "";
+  if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
+});
+
+document.getElementById("audit-sort-select")?.addEventListener("change", (e) => {
+  currentAuditSort = e.target.value || "damage_7d";
+  if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
+});
+
+document.getElementById("btn-audit-select-candidates")?.addEventListener("click", () => {
+  auditAllFriends
+    .filter(f => f.status === "candidate" && !f.isWhitelisted)
+    .forEach(f => auditSelectedIds.add(Number(f.userId)));
+  if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
+});
+
+document.getElementById("btn-audit-clear-selection")?.addEventListener("click", () => {
+  auditSelectedIds.clear();
+  if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
 });
 
 document.getElementById("btn-filter-mode-and")?.addEventListener("click", async () => {
@@ -3166,32 +3468,46 @@ document.getElementById("btn-preview-cleanup")?.addEventListener("click", async 
   }
 });
 
-document.getElementById("btn-run-cleanup")?.addEventListener("click", async () => {
-  const checkedBoxes = Array.from(document.querySelectorAll(".audit-friend-cb:checked"));
-  const userIds = checkedBoxes.map(cb => parseInt(cb.getAttribute("data-user-id"), 10)).filter(Boolean);
+document.getElementById("btn-run-cleanup")?.addEventListener("click", () => {
+  const ids = Array.from(auditSelectedIds);
+  if (ids.length === 0) return;
+  openCleanupModal(ids);
+});
 
-  const confirmMsg = userIds.length > 0
-    ? `Удалить выбранных ${userIds.length} друзей?`
-    : `Запустить безопасную авточистку неактивных друзей?`;
+document.getElementById("btn-cleanup-modal-cancel")?.addEventListener("click", () => {
+  const modal = document.getElementById("friends-cleanup-modal");
+  if (modal) modal.style.display = "none";
+});
 
-  if (!confirm(confirmMsg)) return;
-
-  const btn = document.getElementById("btn-run-cleanup");
-  if (btn) btn.disabled = true;
-
+document.getElementById("btn-cleanup-modal-confirm")?.addEventListener("click", async () => {
+  const modal = document.getElementById("friends-cleanup-modal");
+  const confirmBtn = document.getElementById("btn-cleanup-modal-confirm");
+  if (!modal || !confirmBtn) return;
+  let userIds = [];
   try {
-    const payload = userIds.length > 0 ? { userIds } : {};
+    userIds = JSON.parse(modal.dataset.pendingIds || "[]");
+  } catch (e) { }
+  if (!userIds.length) {
+    modal.style.display = "none";
+    return;
+  }
+
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Удаление...";
+  try {
     const res = await apiFetch("/friends/cleanup/run", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ userIds }),
     });
-    showToast(res.message || `Удалено ${res.removedCount} друзей`, "success");
-    loadFriendsSummary();
-    loadFriendsAudit();
+    (res.removedIds || userIds).forEach(id => auditSelectedIds.delete(Number(id)));
+    showToast(res.message || `Удалено: ${res.removedCount}`, "success");
+    modal.style.display = "none";
+    await loadFriendsSummary(true);
+    await loadFriendsAudit(true);
   } catch (e) {
     showToast(`Ошибка удаления: ${e.message}`, "error");
   } finally {
-    if (btn) btn.disabled = false;
+    confirmBtn.disabled = false;
   }
 });
 
@@ -5890,6 +6206,9 @@ const liveSyncClient = (() => {
     if (activeDomains.length === 0) return;
 
     const patch = payload.patch || {};
+    if (patch.maintenance) {
+      renderMaintenanceOverlay(patch.maintenance);
+    }
     if (patch.talents && isValidTalentsState(patch.talents)) {
       renderBossTalentsWidget(patch.talents);
     }

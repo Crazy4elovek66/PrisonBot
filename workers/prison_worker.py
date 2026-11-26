@@ -7,6 +7,7 @@ import httpx
 
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
+from core.server_health import server_health_monitor, GameMaintenanceError
 from core.models import ActionLog
 from client.api.prison import PrisonAPI
 from client.api.player import PlayerAPI
@@ -547,6 +548,11 @@ class PrisonWorker:
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Основной автоматический цикл: проверяет активность, автосбор подогревов и сливает всю энергию."""
+        if server_health_monitor.is_maintenance:
+            if server_health_monitor.should_log_worker_skip():
+                logger.debug("Игровые сервера на техработах — PrisonWorker на паузе.")
+            return {"status": "skipped", "reason": "maintenance"}
+
         config = await get_or_create_config(self.account_id, self.db_engine)
         if not is_worker_active(config):
             logger.info("Планировщик на паузе или активен режим сна. Пропуск ходок.")
@@ -556,7 +562,10 @@ class PrisonWorker:
             logger.info("Авто-ходки в тюрьмах отключены в конфигурации.")
             return {"status": "skipped", "reason": "auto_prison_disabled"}
 
-        return await self.drain_all_energy(
-            collect_podogrev=bool(getattr(config, "auto_podogrev", True)),
-            source="auto",
-        )
+        try:
+            return await self.drain_all_energy(
+                collect_podogrev=bool(getattr(config, "auto_podogrev", True)),
+                source="auto",
+            )
+        except GameMaintenanceError:
+            return {"status": "skipped", "reason": "maintenance"}

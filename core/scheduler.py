@@ -9,6 +9,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from core.config import settings
 from core.state_hub import state_hub as global_state_hub
+from core.server_health import server_health_monitor, GameMaintenanceError
 from workers.routine_worker import RoutineWorker
 from workers.boss_worker import BossWorker
 from workers.prison_worker import PrisonWorker
@@ -49,6 +50,7 @@ class SchedulerController:
         self.prison_worker = prison_worker
         self.social_worker = social_worker
         self.state_hub = state_hub or global_state_hub
+        self.health_monitor = server_health_monitor
         self.account_id = getattr(routine_worker, "account_id", 1)
         self._boss_fast_mode = False
         self._immediate_boss_task: Optional[asyncio.Task] = None
@@ -268,14 +270,20 @@ class SchedulerController:
         return self._immediate_social_req_task
 
     async def refresh_slice(self, slice_name: str, force: bool = True) -> None:
+        if self.health_monitor and self.health_monitor.is_maintenance:
+            return
         try:
             from web.routes import refresh_hub_slice
             await refresh_hub_slice(account_id=self.account_id, slice_name=slice_name, force=force)
+        except GameMaintenanceError:
+            return
         except Exception as e:
             logger.debug("Фоновое обновление среза '%s' завершилось с ошибкой: %s", slice_name, e)
 
     async def refresh_tier1(self) -> None:
         """Tier 1 (20-40с): профиль, состояние, активный босс и награды."""
+        if self.health_monitor and self.health_monitor.is_maintenance:
+            return
         await asyncio.gather(
             self.refresh_slice("profile", force=True),
             self.refresh_slice("boss", force=True),
@@ -286,6 +294,8 @@ class SchedulerController:
 
     async def refresh_tier2(self) -> None:
         """Tier 2 (90-120с): тюрьмы, друзья, входящие заявки и боевая статистика друзей."""
+        if self.health_monitor and self.health_monitor.is_maintenance:
+            return
         await asyncio.gather(
             self.refresh_slice("prisons", force=True),
             self.refresh_slice("friends", force=True),
@@ -296,6 +306,8 @@ class SchedulerController:
 
     async def refresh_tier3(self) -> None:
         """Tier 3 (5-6м): радар активных дамагеров, рутина (месячные + баулы), коллекции."""
+        if self.health_monitor and self.health_monitor.is_maintenance:
+            return
         await asyncio.gather(
             self.refresh_slice("radar", force=True),
             self.refresh_slice("routine", force=True),

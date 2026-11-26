@@ -3,6 +3,7 @@ import logging
 from typing import Optional, Dict, Any
 import httpx
 from core.config import settings
+from core.server_health import ServerHealthMonitor, GameMaintenanceError, classify_server_failure, server_health_monitor
 from client.auth_provider import AuthProvider
 
 logger = logging.getLogger(__name__)
@@ -21,11 +22,15 @@ class GameHttpClient:
         auth_provider: AuthProvider,
         base_url: Optional[str] = None,
         custom_client: Optional[httpx.AsyncClient] = None,
+        health_monitor: Optional[ServerHealthMonitor] = None,
     ):
         self.auth_provider = auth_provider
         self.base_url = base_url or settings.API_BASE_URL
         self._custom_client = custom_client
         self._client: Optional[httpx.AsyncClient] = custom_client
+        self.health_monitor: Optional[ServerHealthMonitor] = (
+            health_monitor if health_monitor is not None else server_health_monitor
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -52,11 +57,20 @@ class GameHttpClient:
         *,
         headers: Optional[Dict[str, str]] = None,
         max_retries: int = 3,
+        bypass_maintenance_gate: bool = False,
         **kwargs,
     ) -> httpx.Response:
         """
         Выполняет HTTP-запрос с автоматической авторизацией, ретраями и авто-обновлением токена.
+        При активном режиме техработ мгновенно бросает GameMaintenanceError без выхода в сеть.
         """
+        if (
+            self.health_monitor is not None
+            and self.health_monitor.is_maintenance
+            and not bypass_maintenance_gate
+        ):
+            raise GameMaintenanceError("Игровые сервера на технических работах")
+
         client = await self._get_client()
 
         # 1. Получаем действующий access_token
@@ -102,6 +116,28 @@ class GameHttpClient:
                 if 400 <= response.status_code < 500:
                     logger.warning(f"API {response.status_code} на {url}: {response.text}")
 
+                # Проверка ответа на технические работы / 5xx / HTML-заглушку
+                if self.health_monitor is not None:
+                    ctype = response.headers.get("content-type", "")
+                    body_snippet = ""
+                    if response.status_code >= 500 or "html" in ctype.lower() or "maintenance" in ctype.lower():
+                        body_snippet = response.text[:1200]
+                    is_outage, _, _ = classify_server_failure(
+                        status_code=response.status_code,
+                        content_type=ctype,
+                        body_text=body_snippet,
+                    )
+                    if is_outage:
+                        in_maint = await self.health_monitor.record_failure(
+                            status_code=response.status_code,
+                            content_type=ctype,
+                            body_text=body_snippet,
+                        )
+                        if in_maint and not bypass_maintenance_gate:
+                            raise GameMaintenanceError(self.health_monitor.to_dict().get("reason") or "Технические работы")
+                    elif response.status_code < 500:
+                        await self.health_monitor.record_success()
+
                 # Ретраи при серверных ошибках 5xx
                 if response.status_code >= 500 and attempt <= max_retries:
                     logger.warning(
@@ -114,7 +150,13 @@ class GameHttpClient:
 
                 return response
 
+            except GameMaintenanceError:
+                raise
             except httpx.TransportError as e:
+                if self.health_monitor is not None:
+                    in_maint = await self.health_monitor.record_failure(exc=e)
+                    if in_maint and not bypass_maintenance_gate:
+                        raise GameMaintenanceError(self.health_monitor.to_dict().get("reason") or str(e)) from e
                 if attempt <= max_retries:
                     logger.warning(
                         f"Сетевой сбой при обращении к {url} ({e}). "

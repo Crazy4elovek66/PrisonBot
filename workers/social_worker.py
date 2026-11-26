@@ -9,6 +9,7 @@ from sqlalchemy import select, or_, and_
 
 from core.config import settings
 from core.database import get_session, get_or_create_config, is_worker_active
+from core.server_health import server_health_monitor, GameMaintenanceError
 from core.models import (
     ActionLog,
     SentFriendRequest,
@@ -226,6 +227,8 @@ class SocialWorker:
         После принятия/отклонения немедленно обновляет StateHub и пушит social_updated/domain_sync в UI.
         """
         async with self._friend_req_lock:
+            if server_health_monitor.is_maintenance:
+                return {"status": "skipped", "reason": "maintenance", "accepted": 0, "declined": 0}
             if config is None:
                 config = await get_or_create_config(self.account_id, self.db_engine)
             if not is_worker_active(config):
@@ -258,6 +261,7 @@ class SocialWorker:
                 min_tot = getattr(config, "friend_min_total_damage", 0)
                 auto_decline = getattr(config, "friend_auto_decline_below", False)
 
+                stale_removed_ids: List[int] = []
                 for r in req_list:
                     if not isinstance(r, dict):
                         continue
@@ -309,7 +313,16 @@ class SocialWorker:
 
                     if passes:
                         try:
-                            await self.api.accept_friend(f_uid)
+                            acc_res = await self.api.accept_friend(f_uid)
+                            if isinstance(acc_res, dict) and acc_res.get("success") is False:
+                                err_code = acc_res.get("code")
+                                if err_code == "friends_limit_reached":
+                                    logger.warning("Достигнут лимит друзей — остановка автоприема заявок.")
+                                    break
+                                if acc_res.get("remove_from_list"):
+                                    stale_removed_ids.append(f_uid)
+                                logger.info("Заявка %s не принята (%s): %s", f_uid, err_code, acc_res.get("message"))
+                                continue
                             accepted_ids.append(f_uid)
                             await self._log_action("accept_friend", "/api/friendship/accept-request", 200, True, {
                                 "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal, "poisonDamage": poi_dmg
@@ -319,7 +332,11 @@ class SocialWorker:
                             logger.warning("Ошибка принятия друга %s: %s", f_uid, fe)
                     elif auto_decline:
                         try:
-                            await self.api.decline_friend(f_uid)
+                            dec_res = await self.api.decline_friend(f_uid)
+                            if isinstance(dec_res, dict) and dec_res.get("success") is False:
+                                if dec_res.get("remove_from_list"):
+                                    stale_removed_ids.append(f_uid)
+                                continue
                             rejected_ids.append(f_uid)
                             await self._log_action("decline_friend", "/api/friendship/decline-request", 200, True, {
                                 "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal
@@ -328,7 +345,7 @@ class SocialWorker:
                         except Exception as de:
                             logger.warning("Ошибка отклонения друга %s: %s", f_uid, de)
 
-                processed = set(accepted_ids) | set(rejected_ids)
+                processed = set(accepted_ids) | set(rejected_ids) | set(stale_removed_ids)
                 remaining = [
                     r for r in req_list
                     if isinstance(r, dict) and int(r.get("userId") or r.get("fromUserId") or 0) not in processed
@@ -372,6 +389,11 @@ class SocialWorker:
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Один цикл выполнения социальных активностей."""
+        if server_health_monitor.is_maintenance:
+            if server_health_monitor.should_log_worker_skip():
+                logger.debug("Игровые сервера на техработах — SocialWorker на паузе.")
+            return {"status": "skipped", "reason": "maintenance"}
+
         logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла социальных активностей ===")
 
         config = await get_or_create_config(self.account_id, self.db_engine)

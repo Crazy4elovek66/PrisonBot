@@ -121,10 +121,18 @@ class AuthProvider:
                             return new_access
                     else:
                         logger.warning(
-                            f"Обновление через refresh отклонено сервером (HTTP {resp.status_code}): {resp.text}"
+                            f"Обновление через refresh отклонено сервером (HTTP {resp.status_code}): {resp.text[:250]}"
+                        )
+                        from core.server_health import server_health_monitor
+                        await server_health_monitor.record_failure(
+                            status_code=resp.status_code,
+                            content_type=resp.headers.get("content-type", ""),
+                            body_text=resp.text[:800],
                         )
                 except Exception as e:
                     logger.warning(f"Ошибка сетевого запроса refresh: {e}")
+                    from core.server_health import server_health_monitor
+                    await server_health_monitor.record_failure(exc=e)
 
             # Шаг 2: Fallback — вход через initData
             logger.info(f"Запуск резервного входа (fallback login) для аккаунта {self.account_id}...")
@@ -136,7 +144,13 @@ class AuthProvider:
                 headers=settings.default_headers,
             )
             if resp.status_code != 200:
-                raise AuthError(f"Ошибка входа /api/auth/login (HTTP {resp.status_code}): {resp.text}")
+                from core.server_health import server_health_monitor
+                await server_health_monitor.record_failure(
+                    status_code=resp.status_code,
+                    content_type=resp.headers.get("content-type", ""),
+                    body_text=resp.text[:800],
+                )
+                raise AuthError(f"Ошибка входа /api/auth/login (HTTP {resp.status_code}): {resp.text[:250]}")
 
             data = resp.json()
             new_access = data.get("accessToken") or data.get("access")

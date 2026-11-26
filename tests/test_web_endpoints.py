@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v17" in sw
+    assert "prisonbot-assets-v19" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261126_05";' in js
+    assert 'const ASSET_VERSION = "20261126_07";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261126_05" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261126_07" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261126_05"',
-        'src="assets/icons/room_reward.webp?v=20261126_05"',
-        'src="assets/icons/complect.webp?v=20261126_05"',
-        'src="assets/icons/podogrev.webp?v=20261126_05"',
-        'src="assets/icons/authority.webp?v=20261126_05"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_05"',
+        'src="assets/icons/boss.webp?v=20261126_07"',
+        'src="assets/icons/room_reward.webp?v=20261126_07"',
+        'src="assets/icons/complect.webp?v=20261126_07"',
+        'src="assets/icons/podogrev.webp?v=20261126_07"',
+        'src="assets/icons/authority.webp?v=20261126_07"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_07"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -820,4 +820,114 @@ console.log("OK_KATALA_FAIL_CLOSED_RUNTIME");
     proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_KATALA_FAIL_CLOSED_RUNTIME" in proc.stdout
+
+
+def test_friends_audit_and_requests_node_runtime():
+    """Проверка верстки модалки/аудита и node runtime-тест filterAndSortAuditFriends + getAuditStatusMeta."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    for snippet in (
+        'id="audit-summary-chips"',
+        'id="audit-filter-tabs"',
+        'id="audit-search-input"',
+        'id="audit-sort-select"',
+        'id="friends-cleanup-modal"',
+        'id="btn-audit-select-candidates"',
+    ):
+        assert snippet in index_html
+
+    assert "finally {" in js[js.index("handleFriendRequestAction"):js.index("async function loadFriendRequests")]
+
+    fn_start = js.index("function getAuditStatusMeta(")
+    fn_end = js.index("function updateAuditSelectionButtons(", fn_start)
+    fn_code = js[fn_start:fn_end]
+
+    node_script = (
+        fn_code
+        + """
+const friends = [
+  { userId: 1, nickname: "Боец", status: "active", totalDamageToMyBosses: 50000, avgDamage: 25000, bossHitsCount: 2, damage7d: 50000, authority: 1000, daysInactive: 1 },
+  { userId: 2, nickname: "Балласт", status: "candidate", totalDamageToMyBosses: 0, avgDamage: 0, bossHitsCount: 0, damage7d: 0, authority: 200, daysInactive: 20 },
+  { userId: 3, nickname: "Новичок", status: "newbie_protected", totalDamageToMyBosses: 0, avgDamage: 0, bossHitsCount: 0, damage7d: 0, authority: 500, daysInactive: 2 },
+];
+if (getAuditStatusMeta("candidate").label !== "Кандидат на чистку") throw new Error("Bad status meta");
+const cands = filterAndSortAuditFriends(friends, "candidate", "", "damage_7d");
+if (cands.length !== 1 || cands[0].userId !== 2) throw new Error("Bad candidate filter");
+const byId = filterAndSortAuditFriends(friends, "all", "3", "damage_7d");
+if (byId.length !== 1 || byId[0].userId !== 3) throw new Error("Bad search by ID");
+const sortedCands = filterAndSortAuditFriends(friends, "all", "", "candidates_first");
+if (sortedCands[0].userId !== 2) throw new Error("Bad candidates_first sort");
+console.log("OK_AUDIT_RUNTIME");
+"""
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_AUDIT_RUNTIME" in proc.stdout
+
+
+def test_maintenance_overlay_html_and_node_runtime():
+    """Проверка верстки #maintenance-overlay и node runtime-теста formatMaintenanceDuration + renderMaintenanceOverlay."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    for snippet in (
+        'id="maintenance-overlay"',
+        'id="maintenance-duration"',
+        'id="btn-maintenance-recheck"',
+        "В игре технические работы",
+        "Проверить снова",
+    ):
+        assert snippet in index_html
+
+    fn_start = js.index("let _maintenancePollTimer = null;")
+    fn_end = js.index('document.getElementById("btn-maintenance-recheck")', fn_start)
+    fn_code = js[fn_start:fn_end]
+
+    node_script = (
+        fn_code
+        + """
+if (formatMaintenanceDuration(45) !== "Длится меньше минуты") throw new Error("Bad <60s");
+if (formatMaintenanceDuration(185) !== "Длится 3 мин") throw new Error("Bad 185s");
+if (formatMaintenanceDuration(3900) !== "Длится 1 ч 5 мин") throw new Error("Bad 3900s");
+
+const overlayEl = { style: { display: "none" } };
+const durEl = { textContent: "" };
+const metaEl = { textContent: "", title: "" };
+let refreshed = 0;
+global.document = {
+  getElementById: (id) => {
+    if (id === "maintenance-overlay") return overlayEl;
+    if (id === "maintenance-duration") return durEl;
+    if (id === "maintenance-meta") return metaEl;
+    return null;
+  },
+};
+global.setInterval = () => 123;
+global.clearInterval = () => {};
+global.refreshState = () => { refreshed += 1; };
+global.showToast = () => {};
+
+const onRes = renderMaintenanceOverlay({ active: true, duration_sec: 185, check_attempts: 4, reason: "HTTP 503" });
+if (!onRes.active || overlayEl.style.display !== "flex" || durEl.textContent !== "Длится 3 мин") {
+  throw new Error("Failed showing overlay");
+}
+const offRes = renderMaintenanceOverlay({ active: false });
+if (offRes.active || !offRes.recovered || overlayEl.style.display !== "none" || refreshed !== 1) {
+  throw new Error("Failed hiding overlay and triggering refresh");
+}
+console.log("OK_MAINTENANCE_RUNTIME");
+"""
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_MAINTENANCE_RUNTIME" in proc.stdout
 

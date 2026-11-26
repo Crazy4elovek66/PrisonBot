@@ -2987,6 +2987,134 @@ async def test_katala_status_endpoint_fail_closed_4_states(web_setup):
     assert "upstream_timeout" in j4["error"]
 
 
+@pytest.mark.asyncio
+async def test_friendship_accept_400_and_friends_audit_summary_cleanup(web_setup):
+    """Проверка /actions/friendship/accept при 400 Bad Request, /friends/stats (summary, avgDamage, % конв) и /friends/cleanup/run."""
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta
+    from core.models import FriendStats, BossFriendDamageLog
+    from web.routes import _get_hub
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+    _get_hub().clear()
+
+    class _MockSocialAPI:
+        async def accept_friend(self, uid):
+            return {
+                "success": False,
+                "code": "target_friends_limit_reached",
+                "message": "У этого игрока уже максимальное количество друзей (5000).",
+                "remove_from_list": False,
+                "status_code": 400,
+            }
+        async def get_all_friend_profiles(self):
+            return []
+        async def remove_friend(self, uid):
+            if uid == 9002:
+                return {"success": False, "code": "temporary_error", "message": "Ошибка сервера", "remove_from_list": False}
+            return {"success": True, "code": "ok"}
+
+    bot_context.social_api = _MockSocialAPI()
+
+    # 1. Accept 400 -> понятный русский ответ без 500 и сырых URL
+    r_acc = await client.post("/api/v1/actions/friendship/accept", json={"fromUserId": 966716319}, headers=headers)
+    assert r_acc.status_code == 200
+    j_acc = r_acc.json()
+    assert j_acc["success"] is False
+    assert j_acc["code"] == "target_friends_limit_reached"
+    assert "5000" in j_acc["message"]
+    assert "http" not in j_acc["message"].lower()
+
+    # 2. Заполняем FriendStats и BossFriendDamageLog для проверки /friends/stats и /friends/cleanup/run
+    now = datetime.utcnow()
+    async with get_session(engine) as s:
+        s.add_all([
+            FriendStats(
+                account_id=1, user_id=9001, nickname="Боец", level=100, authority=50000,
+                total_damage_to_my_bosses=200000, boss_hits_count=2, is_current_friend=True,
+                is_whitelisted=False, first_seen_at=now - timedelta(days=30), last_active_at=now,
+            ),
+            FriendStats(
+                account_id=1, user_id=9002, nickname="Новичок", level=50, authority=10000,
+                total_damage_to_my_bosses=0, boss_hits_count=0, is_current_friend=True,
+                is_whitelisted=False, first_seen_at=now - timedelta(days=2), last_active_at=now,
+            ),
+            FriendStats(
+                account_id=1, user_id=9003, nickname="Балласт", level=30, authority=5000,
+                total_damage_to_my_bosses=0, boss_hits_count=0, is_current_friend=True,
+                is_whitelisted=False, first_seen_at=now - timedelta(days=30), last_active_at=now - timedelta(days=20),
+            ),
+            FriendStats(
+                account_id=1, user_id=9004, nickname="Брат", level=200, authority=90000,
+                total_damage_to_my_bosses=0, boss_hits_count=0, is_current_friend=True,
+                is_whitelisted=True, first_seen_at=now - timedelta(days=30), last_active_at=now - timedelta(days=20),
+            ),
+            BossFriendDamageLog(account_id=1, boss_session_id="b1", user_id=9001, recorded_damage=120000, created_at=now, updated_at=now),
+            BossFriendDamageLog(account_id=1, boss_session_id="b2", user_id=9001, recorded_damage=80000, created_at=now, updated_at=now),
+        ])
+        await s.commit()
+
+    r_st = await client.get("/api/v1/friends/stats?sort=candidates_first&limit=500", headers=headers)
+    assert r_st.status_code == 200
+    j_st = r_st.json()
+    assert j_st["summary"]["total"] == 4
+    assert j_st["summary"]["tracked_battles"] == 2
+    assert j_st["summary"]["active"] == 1
+    assert j_st["summary"]["newbie_protected"] == 1
+    assert j_st["summary"]["candidates"] == 1
+    assert j_st["summary"]["whitelisted"] == 1
+    by_id = {f["userId"]: f for f in j_st["friends"]}
+    assert by_id[9001]["avgDamage"] == 100000
+    assert by_id[9001]["conversionPct"] == 100.0
+    assert by_id[9002]["status"] == "newbie_protected"
+    assert by_id[9003]["status"] == "candidate"
+    assert by_id[9004]["status"] == "whitelisted"
+
+    # 3. Удаление: 9004 (whitelisted -> skipped), 9003 (успех), 9002 (ошибка)
+    r_cl = await client.post("/api/v1/friends/cleanup/run", json={"userIds": [9004, 9003, 9002]}, headers=headers)
+    assert r_cl.status_code == 200
+    j_cl = r_cl.json()
+    assert j_cl["removedCount"] == 1
+    assert 9003 in j_cl["removedIds"]
+    assert 9004 in j_cl["skippedIds"]
+    assert len(j_cl["errors"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_server_health_endpoints_and_state_maintenance_field(web_setup):
+    """Проверка GET /api/v1/server-health (no-store), POST /api/v1/server-health/check и поля maintenance в /state."""
+    from core.server_health import server_health_monitor
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    await server_health_monitor.record_failure(status_code=503)
+    r_h = await client.get("/api/v1/server-health", headers=headers)
+    assert r_h.status_code == 200
+    assert r_h.headers.get("cache-control") == "no-store"
+    assert r_h.json()["active"] is True
+
+    r_st = await client.get("/api/v1/state", headers=headers)
+    assert r_st.status_code == 200
+    assert r_st.json()["maintenance"]["active"] is True
+
+    orig_probe = server_health_monitor.probe_fn
+    orig_delay = server_health_monitor.confirm_delay_sec
+    server_health_monitor.confirm_delay_sec = 0.0
+    server_health_monitor.probe_fn = lambda: __import__("asyncio").sleep(0, result=(True, 200, "ok"))
+    try:
+        r_chk = await client.post("/api/v1/server-health/check", headers=headers)
+        assert r_chk.status_code == 200
+        assert r_chk.headers.get("cache-control") == "no-store"
+        j_chk = r_chk.json()
+        assert j_chk["recovered"] is True
+        assert j_chk["active"] is False
+    finally:
+        server_health_monitor.probe_fn = orig_probe
+        server_health_monitor.confirm_delay_sec = orig_delay
+
+
 
 
 

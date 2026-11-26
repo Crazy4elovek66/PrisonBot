@@ -284,20 +284,45 @@ def extract_player_combat_stats(
     combat_obj = p_data.get("combatStats") if isinstance(p_data.get("combatStats"), dict) else {}
     prof_obj = p_data.get("profile") if isinstance(p_data.get("profile"), dict) else {}
     user_obj = p_data.get("user") if isinstance(p_data.get("user"), dict) else {}
+    cur_obj = p_data.get("currencies") if isinstance(p_data.get("currencies"), dict) else {}
+    player_obj = p_data.get("player") if isinstance(p_data.get("player"), dict) else {}
 
-    authority = int(
-        res_obj.get("authority")
-        or p_data.get("authority")
-        or stats_obj.get("authority")
-        or 0
+    def _first_pos_int(*vals: Any) -> int:
+        for v in vals:
+            if v is not None and not isinstance(v, bool):
+                try:
+                    n = int(v)
+                    if n > 0:
+                        return n
+                except (TypeError, ValueError):
+                    pass
+        return 0
+
+    authority = _first_pos_int(
+        res_obj.get("authority"),
+        cur_obj.get("authority"),
+        p_data.get("authority"),
+        p_data.get("avtoritet"),
+        stats_obj.get("authority"),
+        prof_obj.get("authority"),
+        user_obj.get("authority"),
+        player_obj.get("authority"),
+        p_data.get("respect"),
+        stats_obj.get("respect"),
+        p_data.get("rating"),
+        p_data.get("reputation"),
     )
 
-    level = int(
-        p_data.get("level")
-        or p_data.get("lvl")
-        or res_obj.get("level")
-        or stats_obj.get("level")
-        or 0
+    level = _first_pos_int(
+        p_data.get("level"),
+        p_data.get("lvl"),
+        p_data.get("playerLevel"),
+        p_data.get("userLevel"),
+        res_obj.get("level"),
+        stats_obj.get("level"),
+        prof_obj.get("level"),
+        user_obj.get("level"),
+        player_obj.get("level"),
     )
     if (level <= 1 or level == 0) and authority > 0:
         level = calculate_level_from_authority(authority)
@@ -477,7 +502,7 @@ class SocialAPI:
             else []
         )
 
-        sem = asyncio.Semaphore(2)
+        sem = asyncio.Semaphore(4)
         if not hasattr(self, "_player_view_cache"):
             self._player_view_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
@@ -490,13 +515,13 @@ class SocialAPI:
             for attempt in range(3):
                 try:
                     async with sem:
-                        await asyncio.sleep(0.08 * (attempt + 1))
+                        await asyncio.sleep(0.05 * (attempt + 1))
                         if player_api:
                             p_view = await player_api.get_player_view(uid)
                         else:
                             resp = await self.http.get(f"/api/player/view/{uid}")
-                            if resp.status_code == 429:
-                                raise RuntimeError("HTTP 429 Too many requests")
+                            if resp.status_code in (429, 502, 503, 504):
+                                raise RuntimeError(f"HTTP {resp.status_code}")
                             p_view = resp.json() if resp.status_code == 200 else {}
                     if isinstance(p_view, dict) and p_view:
                         self._player_view_cache[uid_key] = (asyncio.get_running_loop().time(), p_view)
@@ -504,7 +529,7 @@ class SocialAPI:
                     return {}
                 except Exception as exc:
                     err_s = str(exc).lower()
-                    if ("429" in err_s or "too many" in err_s or "timeout" in err_s) and attempt < 2:
+                    if any(k in err_s for k in ("429", "502", "503", "504", "too many", "timeout")) and attempt < 2:
                         await asyncio.sleep(0.8 * (attempt + 1))
                         continue
                     logger.debug(f"Не удалось обогатить профиль игрока {uid}: {exc}")
@@ -585,25 +610,127 @@ class SocialAPI:
                 results.append(item)
         return results
 
+    @staticmethod
+    def classify_friendship_error(
+        status_code: int,
+        raw_text: str = "",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Классифицирует 4xx/5xx ошибку игрового API дружбы без показа сырых httpx-строк."""
+        msg = ""
+        if isinstance(data, dict):
+            msg = str(data.get("message") or data.get("error") or data.get("detail") or "").strip()
+        if not msg and raw_text:
+            msg = raw_text.strip()[:300]
+        low = msg.lower()
+
+        if status_code == 429:
+            return {
+                "success": False,
+                "code": "rate_limited",
+                "message": msg or "Слишком много запросов к серверу игры. Повторите через пару секунд.",
+                "remove_from_list": False,
+                "status_code": status_code,
+            }
+        if status_code >= 500:
+            return {
+                "success": False,
+                "code": "temporary_error",
+                "message": "Временная ошибка сервера игры (5xx). Повторите попытку позже.",
+                "remove_from_list": False,
+                "status_code": status_code,
+            }
+        if "у этого игрока" in low or "он не может принять" in low or ("target" in low and "limit" in low):
+            return {
+                "success": False,
+                "code": "target_friends_limit_reached",
+                "message": msg or "У этого игрока уже максимальное количество друзей.",
+                "remove_from_list": False,
+                "status_code": status_code,
+            }
+        if "максимальное количество друзей" in low or "список друзей" in low or "friends limit" in low or "limit" in low:
+            return {
+                "success": False,
+                "code": "friends_limit_reached",
+                "message": msg or "Достигнут ваш лимит друзей.",
+                "remove_from_list": False,
+                "status_code": status_code,
+            }
+        if "уже в друзьях" in low or "already friends" in low or "уже друзья" in low:
+            return {
+                "success": False,
+                "code": "already_friends",
+                "message": msg or "Игрок уже в вашем списке друзей.",
+                "remove_from_list": True,
+                "status_code": status_code,
+            }
+        if status_code == 404 or any(w in low for w in ("не найдена", "не найден", "отозвана", "не существует", "not found", "already processed")):
+            return {
+                "success": False,
+                "code": "request_not_found",
+                "message": msg or "Заявка уже обработана или отозвана игроком.",
+                "remove_from_list": True,
+                "status_code": status_code,
+            }
+        return {
+            "success": False,
+            "code": "bad_request",
+            "message": msg or f"Запрос отклонён сервером игры (HTTP {status_code}).",
+            "remove_from_list": False,
+            "status_code": status_code,
+        }
+
+    async def _post_friendship_action(self, url: str) -> Dict[str, Any]:
+        """Устойчивый POST для действий с друзьями: ретраи на 429/5xx, классификация 4xx без падения."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                resp = await self.http.post(url)
+                status_code = int(getattr(resp, "status_code", 200))
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = None
+                raw_text = str(getattr(resp, "text", "") or "")
+
+                if status_code in (200, 201, 204):
+                    if isinstance(data, dict) and data.get("success") is False:
+                        classified = self.classify_friendship_error(status_code, raw_text, data)
+                        classified["raw"] = data
+                        return classified
+                    if isinstance(data, dict):
+                        return data
+                    return {"success": True}
+
+                if status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+
+                classified = self.classify_friendship_error(status_code, raw_text, data)
+                classified["raw"] = data or raw_text
+                logger.warning("Friendship API %s -> HTTP %s (%s): %s", url, status_code, classified["code"], classified["message"])
+                return classified
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+        logger.warning("Friendship API %s failed after retries: %s", url, last_exc)
+        return {
+            "success": False,
+            "code": "temporary_error",
+            "message": "Сервер игры временно недоступен. Повторите попытку позже.",
+            "remove_from_list": False,
+            "status_code": 503,
+        }
+
     async def accept_friend(self, from_user_id: int) -> Dict[str, Any]:
         """Принятие заявки в друзья (POST /api/friendship/accept-request?fromUserId={from_user_id})."""
-        url = f"/api/friendship/accept-request?fromUserId={from_user_id}"
-        resp = await self.http.post(url)
-        resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {"success": True}
+        return await self._post_friendship_action(f"/api/friendship/accept-request?fromUserId={from_user_id}")
 
     async def decline_friend(self, from_user_id: int) -> Dict[str, Any]:
         """Отклонение заявки в друзья (POST /api/friendship/decline-request?fromUserId={from_user_id})."""
-        url = f"/api/friendship/decline-request?fromUserId={from_user_id}"
-        resp = await self.http.post(url)
-        resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {"success": True}
+        return await self._post_friendship_action(f"/api/friendship/decline-request?fromUserId={from_user_id}")
 
     async def get_friend_profiles(self, page: int = 0, page_size: int = 50) -> Any:
         """Получение профилей друзей."""
@@ -714,15 +841,7 @@ class SocialAPI:
 
     async def remove_friend(self, friend_user_id: int) -> Dict[str, Any]:
         """Удаление из друзей (POST /api/friendship/remove-friend?friendUserId={friend_user_id})."""
-        url = f"/api/friendship/remove-friend?friendUserId={friend_user_id}"
-        resp = await self.http.post(url)
-        if resp.status_code in (200, 204):
-            try:
-                return resp.json()
-            except Exception:
-                return {"success": True}
-        resp.raise_for_status()
-        return resp.json()
+        return await self._post_friendship_action(f"/api/friendship/remove-friend?friendUserId={friend_user_id}")
 
     async def get_weekly_top(self, limit: int = 100) -> Dict[str, Any]:
         """Получение еженедельного топа игроков по урону (GET /api/weekly-top/top?limit={limit})."""
