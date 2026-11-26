@@ -604,10 +604,12 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
             logger.debug("compute_daily_resource_deltas in get_state failed: %s", rd_err)
 
     from core.server_health import server_health_monitor
+    game_res_entry = hub.get_slice(account_id, "game_resources", max_age_seconds=300.0, source_tag=tag)
     payload = {
         "success": True,
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
+        "game_resources": game_res_entry.data if game_res_entry else None,
         "config": cfg_data,
         "katala_guard": katala_guard,
         "maintenance": server_health_monitor.to_dict(),
@@ -653,6 +655,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         "friend_filter_mode", "auto_parse_news_raids", "auto_friend_cleanup",
         "friend_cleanup_inactive_days", "friend_cleanup_daily_limit", "friend_cleanup_trigger_threshold",
         "auto_podogrev_send", "auto_katala", "auto_biceps", "auto_spit_balanda", "auto_throw_yeast", "auto_monthly_tasks",
+        "auto_poker_enabled", "auto_fartovy_enabled", "auto_zaruby_enabled", "auto_zaruby_tier",
     }
 
     updates = {k: v for k, v in payload.items() if k in allowed_fields}
@@ -4499,6 +4502,257 @@ async def check_server_health_now() -> JSONResponse:
         headers={"Cache-Control": "no-store"},
         content=res,
     )
+
+
+def _get_game_http_client() -> Any:
+    player_api = getattr(bot_context, "player_api", None)
+    if player_api is not None:
+        hc = getattr(player_api, "http", None) or getattr(player_api, "client", None) or getattr(player_api, "_client", None)
+        if hc is not None:
+            return hc
+    return getattr(bot_context, "game_client", None)
+
+
+def _update_game_resources_hub(account_id: int, patch: Dict[str, Any]) -> None:
+    hub = _get_hub()
+    tag = _hub_source_tag()
+    cur_entry = hub.get_slice(account_id, "game_resources", source_tag=tag)
+    cur_data = dict(cur_entry.data) if (cur_entry and isinstance(cur_entry.data, dict)) else {}
+    cur_data.update(patch)
+    hub.update_slice(account_id, "game_resources", cur_data, source_tag=tag)
+
+
+@api_router.get("/poker/state")
+async def get_poker_state(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.poker import PokerAPI, POKER_COMBO_META
+    from core.database import get_game_guard_state
+    poker_api = getattr(bot_context, "poker_api", None)
+    if poker_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="PokerAPI not available")
+        poker_api = PokerAPI(hc)
+    try:
+        st = await poker_api.get_state()
+        try:
+            payouts = await poker_api.get_hand_payouts()
+        except Exception:
+            payouts = {"rows": []}
+        guard_obj = await get_game_guard_state(account_id, "poker", engine=bot_context.db_engine) if bot_context.db_engine else None
+        guard = {
+            "guard_tripped": bool(getattr(guard_obj, "guard_tripped", False)) if guard_obj else False,
+            "guard_reason": getattr(guard_obj, "guard_reason", None) if guard_obj else None,
+        }
+        _update_game_resources_hub(account_id, {"poker_chips": int(st.get("chips") or 0), "poker_level": int(st.get("level") or 0)})
+        return {
+            "success": True,
+            "state": st,
+            "payouts": payouts.get("rows") or [],
+            "combo_meta": [
+                {"rank": k, "code": v[0], "title": v[1]} for k, v in sorted(POKER_COMBO_META.items(), reverse=True)
+            ],
+            "guard": guard,
+            "guard_tripped": guard["guard_tripped"],
+            "guard_reason": guard["guard_reason"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/poker/play")
+async def post_poker_play(payload: Dict[str, Any] = Body(default_factory=dict), account_id: int = 1) -> Dict[str, Any]:
+    from client.api.poker import PokerAPI, play_free_poker_game
+    mode = str(payload.get("mode") or "chips").lower().strip()
+    allow_paid = bool(payload.get("allow_paid", False) or payload.get("confirm_paid", False))
+    if mode != "chips" and not allow_paid:
+        raise HTTPException(status_code=400, detail="Платная игра в Покер за мыло требует явного подтверждения")
+    poker_api = getattr(bot_context, "poker_api", None)
+    if poker_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="PokerAPI not available")
+        poker_api = PokerAPI(hc)
+    res = await play_free_poker_game(
+        poker_api=poker_api,
+        player_api=getattr(bot_context, "player_api", None),
+        account_id=account_id,
+        allow_paid=allow_paid,
+        mode=mode,
+        db_engine=bot_context.db_engine,
+    )
+    if res.get("success"):
+        _update_game_resources_hub(account_id, {"poker_chips": int(res.get("chips_left") or 0)})
+    return {"success": bool(res.get("success")), "result": res}
+
+
+@api_router.post("/poker/box/open")
+async def post_poker_box_open(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    from client.api.poker import PokerAPI
+    case_id = int(payload.get("caseId") or 1)
+    poker_api = getattr(bot_context, "poker_api", None) or PokerAPI(_get_game_http_client())
+    return {"success": True, "result": await poker_api.open_box(case_id)}
+
+
+@api_router.get("/fartovy/state")
+async def get_fartovy_state(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.fartovy import FartovyAPI, parse_fartovy_state
+    from core.database import get_game_guard_state
+    f_api = getattr(bot_context, "fartovy_api", None)
+    if f_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="FartovyAPI not available")
+        f_api = FartovyAPI(hc)
+    try:
+        raw = await f_api.get_state()
+        parsed = parse_fartovy_state(raw)
+        guard_obj = await get_game_guard_state(account_id, "fartovy", engine=bot_context.db_engine) if bot_context.db_engine else None
+        guard = {
+            "guard_tripped": bool(getattr(guard_obj, "guard_tripped", False)) if guard_obj else False,
+            "guard_reason": getattr(guard_obj, "guard_reason", None) if guard_obj else None,
+        }
+        _update_game_resources_hub(account_id, {
+            "fartovy_green": parsed["green_matches"],
+            "fartovy_max_green": parsed["max_green_matches"],
+            "fartovy_next_green_at": parsed["next_green_match_at"],
+            "fartovy_seconds_to_next": parsed["seconds_to_next_green_match"],
+            "fartovy_red": parsed["red_matches"],
+        })
+        return {
+            "success": True,
+            "state": parsed,
+            "guard": guard,
+            "guard_tripped": guard["guard_tripped"],
+            "guard_reason": guard["guard_reason"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/fartovy/spin")
+async def post_fartovy_spin(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.fartovy import FartovyAPI, analyze_spin_bonuses, parse_fartovy_state
+    f_api = getattr(bot_context, "fartovy_api", None) or FartovyAPI(_get_game_http_client())
+    res = await f_api.spin(bet=1, allow_paid=False)
+    if isinstance(res, dict) and res.get("skipped"):
+        return {"success": False, "skipped": True, "reason": res.get("reason"), "message": "Нет зеленых спичек"}
+    bon = analyze_spin_bonuses(res)
+    parsed = parse_fartovy_state(await f_api.get_state())
+    _update_game_resources_hub(account_id, {
+        "fartovy_green": parsed["green_matches"],
+        "fartovy_max_green": parsed["max_green_matches"],
+        "fartovy_next_green_at": parsed["next_green_match_at"],
+        "fartovy_seconds_to_next": parsed["seconds_to_next_green_match"],
+        "fartovy_red": parsed["red_matches"],
+    })
+    return {"success": True, "spin": res, "bonuses": bon, "state": parsed}
+
+
+@api_router.post("/fartovy/chest/open")
+async def post_fartovy_chest_open(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    from client.api.fartovy import FartovyAPI
+    chest_id = int(payload.get("chestId") or 1)
+    f_api = getattr(bot_context, "fartovy_api", None) or FartovyAPI(_get_game_http_client())
+    return {"success": True, "result": await f_api.open_chest(chest_id)}
+
+
+@api_router.get("/wheel/state")
+async def get_wheel_state(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.wheel import WheelAPI, parse_wheel_state
+    w_api = getattr(bot_context, "wheel_api", None)
+    if w_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="WheelAPI not available")
+        w_api = WheelAPI(hc)
+    try:
+        parsed = parse_wheel_state(await w_api.get_state())
+        _update_game_resources_hub(account_id, {
+            "wheel_tickets": parsed["tickets"],
+            "wheel_blue_matches": parsed["blue_matches"],
+        })
+        return {"success": True, "state": parsed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/wheel/spin")
+async def post_wheel_spin(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.wheel import WheelAPI, parse_wheel_state
+    w_api = getattr(bot_context, "wheel_api", None) or WheelAPI(_get_game_http_client())
+    res = await w_api.spin(allow_buy=False)
+    if isinstance(res, dict) and res.get("skipped"):
+        return {"success": False, "skipped": True, "reason": res.get("reason"), "message": "Нет билетиков Колеса фортуны"}
+    parsed = parse_wheel_state(await w_api.get_state())
+    _update_game_resources_hub(account_id, {
+        "wheel_tickets": parsed["tickets"],
+        "wheel_blue_matches": parsed["blue_matches"],
+    })
+    return {"success": True, "spin": res, "state": parsed}
+
+
+@api_router.post("/wheel/case/open")
+async def post_wheel_case_open(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    from client.api.wheel import WheelAPI
+    case_id = int(payload.get("caseId") or 1)
+    w_api = getattr(bot_context, "wheel_api", None) or WheelAPI(_get_game_http_client())
+    return {"success": True, "result": await w_api.open_case(case_id)}
+
+
+@api_router.get("/zaruby/state")
+async def get_zaruby_state(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.zaruby import ZarubyAPI, parse_zaruby_state
+    z_api = getattr(bot_context, "zaruby_api", None)
+    if z_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="ZarubyAPI not available")
+        z_api = ZarubyAPI(hc)
+    try:
+        cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
+        raw = await z_api.get_state()
+        parsed = parse_zaruby_state(raw, config=cfg)
+        try:
+            well = await z_api.get_well_state()
+        except Exception:
+            well = {}
+        _update_game_resources_hub(account_id, {
+            "zaruby_summary_label": parsed["summary_label"],
+            "zaruby_active": parsed["active"],
+            "zaruby_seconds_left": parsed["seconds_left"],
+        })
+        return {"success": True, "state": parsed, "well": well}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/zaruby/start")
+async def post_zaruby_start(payload: Dict[str, Any] = Body(default_factory=dict), account_id: int = 1) -> Dict[str, Any]:
+    from client.api.zaruby import ZarubyAPI, parse_zaruby_state
+    tier = str(payload.get("tier") or "pacan")
+    z_api = getattr(bot_context, "zaruby_api", None) or ZarubyAPI(_get_game_http_client())
+    res = await z_api.start_zarub(tier=tier)
+    cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
+    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
+    return {"success": True, "result": res, "state": parsed}
+
+
+@api_router.post("/zaruby/claim")
+async def post_zaruby_claim(account_id: int = 1) -> Dict[str, Any]:
+    from client.api.zaruby import ZarubyAPI, parse_zaruby_state
+    z_api = getattr(bot_context, "zaruby_api", None) or ZarubyAPI(_get_game_http_client())
+    res = await z_api.claim_reward()
+    cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
+    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
+    return {"success": True, "result": res, "state": parsed}
+
+
+@api_router.get("/workers/status")
+async def get_workers_status() -> Dict[str, Any]:
+    """Диагностическая сводка по всем независимым real-time воркерам."""
+    ctrl = getattr(bot_context, "scheduler_controller", None)
+    statuses = dict(getattr(ctrl, "worker_status", {}) or {}) if ctrl else {}
+    return {"success": True, "workers": statuses}
 
 
 @api_router.post("/daily/katala-guard/reset")

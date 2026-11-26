@@ -5,16 +5,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>PrisonBot — Панель управления</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32x32.png?v=20261126_07">
-  <link rel="icon" type="image/png" sizes="16x16" href="assets/icons/favicon-16x16.png?v=20261126_07">
-  <link rel="icon" href="favicon.ico?v=20261126_07" sizes="any">
-  <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png?v=20261126_07">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32x32.png?v=20261126_08">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/icons/favicon-16x16.png?v=20261126_08">
+  <link rel="icon" href="favicon.ico?v=20261126_08" sizes="any">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png?v=20261126_08">
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261126_07">
+  <link rel="stylesheet" href="styles.css?v=20261126_08">
   <script>
     (function () {
-      var allowed = ["main", "home", "bosses", "prisons", "wardrobe", "routine", "friends", "raids", "notifications", "settings"];
+      var allowed = ["main", "home", "bosses", "prisons", "wardrobe", "routine", "poker", "fartovy", "wheel", "zaruby", "friends", "raids", "notifications", "settings"];
       var hash = (window.location.hash || "").replace(/^#/, "").trim();
       if (hash === "home") hash = "main";
       var saved = "";
@@ -64,7 +64,7 @@
     <div class="drawer-header">
       <div class="drawer-brand">
         <div class="drawer-logo">
-          <img src="assets/icons/bot_logo_128.webp?v=20261126_07" alt="PrisonBot" class="brand-logo-img" width="40" height="40">
+          <img src="assets/icons/bot_logo_128.webp?v=20261126_08" alt="PrisonBot" class="brand-logo-img" width="40" height="40">
         </div>
         <div>
           <div class="drawer-title">PrisonBot</div>
@@ -80,23 +80,39 @@
         <span>Главная</span>
       </div>
       <div class="drawer-item" data-sec="bosses">
-        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/boss.webp?v=20261126_07" alt="" loading="eager"></span>
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/boss.webp?v=20261126_08" alt="" loading="eager"></span>
         <span>Боссы</span>
       </div>
       <div class="drawer-item" data-sec="prisons">
-        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/room_reward.webp?v=20261126_07" alt="" loading="eager"></span>
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/room_reward.webp?v=20261126_08" alt="" loading="eager"></span>
         <span>Ходки и Мастера</span>
       </div>
       <div class="drawer-item" data-sec="wardrobe">
-        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/complect.webp?v=20261126_07" alt="" loading="eager"></span>
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/complect.webp?v=20261126_08" alt="" loading="eager"></span>
         <span>Тату и Шмот</span>
       </div>
       <div class="drawer-item" data-sec="routine">
-        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/podogrev.webp?v=20261126_07" alt="" loading="eager"></span>
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/podogrev.webp?v=20261126_08" alt="" loading="eager"></span>
         <span>Делюги</span>
       </div>
+      <div class="drawer-item" data-sec="poker">
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/poker_icon.webp?v=20261126_08" alt="" loading="eager"></span>
+        <span>Покер</span>
+      </div>
+      <div class="drawer-item" data-sec="fartovy">
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/fartovy_icon.webp?v=20261126_08" alt="" loading="eager"></span>
+        <span>Фартовый</span>
+      </div>
+      <div class="drawer-item" data-sec="wheel">
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/wheel_icon.webp?v=20261126_08" alt="" loading="eager"></span>
+        <span>Колесо фортуны</span>
+      </div>
+      <div class="drawer-item" data-sec="zaruby">
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/zaruby_icon.webp?v=20261126_08" alt="" loading="eager"></span>
+        <span>Зарубы</span>
+      </div>
       <div class="drawer-item" data-sec="friends">
-        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/authority.webp?v=20261126_07" alt="" loading="eager"></span>
+        <span class="item-icon"><img class="nav-icon-img" src="assets/icons/authority.webp?v=20261126_08" alt="" loading="eager"></span>
         <span>Кореша</span>
         <span id="drawer-friends-badge" class="item-badge" style="display: none;">0</span>
       </div>
@@ -150,7 +166,7 @@
           <div style="background: var(--secondary); padding: 8px; border-radius: 6px; text-align: center;">
             <div
               style="color: var(--muted-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 4px;">
-              <img src="/static/assets/icons/authority.webp?v=20261126_07" class="game-icon-sm" alt="Авторитет"> Авторитет
+              <img src="/static/assets/icons/authority.webp?v=20261126_08" class="game-icon-sm" alt="Авторитет"> Авторитет
             </div>
             <div id="stat-authority" style="font-weight: 800; font-size: 13px; color: #fbbf24;">-</div>
           </div>
@@ -189,11 +205,11 @@
       <div class="card">
         <div class="card-header-row">
           <div class="card-title" style="display: flex; align-items: center; gap: 6px;"><img
-              src="/static/assets/icons/rubles.webp?v=20261126_07" class="game-icon-sm" alt="Валюты"> Валюты и Ресурсы</div>
+              src="/static/assets/icons/rubles.webp?v=20261126_08" class="game-icon-sm" alt="Валюты"> Валюты и Ресурсы</div>
         </div>
         <div class="currencies-grid">
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/cigarettes.webp?v=20261126_07" class="game-icon"
+            <span class="currency-icon"><img src="/static/assets/icons/cigarettes.webp?v=20261126_08" class="game-icon"
                 alt="Папиросы"></span>
             <div class="currency-details">
               <div class="currency-value-row">
@@ -204,7 +220,7 @@
             </div>
           </div>
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/sugar.webp?v=20261126_07" class="game-icon" alt="Сахар"></span>
+            <span class="currency-icon"><img src="/static/assets/icons/sugar.webp?v=20261126_08" class="game-icon" alt="Сахар"></span>
             <div class="currency-details">
               <div class="currency-value-row">
                 <span id="cur-sugar" class="currency-value">-</span>
@@ -214,7 +230,7 @@
             </div>
           </div>
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/rubles.webp?v=20261126_07" class="game-icon"
+            <span class="currency-icon"><img src="/static/assets/icons/rubles.webp?v=20261126_08" class="game-icon"
                 alt="Рубли"></span>
             <div class="currency-details">
               <div class="currency-value-row">
@@ -236,13 +252,49 @@
             </div>
           </div>
           <div class="currency-item">
-            <span class="currency-icon"><img src="/static/assets/icons/soap.webp?v=20261126_07" class="game-icon" alt="Мыло"></span>
+            <span class="currency-icon"><img src="/static/assets/icons/soap.webp?v=20261126_08" class="game-icon" alt="Мыло"></span>
             <div class="currency-details">
               <div class="currency-value-row">
                 <span id="cur-soap" class="currency-value" style="color: #f472b6;">-</span>
                 <span id="res-soap-delta" class="resource-delta is-empty"></span>
               </div>
               <span class="currency-name">Мыло</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/poker_chip_red.webp?v=20261126_08" class="game-icon" alt="Красные фишки"></span>
+            <div class="currency-details">
+              <div class="currency-value-row">
+                <span id="home-poker-chips" class="currency-value" style="color: #fb7185;">0</span>
+              </div>
+              <span class="currency-name">Фишки покера</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_green.webp?v=20261126_08" class="game-icon" alt="Зелёные спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row">
+                <span id="home-fartovy-green" class="currency-value" style="color: #4ade80;">0/15</span>
+              </div>
+              <span id="home-fartovy-green-timer" class="currency-name" style="color: #86efac;">Зелёные спички</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_red.webp?v=20261126_08" class="game-icon" alt="Красные спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row">
+                <span id="home-fartovy-red" class="currency-value" style="color: #f87171;">0</span>
+              </div>
+              <span class="currency-name">Красные спички</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/wheel_ticket.webp?v=20261126_08" class="game-icon" alt="Билеты колеса"></span>
+            <div class="currency-details">
+              <div class="currency-value-row">
+                <span id="home-wheel-tickets" class="currency-value" style="color: #38bdf8;">0</span>
+              </div>
+              <span class="currency-name">Билеты колеса</span>
             </div>
           </div>
         </div>
@@ -316,7 +368,7 @@
         <div class="card-header-row">
           <div style="flex: 1; min-width: 0;">
             <div class="card-title" style="display: flex; align-items: center; gap: 6px;">
-              <img src="/static/assets/icons/stash.webp?v=20261126_07" class="game-icon" alt="Нычки">
+              <img src="/static/assets/icons/stash.webp?v=20261126_08" class="game-icon" alt="Нычки">
               <span>Нычки</span>
               <span id="collections-summary-chip" class="accordion-summary-chip" style="display: none;">Нычек: 0 |
                 Готово к обмену: 0</span>
@@ -356,7 +408,7 @@
       <div id="boss-active-card" class="card card-accent">
         <div class="card-header-row">
           <div>
-            <div class="card-title" id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_07" alt="Босс"> <span id="boss-title-text">Поиск активного рейда...</span></div>
+            <div class="card-title" id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_08" alt="Босс"> <span id="boss-title-text">Поиск активного рейда...</span></div>
             <div class="card-subtitle" id="boss-mode-badge" style="display: inline-block; margin-top: 2px;">Режим: -
             </div>
           </div>
@@ -518,7 +570,7 @@
       <div class="card">
         <div class="card-header-row" style="align-items: center;">
           <div>
-            <div class="card-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_07" alt="Босс"> Автоатака боссов</div>
+            <div class="card-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_08" alt="Босс"> Автоатака боссов</div>
             <div class="card-subtitle">Полный цикл: авто-призыв из очереди, бесплатные удары и сбор наград</div>
           </div>
           <label class="toggle-switch">
@@ -529,7 +581,7 @@
         <div style="margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
           <button id="btn-open-boss-menu" class="btn btn-primary"
             style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;">
-            <img src="/static/assets/icons/boss.webp?v=20261126_07" class="game-icon-sm" alt="Боссы">
+            <img src="/static/assets/icons/boss.webp?v=20261126_08" class="game-icon-sm" alt="Боссы">
             <span>Меню боссов</span>
             <span id="badge-boss-queue-count" class="badge"
               style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 10px; font-size: 11px;">выбрано:
@@ -548,12 +600,12 @@
       <div class="card" id="boss-manual-attack-card">
         <div class="card-header-row" style="align-items: center;">
           <div>
-            <div class="card-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_07" alt="Босс"> Атака босса</div>
+            <div class="card-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_08" alt="Босс"> Атака босса</div>
             <div class="card-subtitle">Ручной запуск боя с выбором режима (включая «В одного»)</div>
           </div>
           <button id="btn-open-single-boss-attack" class="btn btn-primary"
             style="display: flex; align-items: center; gap: 6px; padding: 6px 14px;">
-            <img src="/static/assets/icons/boss.webp?v=20261126_07" class="game-icon-sm" alt="Атака">
+            <img src="/static/assets/icons/boss.webp?v=20261126_08" class="game-icon-sm" alt="Атака">
             <span>Выбрать босса</span>
           </button>
         </div>
@@ -798,7 +850,7 @@
                 <img src="/static/assets/icons/biceps.webp?v=2" class="game-icon-sm" alt="Бицуха"> Бицуха
               </button>
               <button class="bonus-filter-btn" data-wbonus="authority" title="Авторитет">
-                <img src="/static/assets/icons/authority.webp?v=20261126_07" class="game-icon-sm" alt="Авторитет"> Авторитет
+                <img src="/static/assets/icons/authority.webp?v=20261126_08" class="game-icon-sm" alt="Авторитет"> Авторитет
               </button>
               <button class="bonus-filter-btn" data-wbonus="special" title="Особые">
                 <img src="/static/assets/icons/combo.webp" class="game-icon-sm" alt="Особые"> Особые
@@ -917,7 +969,7 @@
         <div class="card" style="margin-bottom: 10px;">
           <div class="card-header-row">
             <div>
-              <div class="card-title"><img src="assets/icons/room_reward.webp?v=20261126_07" class="game-icon-sm" alt="Хаты"> Хаты (Камеры арестанта)</div>
+              <div class="card-title"><img src="assets/icons/room_reward.webp?v=20261126_08" class="game-icon-sm" alt="Хаты"> Хаты (Камеры арестанта)</div>
               <div class="card-subtitle">Собрано: <b id="cameras-progress-text" style="color: #34d399;">0 / 0</b></div>
             </div>
           </div>
@@ -956,7 +1008,7 @@
         <div id="biz-pending-container" class="biz-pending-container">
           <span style="font-size: 11px; color: var(--muted-foreground); margin-right: 4px;">К сбору:</span>
           <div id="biz-pending-pills" style="display: inline-flex; flex-wrap: wrap; gap: 4px;">
-            <span class="biz-pending-pill"><img src="/static/assets/icons/cigarettes.webp?v=20261126_07" class="res-icon" alt="Папиросы"> 0</span>
+            <span class="biz-pending-pill"><img src="/static/assets/icons/cigarettes.webp?v=20261126_08" class="res-icon" alt="Папиросы"> 0</span>
           </div>
         </div>
 
@@ -978,7 +1030,7 @@
 
         <div
           style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px;">
-          <button id="btn-collect-business" class="btn btn-primary btn-sm"><img src="/static/assets/icons/rubles.webp?v=20261126_07" class="game-icon-sm" alt="Рубли"> Собрать прибыль сейчас</button>
+          <button id="btn-collect-business" class="btn btn-primary btn-sm"><img src="/static/assets/icons/rubles.webp?v=20261126_08" class="game-icon-sm" alt="Рубли"> Собрать прибыль сейчас</button>
           <div class="auto-toggle-wrap">
             <span class="auto-toggle-label">Авто</span>
             <label class="toggle-switch">
@@ -1086,6 +1138,78 @@
           </div>
         </div>
 
+        <!-- 4.0a Покер (бесплатно за красную фишку) -->
+        <div class="routine-action-row">
+          <div class="routine-action-info">
+            <div class="routine-action-title" style="display:flex;align-items:center;gap:6px;">
+              <img src="/static/assets/icons/poker_icon.webp?v=20261126_08" class="game-icon-sm" alt="Покер">
+              <span>Покер</span>
+            </div>
+            <div class="routine-action-desc">Авто-игра строго за бесплатные красные фишки (мыло и рубли не тратятся)</div>
+            <div id="routine-poker-status" style="font-size: 11px; margin-top: 3px; color: var(--muted-foreground);">Фишки: 0 | Ур. 0</div>
+          </div>
+          <div class="routine-action-controls">
+            <button id="btn-routine-open-poker" class="btn btn-secondary btn-sm" onclick="switchSection('poker')">Открыть</button>
+            <div class="auto-toggle-wrap" title="Авто-покер (строго за бесплатные фишки)">
+              <span class="auto-toggle-label">Авто</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_poker_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4.0b Фартовый (бесплатно за зелёные спички и фриспины) -->
+        <div class="routine-action-row">
+          <div class="routine-action-info">
+            <div class="routine-action-title" style="display:flex;align-items:center;gap:6px;">
+              <img src="/static/assets/icons/fartovy_icon.webp?v=20261126_08" class="game-icon-sm" alt="Фартовый">
+              <span>Фартовый</span>
+            </div>
+            <div class="routine-action-desc">Крутить слоты строго за зелёные спички и фриспины (без траты рублей)</div>
+            <div id="routine-fartovy-status" style="font-size: 11px; margin-top: 3px; color: var(--muted-foreground);">Спички: 0/15 | Фриспины: 0</div>
+          </div>
+          <div class="routine-action-controls">
+            <button id="btn-routine-open-fartovy" class="btn btn-secondary btn-sm" onclick="switchSection('fartovy')">Открыть</button>
+            <div class="auto-toggle-wrap" title="Авто-спин Фартовый (строго за зелёные спички и фриспины)">
+              <span class="auto-toggle-label">Авто</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_fartovy_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4.0c Зарубы (бесплатные задания без урона и траты валюты) -->
+        <div class="routine-action-row">
+          <div class="routine-action-info">
+            <div class="routine-action-title" style="display:flex;align-items:center;gap:6px;">
+              <img src="/static/assets/icons/zaruby_icon.webp?v=20261126_08" class="game-icon-sm" alt="Зарубы">
+              <span>Зарубы</span>
+            </div>
+            <div class="routine-action-desc">Авто-старт и безопасные бесплатные задания (без урона и конфликта энергии)</div>
+            <div id="routine-zaruby-progress" style="font-size: 11px; margin-top: 3px; color: var(--muted-foreground);">Задания: 0/8 (0%)</div>
+          </div>
+          <div class="routine-action-controls" style="gap: 8px; flex-wrap: wrap;">
+            <select id="cfg-auto_zaruby_tier" class="btn btn-secondary btn-sm" style="padding: 4px 8px;">
+              <option value="pacan">Пацанская</option>
+              <option value="blat">Блатная</option>
+              <option value="avtoritet">Авторитетная</option>
+              <option value="vor">Воровская</option>
+            </select>
+            <button id="btn-routine-open-zaruby" class="btn btn-secondary btn-sm" onclick="switchSection('zaruby')">Открыть</button>
+            <div class="auto-toggle-wrap" title="Авто-Зарубы (строго безопасные задания)">
+              <span class="auto-toggle-label">Авто</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-auto_zaruby_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <!-- 4.1. Авто-взаимодействия (до суточного лимита) -->
         <div style="margin: 10px 0; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
           <div style="font-size: 12px; font-weight: 700; color: var(--muted-foreground); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.4px;">⚡ Авто-взаимодействия (до лимита)</div>
@@ -1167,7 +1291,7 @@
               </label>
               <label class="kolsik-currency-option">
                 <input type="radio" name="kolsik_currency" value="rubles" id="kolsik-cur-rubles">
-                <span><img src="/static/assets/icons/rubles.webp?v=20261126_07" class="game-icon-sm" alt="Рубли"> Рубли (15)</span>
+                <span><img src="/static/assets/icons/rubles.webp?v=20261126_08" class="game-icon-sm" alt="Рубли"> Рубли (15)</span>
               </label>
             </div>
           </div>
@@ -1747,6 +1871,207 @@
       </div>
     </section>
 
+    <!-- ====================================================================
+         SECTION: POKER
+         ==================================================================== -->
+    <section id="sec-poker" class="section-pane">
+      <div class="card">
+        <div class="card-header-row">
+          <div>
+            <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+              <img src="/static/assets/icons/poker_icon.webp?v=20261126_08" class="game-icon" alt="Покер">
+              <span>Покер</span>
+            </div>
+            <div class="card-subtitle" id="poker-subtitle">Уровень: <b id="poker-level">0</b> • Розыгрышей: <b id="poker-total-hands">0</b></div>
+          </div>
+          <button id="btn-refresh-poker" class="btn btn-secondary btn-sm">Обновить</button>
+        </div>
+
+        <div class="game-resources-grid" style="margin-top: 10px;">
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/poker_chip_red.webp?v=20261126_08" class="game-icon" alt="Красные фишки"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="poker-chips" class="currency-value" style="color:#fb7185;">0</span></div>
+              <span class="currency-name">Красные фишки</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_red.webp?v=20261126_08" class="game-icon" alt="Розовые спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="poker-pink-matches" class="currency-value" style="color:#f472b6;">0</span></div>
+              <span class="currency-name">Розовые спички</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/soap.webp?v=20261126_08" class="game-icon" alt="Игры за мыло"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="poker-soap-used" class="currency-value">0/25</span></div>
+              <span class="currency-name">За мыло сегодня (5 м.)</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="poker-guard-banner" class="alert-banner" style="display:none; margin-top: 10px;"></div>
+
+        <div id="poker-hand-container" class="card" style="margin-top: 12px; background: rgba(255,255,255,0.02); padding: 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-weight:700;font-size:13px;">Текущая рука</span>
+            <span id="poker-hand-status" style="font-size:12px;color:var(--muted-foreground);">Нет активной раздачи</span>
+          </div>
+          <div id="poker-cards-row" class="poker-cards-row"></div>
+          <div id="poker-solver-hint" style="font-size:11px;color:#93c5fd;margin-top:8px;"></div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+          <button id="btn-poker-play-free" class="btn btn-primary btn-sm">Сыграть за фишку (бесплатно)</button>
+          <button id="btn-poker-play-soap" class="btn btn-secondary btn-sm">Сыграть за 5 мыла</button>
+          <button id="btn-poker-open-box" class="btn btn-secondary btn-sm" style="display:none;">Открыть кейс</button>
+        </div>
+        <div id="poker-last-result" style="font-size:12px;color:var(--muted-foreground);margin-top:10px;"></div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         SECTION: FARTOVY
+         ==================================================================== -->
+    <section id="sec-fartovy" class="section-pane">
+      <div class="card">
+        <div class="card-header-row">
+          <div>
+            <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+              <img src="/static/assets/icons/fartovy_icon.webp?v=20261126_08" class="game-icon" alt="Фартовый">
+              <span>Фартовый</span>
+            </div>
+            <div class="card-subtitle">Уровень: <b id="fartovy-level">1</b> • Ставка: <b id="fartovy-bet">1</b></div>
+          </div>
+          <button id="btn-refresh-fartovy" class="btn btn-secondary btn-sm">Обновить</button>
+        </div>
+
+        <div class="game-resources-grid" style="margin-top: 10px;">
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_green.webp?v=20261126_08" class="game-icon" alt="Зелёные спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="fartovy-green-matches" class="currency-value" style="color:#4ade80;">0/15</span></div>
+              <span id="fartovy-regen-timer" class="currency-name" style="color:#86efac;">Ожидание...</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_red.webp?v=20261126_08" class="game-icon" alt="Красные спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="fartovy-red-matches" class="currency-value" style="color:#f87171;">0</span></div>
+              <span class="currency-name">Красные спички</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/fartovy_icon.webp?v=20261126_08" class="game-icon" alt="Фриспины"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="fartovy-free-spins" class="currency-value" style="color:#fbbf24;">0</span></div>
+              <span class="currency-name">Фриспины (Колокол)</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="fartovy-guard-banner" class="alert-banner" style="display:none; margin-top: 10px;"></div>
+        <div id="fartovy-bonus-banner" class="alert-banner" style="display:none; margin-top: 10px; border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.12); color: #fde68a;"></div>
+
+        <div class="card" style="margin-top: 12px; background: rgba(255,255,255,0.02); padding: 12px;">
+          <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Барабаны и символы</div>
+          <div id="fartovy-reels" class="slots-reels-grid"></div>
+          <div id="fartovy-last-result" style="font-size:12px;color:var(--muted-foreground);margin-top:8px;">Готов к бесплатному спину</div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+          <button id="btn-fartovy-spin" class="btn btn-primary btn-sm">Крутить бесплатно</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         SECTION: WHEEL OF FORTUNE
+         ==================================================================== -->
+    <section id="sec-wheel" class="section-pane">
+      <div class="card">
+        <div class="card-header-row">
+          <div>
+            <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+              <img src="/static/assets/icons/wheel_icon.webp?v=20261126_08" class="game-icon" alt="Колесо фортуны">
+              <span>Колесо фортуны</span>
+            </div>
+            <div class="card-subtitle">Уровень: <b id="wheel-level">1</b> (<span id="wheel-xp">0/100</span>) • Джекпот: <b id="wheel-jackpot" style="color:#fbbf24;">0</b></div>
+          </div>
+          <button id="btn-refresh-wheel" class="btn btn-secondary btn-sm">Обновить</button>
+        </div>
+
+        <div class="game-resources-grid" style="margin-top: 10px;">
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/wheel_ticket.webp?v=20261126_08" class="game-icon" alt="Билеты"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="wheel-tickets" class="currency-value" style="color:#38bdf8;">0</span></div>
+              <span class="currency-name">Билеты колеса</span>
+            </div>
+          </div>
+          <div class="currency-item">
+            <span class="currency-icon"><img src="/static/assets/icons/match_blue.webp?v=20261126_08" class="game-icon" alt="Синие спички"></span>
+            <div class="currency-details">
+              <div class="currency-value-row"><span id="wheel-blue-matches" class="currency-value" style="color:#60a5fa;">0</span></div>
+              <span class="currency-name">Синие спички</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="wheel-winner-info" style="font-size:12px;color:var(--muted-foreground);margin-top:10px;"></div>
+        <div id="wheel-tattoo-set" style="font-size:12px;color:var(--muted-foreground);margin-top:4px;"></div>
+
+        <div id="wheel-slots-list" class="wheel-slots-grid" style="margin-top:12px;"></div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+          <button id="btn-wheel-spin" class="btn btn-primary btn-sm" disabled>Крутить за 1 билет</button>
+        </div>
+        <div id="wheel-last-result" style="font-size:12px;color:var(--muted-foreground);margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         SECTION: ZARUBY
+         ==================================================================== -->
+    <section id="sec-zaruby" class="section-pane">
+      <div class="card">
+        <div class="card-header-row">
+          <div>
+            <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+              <img src="/static/assets/icons/zaruby_icon.webp?v=20261126_08" class="game-icon" alt="Зарубы">
+              <span>Зарубы</span>
+            </div>
+            <div class="card-subtitle" id="zaruby-subtitle">Уровень: <b id="zaruby-level">0</b> • Перстни: <b id="zaruby-signets">0</b> • Руда: <b id="zaruby-ore">0</b></div>
+          </div>
+          <button id="btn-refresh-zaruby" class="btn btn-secondary btn-sm">Обновить</button>
+        </div>
+
+        <div id="zaruby-active-banner" style="font-size:12px;color:var(--muted-foreground);margin-top:8px;">Нет активной зарубы</div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;">
+          <select id="zaruby-start-tier" class="btn btn-secondary btn-sm" style="padding: 5px 10px;">
+            <option value="pacan">Пацанская (1)</option>
+            <option value="blat">Блатная (2)</option>
+            <option value="avtoritet">Авторитетная (3)</option>
+            <option value="vor">Воровская (4)</option>
+          </select>
+          <button id="btn-zaruby-start" class="btn btn-primary btn-sm">Начать зарубу</button>
+          <button id="btn-zaruby-claim" class="btn btn-secondary btn-sm" style="display:none;">Забрать награду</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title" style="margin-bottom:8px;">Задания зарубы (<span id="zaruby-tasks-progress">0/8</span>)</div>
+        <div id="zaruby-tasks-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title" style="margin-bottom:8px;">Топ-5 участников</div>
+        <div id="zaruby-leaderboard-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+    </section>
+
     <!-- ----------------------------------------------------------------------
          SECTION 5: УВЕДОМЛЕНИЯ (ДРОПЫ)
          ---------------------------------------------------------------------- -->
@@ -1857,7 +2182,7 @@
         <div style="min-width: 0; flex: 1;">
           <div class="card-title">
             <span style="display: inline-flex; align-items: center; gap: 6px;">
-              <img src="/static/assets/icons/boss.webp?v=20261126_07" class="game-icon-sm" alt="Боссы"> Меню боссов
+              <img src="/static/assets/icons/boss.webp?v=20261126_08" class="game-icon-sm" alt="Боссы"> Меню боссов
             </span>
             <span id="boss-menu-header-badge" class="badge"
               style="background: var(--primary); color: #000; font-size: 11px;">В очереди: 0</span>
@@ -1905,7 +2230,7 @@
         <div style="min-width: 0; flex: 1;">
           <div class="card-title">
             <span style="display: inline-flex; align-items: center; gap: 6px;">
-              <img src="/static/assets/icons/boss.webp?v=20261126_07" class="game-icon-sm" alt="Атака"> Атака босса
+              <img src="/static/assets/icons/boss.webp?v=20261126_08" class="game-icon-sm" alt="Атака"> Атака босса
             </span>
             <span id="single-boss-selected-badge" class="badge"
               style="background: var(--primary); color: #000; font-size: 11px;">Выберите босса</span>
@@ -1940,7 +2265,7 @@
         <button id="btn-cancel-single-boss-attack" class="btn btn-secondary btn-sm">Отмена</button>
         <button id="btn-execute-single-boss-attack" class="btn btn-primary btn-sm" disabled
           style="display: flex; align-items: center; gap: 6px;">
-          <span><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_07" alt=""> Атаковать</span>
+          <span><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_08" alt=""> Атаковать</span>
         </button>
       </div>
     </div>
@@ -2065,6 +2390,24 @@
     </div>
   </div>
 
+  <!-- Poker Paid Soap Confirmation Modal -->
+  <div id="poker-soap-modal"
+    style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 110; align-items: center; justify-content: center; padding: 16px;">
+    <div class="card" style="max-width: 400px; width: 100%;">
+      <div class="card-title" style="margin-bottom: 6px; display:flex;align-items:center;gap:6px;">
+        <img src="/static/assets/icons/soap.webp?v=20261126_08" class="game-icon-sm" alt="Мыло">
+        <span>Подтверждение траты мыла</span>
+      </div>
+      <div style="font-size: 12px; color: var(--muted-foreground); margin-bottom: 12px;">
+        Сыграть партию в Покер за <b>5 мыла</b>? Авто-покер никогда не тратит мыло или рубли автоматически.
+      </div>
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button id="btn-poker-soap-cancel" type="button" class="btn btn-secondary btn-sm">Отмена</button>
+        <button id="btn-poker-soap-confirm" type="button" class="btn btn-danger btn-sm">Потратить 5 мыла</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Friends Cleanup Confirmation Modal -->
   <div id="friends-cleanup-modal"
     style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 110; align-items: center; justify-content: center; padding: 16px;">
@@ -2097,8 +2440,8 @@
 
   <script src="vendor/bundle-codec.js?v=20261124_03"></script>
   <script src="vendor/spine-runtime.js?v=20261124_03"></script>
-  <script src="spine_room_player.js?v=20261126_07"></script>
-  <script src="app.js?v=20261126_07"></script>
+  <script src="spine_room_player.js?v=20261126_08"></script>
+  <script src="app.js?v=20261126_08"></script>
 </body>
 
 </html>

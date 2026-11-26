@@ -22,10 +22,17 @@ from client.api.player import PlayerAPI
 from client.api.boss import BossAPI
 from client.api.prison import PrisonAPI
 from client.api.social import SocialAPI
+from client.api.poker import PokerAPI
+from client.api.fartovy import FartovyAPI
+from client.api.wheel import WheelAPI
+from client.api.zaruby import ZarubyAPI
 from workers.routine_worker import RoutineWorker
 from workers.boss_worker import BossWorker
 from workers.prison_worker import PrisonWorker
 from workers.social_worker import SocialWorker
+from workers.poker_worker import PokerWorker
+from workers.fartovy_worker import FartovyWorker
+from workers.zaruby_worker import ZarubyWorker
 from bot.notifier import TelegramNotifier
 from bot.handlers import router as bot_router, bot_context
 from web.app import app as web_app
@@ -68,6 +75,10 @@ async def run_bot(once_mode: bool = False) -> None:
     boss_api = BossAPI(http_client=http_client)
     prison_api = PrisonAPI(http_client=http_client)
     social_api = SocialAPI(http_client=http_client)
+    poker_api = PokerAPI(http_client=http_client)
+    fartovy_api = FartovyAPI(http_client=http_client)
+    wheel_api = WheelAPI(http_client=http_client)
+    zaruby_api = ZarubyAPI(http_client=http_client)
 
     # Инициализация Telegram-бота и нотификатора
     bot = None
@@ -115,6 +126,28 @@ async def run_bot(once_mode: bool = False) -> None:
         notifier=notifier,
     )
     routine_worker.prison_worker = prison_worker
+    poker_worker = PokerWorker(
+        account_id=account.id,
+        poker_api=poker_api,
+        player_api=player_api,
+        db_engine=get_engine(),
+        notifier=notifier,
+    )
+    fartovy_worker = FartovyWorker(
+        account_id=account.id,
+        fartovy_api=fartovy_api,
+        player_api=player_api,
+        db_engine=get_engine(),
+        notifier=notifier,
+    )
+    zaruby_worker = ZarubyWorker(
+        account_id=account.id,
+        zaruby_api=zaruby_api,
+        player_api=player_api,
+        fartovy_worker=fartovy_worker,
+        db_engine=get_engine(),
+        notifier=notifier,
+    )
 
     if once_mode:
         logger.info("Запуск в режиме одиночного прогона (--once)...")
@@ -134,6 +167,9 @@ async def run_bot(once_mode: bool = False) -> None:
         boss_worker=boss_worker,
         prison_worker=prison_worker,
         social_worker=social_worker,
+        poker_worker=poker_worker,
+        fartovy_worker=fartovy_worker,
+        zaruby_worker=zaruby_worker,
         routine_interval_minutes=settings.ROUTINE_INTERVAL_MINUTES,
         boss_interval_minutes=settings.BOSS_INTERVAL_MINUTES,
         prison_interval_minutes=settings.PRISON_INTERVAL_MINUTES,
@@ -153,6 +189,13 @@ async def run_bot(once_mode: bool = False) -> None:
     bot_context.boss_worker = boss_worker
     bot_context.prison_worker = prison_worker
     bot_context.social_worker = social_worker
+    bot_context.poker_api = poker_api
+    bot_context.fartovy_api = fartovy_api
+    bot_context.wheel_api = wheel_api
+    bot_context.zaruby_api = zaruby_api
+    bot_context.poker_worker = poker_worker
+    bot_context.fartovy_worker = fartovy_worker
+    bot_context.zaruby_worker = zaruby_worker
     bot_context.server_health = server_health_monitor
 
     async def _probe_game_server():

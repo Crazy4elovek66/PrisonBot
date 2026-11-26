@@ -139,6 +139,12 @@ class BotConfig(Base):
     auto_friends = Column(Boolean, default=False, nullable=False)
     auto_events = Column(Boolean, default=False, nullable=False)
 
+    # Games & Zaruby
+    auto_poker_enabled = Column(Boolean, default=False, nullable=False)
+    auto_fartovy_enabled = Column(Boolean, default=False, nullable=False)
+    auto_zaruby_enabled = Column(Boolean, default=False, nullable=False)
+    auto_zaruby_tier = Column(String(32), default="pacan", nullable=False)
+
     # Friend Filters
     friend_accept_all = Column(Boolean, default=False, nullable=False)
     friend_filter_mode = Column(String(10), default="and", nullable=False)  # "and" | "or"
@@ -410,4 +416,22 @@ class KatalaGuardState(Base):
     rubles_guard_tripped = Column(Boolean, default=False, nullable=False)
     guard_reason = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class GameGuardState(Base):
+    """
+    Персистентный Circuit Breaker от траты мыла/рублей для Покера, Фартового и Колеса.
+    """
+    __tablename__ = "game_guard_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    game_key = Column(String(32), nullable=False)  # "poker" | "fartovy" | "wheel"
+    guard_tripped = Column(Boolean, default=False, nullable=False)
+    guard_reason = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "game_key", name="uq_game_guard_account_key"),
+    )
 

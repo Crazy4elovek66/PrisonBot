@@ -3119,3 +3119,61 @@ async def test_server_health_endpoints_and_state_maintenance_field(web_setup):
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_new_game_endpoints_and_workers_status(web_setup):
+    """Проверка /api/v1/poker/*, /fartovy/*, /wheel/*, /zaruby/* и /workers/status."""
+    from unittest.mock import AsyncMock
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    bot_context.poker_api = AsyncMock()
+    bot_context.poker_api.get_state.return_value = {"level": 22, "chips": 2, "pinkMatches": 5, "handActive": False}
+    bot_context.poker_api.get_hand_payouts.return_value = {"rows": []}
+    bot_context.fartovy_api = AsyncMock()
+    bot_context.fartovy_api.get_state.return_value = {
+        "success": True,
+        "data": {"state": {"slotsGrass": 12, "energyRegenCap": 15, "slotsRed": 3, "freeSpins": 1, "energyTsUtc": "2026-11-26T20:00:00Z"}},
+    }
+    bot_context.wheel_api = AsyncMock()
+    bot_context.wheel_api.get_state.return_value = {"tickets": 0, "blueMatches": 4, "jackpotBank": 5000, "wheelLevel": 1}
+    bot_context.wheel_api.spin.return_value = {"skipped": True, "reason": "no_tickets"}
+    bot_context.zaruby_api = AsyncMock()
+    bot_context.zaruby_api.get_state.return_value = {
+        "active": {"mode": 1, "completedCount": 2, "tasks": [{"taskId": 1, "type": 9, "title": "Терпила", "currentAmount": 1, "requiredAmount": 1, "status": 1}], "participants": []},
+        "progress": {"level": 2},
+        "balances": {"signet": 5, "ore_signet": 3},
+    }
+    bot_context.zaruby_api.get_well_state.return_value = {}
+
+    r_poker = await client.get("/api/v1/poker/state", headers=headers)
+    assert r_poker.status_code == 200
+    assert r_poker.json()["state"]["chips"] == 2
+
+    # Paid soap without confirm_paid=true must be blocked (400)
+    r_poker_paid = await client.post("/api/v1/poker/play", json={"mode": "soap", "confirm_paid": False}, headers=headers)
+    assert r_poker_paid.status_code == 400
+
+    r_fartovy = await client.get("/api/v1/fartovy/state", headers=headers)
+    assert r_fartovy.status_code == 200
+    assert r_fartovy.json()["state"]["green_matches"] == 12
+
+    r_wheel = await client.get("/api/v1/wheel/state", headers=headers)
+    assert r_wheel.status_code == 200
+    assert r_wheel.json()["state"]["tickets"] == 0
+
+    # Wheel spin with 0 tickets must be skipped cleanly (success=False, skipped=True)
+    r_wheel_spin = await client.post("/api/v1/wheel/spin", json={}, headers=headers)
+    assert r_wheel_spin.status_code == 200
+    assert r_wheel_spin.json()["skipped"] is True
+
+    r_zaruby = await client.get("/api/v1/zaruby/state", headers=headers)
+    assert r_zaruby.status_code == 200
+    assert r_zaruby.json()["state"]["completed_count"] == 1
+
+    r_workers = await client.get("/api/v1/workers/status", headers=headers)
+    assert r_workers.status_code == 200
+    assert r_workers.json()["success"] is True

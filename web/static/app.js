@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_07";
+const ASSET_VERSION = "20261126_08";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -391,6 +391,10 @@ const sectionTitles = {
   prisons: "Ходки и Мастера",
   wardrobe: "Тату и Шмот",
   routine: "Делюги",
+  poker: "Покер",
+  fartovy: "Фартовый",
+  wheel: "Колесо фортуны",
+  zaruby: "Зарубы",
   friends: "Кореша (Заявки в друзья)",
   raids: "Рейды и Новости",
   notifications: "Центр уведомлений",
@@ -538,7 +542,12 @@ function switchSection(secName) {
     if (liveSlices.data.bauls) renderBaulsData(liveSlices.data.bauls);
     else loadBauls();
     loadKatalaStatus();
+    if (typeof loadZarubyState === "function") loadZarubyState();
   }
+  if (secName === "poker" && typeof loadPokerState === "function") loadPokerState();
+  if (secName === "fartovy" && typeof loadFartovyState === "function") loadFartovyState();
+  if (secName === "wheel" && typeof loadWheelState === "function") loadWheelState();
+  if (secName === "zaruby" && typeof loadZarubyState === "function") loadZarubyState();
   if (secName === "friends") {
     if (liveSlices.data.friends) renderFriendsSummaryData(liveSlices.data.friends);
     else loadFriendsSummary();
@@ -673,6 +682,12 @@ function applyStateData(data) {
   }
   if (data.katala_guard && data.katala_guard.rubles_guard_tripped) {
     renderKatalaFreeStatus({ success: true, guard_tripped: true, free_available: false });
+  }
+  if (data.game_resources && typeof renderHomeGameResources === "function") {
+    renderHomeGameResources(data.game_resources);
+    if (typeof renderRoutineGameBadges === "function") {
+      renderRoutineGameBadges(data.game_resources);
+    }
   }
 
   const isPaused = data.scheduler?.is_paused;
@@ -944,6 +959,7 @@ function updateConfigUI(cfg) {
   const checkboxKeys = [
     "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
     "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+    "auto_poker_enabled", "auto_fartovy_enabled", "auto_zaruby_enabled",
     "auto_biceps", "auto_spit_balanda", "auto_throw_yeast",
     "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
     "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
@@ -972,6 +988,11 @@ function updateConfigUI(cfg) {
   const autoFriendsSec = document.getElementById("cfg-auto_friends_sec");
   if (autoFriendsSec && cfg.auto_friends !== undefined) {
     autoFriendsSec.checked = Boolean(cfg.auto_friends);
+  }
+
+  const zarubyTierEl = document.getElementById("cfg-auto_zaruby_tier");
+  if (zarubyTierEl && cfg.auto_zaruby_tier) {
+    zarubyTierEl.value = cfg.auto_zaruby_tier;
   }
 
   // Filter mode AND / OR
@@ -3545,6 +3566,7 @@ document.getElementById("btn-scan-news")?.addEventListener("click", async () => 
 const autoConfigKeys = [
   "is_paused", "sleep_mode_enabled", "auto_toilet_paper", "auto_business",
   "auto_beard", "auto_podogrev", "auto_podogrev_send", "auto_katala", "auto_monthly_tasks",
+  "auto_poker_enabled", "auto_fartovy_enabled", "auto_zaruby_enabled",
   "auto_biceps", "auto_spit_balanda", "auto_throw_yeast",
   "auto_boss_enabled", "auto_boss_hits", "auto_boss_summon", "boss_auto_melee",
   "boss_allow_paid_weapons", "auto_prison", "auto_masters", "auto_gifts",
@@ -6476,6 +6498,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   await refreshState();
   await loadProfile();
   loadKatalaStatus();
+  if (typeof loadPokerState === "function") loadPokerState();
+  if (typeof loadFartovyState === "function") loadFartovyState();
+  if (typeof loadWheelState === "function") loadWheelState();
+  if (typeof loadZarubyState === "function") loadZarubyState();
 
   // Prioritize loading active section data first
   if (savedSec === "wardrobe") {
@@ -6486,6 +6512,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     await loadPrisons();
   } else if (savedSec === "routine") {
     await Promise.all([loadRoutine(), loadBauls()]);
+  } else if (savedSec === "poker" && typeof loadPokerState === "function") {
+    await loadPokerState();
+  } else if (savedSec === "fartovy" && typeof loadFartovyState === "function") {
+    await loadFartovyState();
+  } else if (savedSec === "wheel" && typeof loadWheelState === "function") {
+    await loadWheelState();
+  } else if (savedSec === "zaruby" && typeof loadZarubyState === "function") {
+    await loadZarubyState();
   } else if (savedSec === "friends") {
     await Promise.all([loadFriendsSummary(), loadFriendRequests(), loadFriendsAudit()]);
   } else if (savedSec === "raids") {
@@ -8931,4 +8965,425 @@ if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
       navigator.serviceWorker.register("sw.js").catch(() => { });
     } catch (e) { }
   });
+}
+
+// ============================================================================
+// POKER, FARTOVY, WHEEL OF FORTUNE & ZARUBY
+// ============================================================================
+
+const FARTOVY_REGEN_INTERVAL_SEC = 5760;
+let _fartovyNextMatchAtMs = null;
+let _fartovyCurrentGreen = 0;
+let _fartovyCapGreen = 15;
+let _fartovyCountdownTimer = null;
+
+function formatGreenMatchTimer(secondsLeft) {
+  const s = Math.max(0, Math.floor(Number(secondsLeft) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `(+1 через ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")})`;
+}
+
+function updateFartovyCountdownDom() {
+  const homeTimerEl = document.getElementById("home-fartovy-green-timer");
+  const secTimerEl = document.getElementById("fartovy-regen-timer");
+  if (_fartovyCurrentGreen >= _fartovyCapGreen) {
+    setTextIfChanged(homeTimerEl, "Максимум");
+    setTextIfChanged(secTimerEl, "Максимум (15/15)");
+    return;
+  }
+  if (!_fartovyNextMatchAtMs) {
+    setTextIfChanged(homeTimerEl, "Зелёные спички");
+    setTextIfChanged(secTimerEl, "Ожидание...");
+    return;
+  }
+  const leftSec = Math.max(0, Math.floor((_fartovyNextMatchAtMs - Date.now()) / 1000));
+  const formatted = leftSec > 0 ? formatGreenMatchTimer(leftSec) : "(+1 скоро)";
+  setTextIfChanged(homeTimerEl, formatted);
+  setTextIfChanged(secTimerEl, formatted);
+}
+
+function startFartovyCountdownTimer() {
+  if (_fartovyCountdownTimer) return;
+  _fartovyCountdownTimer = setInterval(updateFartovyCountdownDom, 1000);
+}
+
+function renderHomeGameResources(res) {
+  if (!res || typeof res !== "object") return;
+  if (res.poker_chips !== undefined) {
+    setTextIfChanged(document.getElementById("home-poker-chips"), Number(res.poker_chips || 0));
+  }
+  if (res.fartovy_green !== undefined || res.fartovy_cap !== undefined) {
+    _fartovyCurrentGreen = Number(res.fartovy_green ?? _fartovyCurrentGreen);
+    _fartovyCapGreen = Number(res.fartovy_cap ?? _fartovyCapGreen ?? 15) || 15;
+    setTextIfChanged(document.getElementById("home-fartovy-green"), `${_fartovyCurrentGreen}/${_fartovyCapGreen}`);
+  }
+  if (res.next_green_match_at) {
+    const parsed = Date.parse(res.next_green_match_at);
+    if (!Number.isNaN(parsed)) _fartovyNextMatchAtMs = parsed;
+  } else if (res.energy_ts_utc && _fartovyCurrentGreen < _fartovyCapGreen) {
+    const baseMs = Date.parse(res.energy_ts_utc);
+    if (!Number.isNaN(baseMs)) _fartovyNextMatchAtMs = baseMs + FARTOVY_REGEN_INTERVAL_SEC * 1000;
+  }
+  if (res.fartovy_red !== undefined) {
+    setTextIfChanged(document.getElementById("home-fartovy-red"), Number(res.fartovy_red || 0));
+  }
+  if (res.wheel_tickets !== undefined) {
+    setTextIfChanged(document.getElementById("home-wheel-tickets"), Number(res.wheel_tickets || 0));
+  }
+  updateFartovyCountdownDom();
+  startFartovyCountdownTimer();
+}
+
+function renderRoutineGameBadges(res) {
+  if (!res || typeof res !== "object") return;
+  if (res.poker_chips !== undefined) {
+    setTextIfChanged(document.getElementById("routine-poker-status"), `Фишки: ${Number(res.poker_chips || 0)} | Ур. ${Number(res.poker_level || 0)}`);
+  }
+  if (res.fartovy_green !== undefined) {
+    setTextIfChanged(document.getElementById("routine-fartovy-status"), `Спички: ${Number(res.fartovy_green || 0)}/${Number(res.fartovy_cap || 15)} | Фриспины: ${Number(res.fartovy_free_spins || 0)}`);
+  }
+  if (res.zaruby_completed !== undefined || res.zaruby_total !== undefined) {
+    const comp = Number(res.zaruby_completed || 0);
+    const total = Number(res.zaruby_total || 8) || 8;
+    const pct = Math.round((comp / total) * 100);
+    setTextIfChanged(document.getElementById("routine-zaruby-progress"), `Задания: ${comp}/${total} (${pct}%)`);
+  }
+}
+
+function formatPokerCardLabel(card) {
+  if (!card) return "?";
+  if (typeof card === "string") return card;
+  const ranks = { 11: "J", 12: "Q", 13: "K", 14: "A", 1: "A" };
+  const suits = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣", S: "♠", H: "♥", D: "♦", C: "♣" };
+  const r = ranks[card.rank] || card.rank || card.value || "?";
+  const s = suits[card.suit] || card.suit || "";
+  return `${r}${s}`;
+}
+
+function renderPokerState(data) {
+  if (!data) return;
+  const st = data.state || data;
+  setTextIfChanged(document.getElementById("poker-level"), Number(st.level || 0));
+  setTextIfChanged(document.getElementById("poker-total-hands"), Number(st.totalHands || 0));
+  setTextIfChanged(document.getElementById("poker-chips"), Number(st.chips || 0));
+  setTextIfChanged(document.getElementById("poker-pink-matches"), Number(st.pinkMatches || 0));
+  const limit = Number(st.entry?.soapDailyLimit || 25);
+  setTextIfChanged(document.getElementById("poker-soap-used"), `${Number(st.soapPlaysUsedToday || 0)}/${limit}`);
+
+  const guardEl = document.getElementById("poker-guard-banner");
+  if (guardEl) {
+    if (data.guard_tripped) {
+      guardEl.style.display = "block";
+      setTextIfChanged(guardEl, `Защита Покера активирована: ${data.guard_reason || "предотвращена платная трата"}`);
+    } else {
+      guardEl.style.display = "none";
+    }
+  }
+
+  const cardsRow = document.getElementById("poker-cards-row");
+  const handStatus = document.getElementById("poker-hand-status");
+  const solverHint = document.getElementById("poker-solver-hint");
+  const cards = st.hand?.cards || st.cards || [];
+  if (cardsRow) {
+    if (cards.length) {
+      cardsRow.innerHTML = cards.map(c => `<div class="poker-card-chip">${escapeHtml(formatPokerCardLabel(c))}</div>`).join("");
+      setTextIfChanged(handStatus, st.handActive ? "Активная раздача" : "Последняя рука");
+    } else {
+      cardsRow.innerHTML = `<span style="font-size:12px;color:var(--muted-foreground);">Нажмите «Сыграть за фишку», чтобы начать бесплатную партию</span>`;
+      setTextIfChanged(handStatus, st.handActive ? "Активная раздача" : "Нет активной раздачи");
+    }
+  }
+  if (solverHint) {
+    setTextIfChanged(solverHint, Number(st.level || 0) >= 20 ? "Умный решатель обмена карт активен (уровень >= 20)" : "Обмен карт откроется на 20 уровне покера");
+  }
+
+  const freeBtn = document.getElementById("btn-poker-play-free");
+  if (freeBtn) freeBtn.disabled = Number(st.chips || 0) < 1;
+
+  renderHomeGameResources({ poker_chips: Number(st.chips || 0), poker_level: Number(st.level || 0) });
+  renderRoutineGameBadges({ poker_chips: Number(st.chips || 0), poker_level: Number(st.level || 0) });
+}
+
+async function loadPokerState() {
+  try {
+    const data = await apiFetch("/poker/state");
+    if (data && data.success) renderPokerState(data);
+  } catch (e) {
+    console.warn("loadPokerState error:", e);
+  }
+}
+
+function renderFartovyState(data) {
+  if (!data) return;
+  const st = data.parsed || data.state?.data?.state || data.state?.state || data.state || {};
+  const green = Number(st.green_matches ?? st.slotsGrass ?? 0);
+  const cap = Number(st.green_cap ?? st.energyRegenCap ?? 15) || 15;
+  const red = Number(st.red_matches ?? st.slotsRed ?? 0);
+  const freeSpins = Number(st.free_spins ?? st.freeSpins ?? 0);
+
+  setTextIfChanged(document.getElementById("fartovy-level"), Number(st.level || 1));
+  setTextIfChanged(document.getElementById("fartovy-bet"), Number(st.bet || 1));
+  setTextIfChanged(document.getElementById("fartovy-green-matches"), `${green}/${cap}`);
+  setTextIfChanged(document.getElementById("fartovy-red-matches"), red);
+  setTextIfChanged(document.getElementById("fartovy-free-spins"), freeSpins);
+
+  const guardEl = document.getElementById("fartovy-guard-banner");
+  if (guardEl) {
+    if (data.guard_tripped) {
+      guardEl.style.display = "block";
+      setTextIfChanged(guardEl, `Защита Фартового активирована: ${data.guard_reason || "предотвращена трата рублей"}`);
+    } else {
+      guardEl.style.display = "none";
+    }
+  }
+
+  const bonusEl = document.getElementById("fartovy-bonus-banner");
+  if (bonusEl) {
+    if (st.bonus_active || st.bonusActive) {
+      bonusEl.style.display = "block";
+      setTextIfChanged(bonusEl, `Активен бонус Козёл! Осталось сундуков: ${Number(st.bonus_boxes_remaining ?? st.bonusBoxesRemaining ?? 0)}`);
+    } else {
+      bonusEl.style.display = "none";
+    }
+  }
+
+  const spinBtn = document.getElementById("btn-fartovy-spin");
+  if (spinBtn) spinBtn.disabled = green <= 0 && freeSpins <= 0;
+
+  renderHomeGameResources({
+    fartovy_green: green,
+    fartovy_cap: cap,
+    fartovy_red: red,
+    fartovy_free_spins: freeSpins,
+    next_green_match_at: st.next_green_match_at || null,
+    energy_ts_utc: st.energyTsUtc || st.energy_ts_utc || null,
+  });
+  renderRoutineGameBadges({
+    fartovy_green: green,
+    fartovy_cap: cap,
+    fartovy_free_spins: freeSpins,
+  });
+}
+
+async function loadFartovyState() {
+  try {
+    const data = await apiFetch("/fartovy/state");
+    if (data && data.success) renderFartovyState(data);
+  } catch (e) {
+    console.warn("loadFartovyState error:", e);
+  }
+}
+
+function renderWheelState(data) {
+  if (!data) return;
+  const st = data.parsed || data.state || {};
+  const tickets = Number(st.tickets || 0);
+  const blue = Number(st.blue_matches ?? st.blueMatches ?? 0);
+  setTextIfChanged(document.getElementById("wheel-level"), Number(st.wheel_level ?? st.wheelLevel ?? 1));
+  setTextIfChanged(document.getElementById("wheel-xp"), `${Number(st.wheel_xp ?? st.wheelXp ?? 0)}/${Number(st.wheel_xp_to_next ?? st.wheelXpToNext ?? 100)}`);
+  setTextIfChanged(document.getElementById("wheel-jackpot"), Number(st.jackpot_bank ?? st.jackpotBank ?? 0));
+  setTextIfChanged(document.getElementById("wheel-tickets"), tickets);
+  setTextIfChanged(document.getElementById("wheel-blue-matches"), blue);
+
+  const winner = st.last_jackpot_winner || st.lastJackpotWinner;
+  const winnerEl = document.getElementById("wheel-winner-info");
+  if (winnerEl) {
+    setTextIfChanged(winnerEl, winner && winner.name ? `Последний джекпот: ${winner.name} (${winner.amount || 0})` : "Джекпот ждёт победителя");
+  }
+
+  const tattooSet = st.tattoo_set || st.tattooSet;
+  const tattooEl = document.getElementById("wheel-tattoo-set");
+  if (tattooEl) {
+    setTextIfChanged(tattooEl, tattooSet ? `Набор наколок: ${tattooSet.name || tattooSet.id || "доступен"}` : "");
+  }
+
+  const slotsEl = document.getElementById("wheel-slots-list");
+  const slots = st.slots || [];
+  if (slotsEl) {
+    slotsEl.innerHTML = slots.map(s => `<div class="wheel-slot-pill">${escapeHtml(s.title || s.name || s.kind || "Сектор")} ${s.amount ? `(${s.amount})` : ""}</div>`).join("");
+  }
+
+  const spinBtn = document.getElementById("btn-wheel-spin");
+  if (spinBtn) spinBtn.disabled = tickets < 1;
+
+  renderHomeGameResources({ wheel_tickets: tickets });
+}
+
+async function loadWheelState() {
+  try {
+    const data = await apiFetch("/wheel/state");
+    if (data && data.success) renderWheelState(data);
+  } catch (e) {
+    console.warn("loadWheelState error:", e);
+  }
+}
+
+function renderZarubyState(data) {
+  if (!data) return;
+  const st = data.parsed || {};
+  const raw = data.state || {};
+  const prog = st.progress || raw.progress || {};
+  const bal = st.balances || raw.balances || {};
+  setTextIfChanged(document.getElementById("zaruby-level"), Number(prog.level || 0));
+  setTextIfChanged(document.getElementById("zaruby-signets"), Number(bal.signet || 0));
+  setTextIfChanged(document.getElementById("zaruby-ore"), Number(bal.ore_signet || 0));
+
+  const active = st.active || raw.active;
+  const banner = document.getElementById("zaruby-active-banner");
+  const claimBtn = document.getElementById("btn-zaruby-claim");
+  const startBtn = document.getElementById("btn-zaruby-start");
+  const tasksList = document.getElementById("zaruby-tasks-list");
+  const lbList = document.getElementById("zaruby-leaderboard-list");
+
+  const tasks = (active && active.tasks) || [];
+  const completed = Number(st.completed_count ?? active?.completedCount ?? 0);
+  const total = tasks.length || 8;
+  const pct = Math.round((completed / total) * 100);
+  setTextIfChanged(document.getElementById("zaruby-tasks-progress"), `${completed}/${total} (${pct}%)`);
+  renderRoutineGameBadges({ zaruby_completed: completed, zaruby_total: total });
+
+  if (banner) {
+    if (active) {
+      setTextIfChanged(banner, `Активная заруба (режим ${active.mode || "?"}) • Выполнено: ${completed}/${total}`);
+    } else {
+      setTextIfChanged(banner, "Нет активной зарубы — выберите сложность и запустите");
+    }
+  }
+  if (startBtn) startBtn.disabled = Boolean(active);
+  if (claimBtn) claimBtn.style.display = active && active.canClaim ? "inline-flex" : "none";
+
+  if (tasksList) {
+    tasksList.innerHTML = tasks.length
+      ? tasks.map(t => {
+          const cur = Number(t.current ?? t.progress ?? 0);
+          const need = Number(t.target ?? t.need ?? 1);
+          const done = Boolean(t.completed || cur >= need);
+          const cls = t.classification || "unknown";
+          const tag = cls === "safe_auto" ? "Авто" : cls === "skip_damage" ? "Урон (пропуск)" : cls === "skip_paid" ? "Платное (пропуск)" : cls === "skip_energy_conflict" ? "Энергия (пауза)" : "Ручное";
+          return `<div class="zaruba-task-row" style="display:flex;justify-content:space-between;gap:8px;"><span>${escapeHtml(t.title || t.name || `Задание #${t.id || t.type}`)} (${cur}/${need})</span><span style="color:${done ? "#4ade80" : "#93c5fd"};">${done ? "Готово" : tag}</span></div>`;
+        }).join("")
+      : `<div style="font-size:12px;color:var(--muted-foreground);">Задания появятся после старта зарубы</div>`;
+  }
+
+  const participants = (active && active.participants) || [];
+  if (lbList) {
+    lbList.innerHTML = participants.length
+      ? participants.slice(0, 5).map((p, idx) => `<div class="zaruba-leader-row" style="display:flex;justify-content:space-between;"><span>#${idx + 1} ${escapeHtml(p.name || p.userId || "Игрок")}</span><b>${Number(p.score || p.points || 0)}</b></div>`).join("")
+      : `<div style="font-size:12px;color:var(--muted-foreground);">Нет данных лидерборда</div>`;
+  }
+}
+
+async function loadZarubyState() {
+  try {
+    const data = await apiFetch("/zaruby/state");
+    if (data && data.success) renderZarubyState(data);
+  } catch (e) {
+    console.warn("loadZarubyState error:", e);
+  }
+}
+
+document.getElementById("cfg-auto_zaruby_tier")?.addEventListener("change", async (ev) => {
+  const tier = ev.target.value;
+  try {
+    await apiFetch("/config", { method: "PATCH", body: JSON.stringify({ auto_zaruby_tier: tier }) });
+    showToast("Сложность Заруб сохранена", "info");
+    refreshState();
+  } catch (e) {
+    showToast(`Ошибка сохранения: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-refresh-poker")?.addEventListener("click", loadPokerState);
+document.getElementById("btn-refresh-fartovy")?.addEventListener("click", loadFartovyState);
+document.getElementById("btn-refresh-wheel")?.addEventListener("click", loadWheelState);
+document.getElementById("btn-refresh-zaruby")?.addEventListener("click", loadZarubyState);
+
+document.getElementById("btn-poker-play-free")?.addEventListener("click", async () => {
+  try {
+    const res = await apiFetch("/poker/play", { method: "POST", body: JSON.stringify({ mode: "chips", confirm_paid: false }) });
+    showToast(res.message || "Партия в покер завершена", res.success ? "success" : "error");
+    await loadPokerState();
+  } catch (e) {
+    showToast(`Ошибка покера: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-poker-play-soap")?.addEventListener("click", () => {
+  const modal = document.getElementById("poker-soap-modal");
+  if (modal) modal.style.display = "flex";
+});
+document.getElementById("btn-poker-soap-cancel")?.addEventListener("click", () => {
+  const modal = document.getElementById("poker-soap-modal");
+  if (modal) modal.style.display = "none";
+});
+document.getElementById("btn-poker-soap-confirm")?.addEventListener("click", async () => {
+  const modal = document.getElementById("poker-soap-modal");
+  if (modal) modal.style.display = "none";
+  try {
+    const res = await apiFetch("/poker/play", { method: "POST", body: JSON.stringify({ mode: "soap", confirm_paid: true }) });
+    showToast(res.message || "Партия за мыло завершена", res.success ? "success" : "error");
+    await loadPokerState();
+  } catch (e) {
+    showToast(`Ошибка покера: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-fartovy-spin")?.addEventListener("click", async () => {
+  try {
+    const res = await apiFetch("/fartovy/spin", { method: "POST", body: JSON.stringify({}) });
+    showToast(res.message || "Спин выполнен", res.success ? "success" : "error");
+    const reelsEl = document.getElementById("fartovy-reels");
+    if (reelsEl && Array.isArray(res.reels)) {
+      reelsEl.innerHTML = res.reels.map(r => `<div class="slot-reel-cell">${escapeHtml(String(r))}</div>`).join("");
+    }
+    await loadFartovyState();
+  } catch (e) {
+    showToast(`Ошибка Фартового: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-wheel-spin")?.addEventListener("click", async () => {
+  try {
+    const res = await apiFetch("/wheel/spin", { method: "POST", body: JSON.stringify({}) });
+    showToast(res.message || "Колесо прокручено", res.success ? "success" : "error");
+    setTextIfChanged(document.getElementById("wheel-last-result"), res.message || "");
+    await loadWheelState();
+  } catch (e) {
+    showToast(`Ошибка колеса: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-zaruby-start")?.addEventListener("click", async () => {
+  const tier = document.getElementById("zaruby-start-tier")?.value || "pacan";
+  try {
+    const res = await apiFetch("/zaruby/start", { method: "POST", body: JSON.stringify({ tier }) });
+    showToast(res.message || "Заруба запущена", res.success ? "success" : "error");
+    await loadZarubyState();
+  } catch (e) {
+    showToast(`Ошибка Заруб: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-zaruby-claim")?.addEventListener("click", async () => {
+  try {
+    const res = await apiFetch("/zaruby/claim", { method: "POST", body: JSON.stringify({}) });
+    showToast(res.message || "Награда получена", res.success ? "success" : "error");
+    await loadZarubyState();
+  } catch (e) {
+    showToast(`Ошибка получения награды: ${e.message}`, "error");
+  }
+});
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    formatGreenMatchTimer,
+    renderHomeGameResources,
+    renderPokerState,
+    renderFartovyState,
+    renderWheelState,
+    renderZarubyState,
+    renderRoutineGameBadges,
+  };
 }

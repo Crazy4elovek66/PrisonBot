@@ -60,6 +60,61 @@ class SchedulerController:
         self._melee_timer_task: Optional[asyncio.Task] = None
         self._business_timer_task: Optional[asyncio.Task] = None
         self._katala_timer_task: Optional[asyncio.Task] = None
+        self._wakeup_tasks: Dict[str, asyncio.Task] = {}
+        self.worker_status: Dict[str, Dict[str, Any]] = {}
+        self.poker_worker: Optional[Any] = None
+        self.fartovy_worker: Optional[Any] = None
+        self.zaruby_worker: Optional[Any] = None
+
+    def schedule_wakeup(self, worker_name: str, run_at_utc: datetime) -> None:
+        """
+        Универсальный real-time wake-up триггер для любого независимого воркера.
+        Пробуждает воркер точно по откату серверного таймера (без блокировки соседних воркеров).
+        """
+        now_utc = datetime.now(timezone.utc)
+        target = run_at_utc if run_at_utc.tzinfo else run_at_utc.replace(tzinfo=timezone.utc)
+        delay = max(1.0, min((target - now_utc).total_seconds(), 86500.0))
+
+        old_task = self._wakeup_tasks.get(worker_name)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+
+        st = self.worker_status.setdefault(worker_name, {})
+        st["next_wakeup_at"] = target.isoformat()
+
+        async def _runner() -> None:
+            try:
+                await asyncio.sleep(delay)
+                if self.health_monitor and self.health_monitor.is_maintenance:
+                    return
+                worker_map = {
+                    "poker": self.poker_worker,
+                    "fartovy": self.fartovy_worker,
+                    "zaruby": self.zaruby_worker,
+                    "boss": self.boss_worker,
+                    "prison": self.prison_worker,
+                    "routine": self.routine_worker,
+                    "social": self.social_worker,
+                }
+                w = worker_map.get(worker_name)
+                if w is not None and hasattr(w, "run_cycle"):
+                    st["status"] = "running"
+                    st["last_run_at"] = datetime.now(timezone.utc).isoformat()
+                    res = await w.run_cycle()
+                    st["status"] = "idle"
+                    st["last_result"] = res.get("status") if isinstance(res, dict) else "ok"
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                st["status"] = "error"
+                st["last_result"] = str(exc)
+                logger.debug("Wakeup error for %s: %s", worker_name, exc)
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._wakeup_tasks[worker_name] = loop.create_task(_runner())
+        except RuntimeError:
+            pass
 
     def set_boss_fast_mode(self, active: bool) -> None:
         """Переключает интервал проверки боссов (12с в бою / 60с в простое)."""
@@ -329,6 +384,9 @@ def create_scheduler(
     boss_worker: Optional[BossWorker] = None,
     prison_worker: Optional[PrisonWorker] = None,
     social_worker: Optional[SocialWorker] = None,
+    poker_worker: Optional[Any] = None,
+    fartovy_worker: Optional[Any] = None,
+    zaruby_worker: Optional[Any] = None,
     routine_interval_minutes: Optional[int] = None,
     boss_interval_minutes: Optional[int] = None,
     prison_interval_minutes: Optional[int] = None,
@@ -345,6 +403,40 @@ def create_scheduler(
         social_worker=social_worker,
     )
     setattr(scheduler, "controller", controller)
+    controller.poker_worker = poker_worker
+    controller.fartovy_worker = fartovy_worker
+    controller.zaruby_worker = zaruby_worker
+
+    if poker_worker is not None:
+        poker_worker.on_wakeup_schedule = controller.schedule_wakeup
+        scheduler.add_job(
+            poker_worker.run_cycle,
+            trigger="interval",
+            minutes=4,
+            id=f"poker_worker_{acc_id}",
+            replace_existing=True,
+            max_instances=1,
+        )
+    if fartovy_worker is not None:
+        fartovy_worker.on_wakeup_schedule = controller.schedule_wakeup
+        scheduler.add_job(
+            fartovy_worker.run_cycle,
+            trigger="interval",
+            minutes=4,
+            id=f"fartovy_worker_{acc_id}",
+            replace_existing=True,
+            max_instances=1,
+        )
+    if zaruby_worker is not None:
+        zaruby_worker.on_wakeup_schedule = controller.schedule_wakeup
+        scheduler.add_job(
+            zaruby_worker.run_cycle,
+            trigger="interval",
+            minutes=4,
+            id=f"zaruby_worker_{acc_id}",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     r_interval = routine_interval_minutes or settings.ROUTINE_INTERVAL_MINUTES
     routine_worker.on_business_reschedule = controller.reschedule_business_in

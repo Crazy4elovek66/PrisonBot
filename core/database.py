@@ -136,6 +136,10 @@ def _migrate_bot_configs(connection) -> None:
         ("friends_parser_tier", "VARCHAR(20) DEFAULT 'accessible' NOT NULL"),
         ("friends_parser_min_authority", "BIGINT DEFAULT 0 NOT NULL"),
         ("friends_parser_max_authority", "BIGINT DEFAULT 0 NOT NULL"),
+        ("auto_poker_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("auto_fartovy_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("auto_zaruby_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("auto_zaruby_tier", "VARCHAR(32) DEFAULT 'pacan' NOT NULL"),
     ]
 
     for col_name, col_type in col_defs:
@@ -312,7 +316,7 @@ def is_night_mode_active(config, now_utc=None) -> bool:
     Проверка активности Ночного режима (строго по МСК, Europe/Moscow).
     Отключает ТОЛЬКО автопризыв и автоатаку боссов.
     """
-    from datetime import timezone
+    from datetime import datetime, timezone
     from core.config import MSK_TZ
 
     if not getattr(config, "sleep_mode_enabled", False):
@@ -589,5 +593,65 @@ async def reset_katala_rubles_guard(
         row = res.scalar_one_or_none()
         if row:
             row.rubles_guard_tripped = False
+            row.guard_reason = None
+            await session.commit()
+
+
+async def get_game_guard_state(account_id: int, game_key: str, engine: Optional[AsyncEngine] = None) -> dict:
+    from sqlalchemy import select
+    from core.models import GameGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(GameGuardState).where(
+                GameGuardState.account_id == account_id,
+                GameGuardState.game_key == game_key,
+            )
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            return {"account_id": account_id, "game_key": game_key, "guard_tripped": False, "guard_reason": None}
+        return {
+            "account_id": row.account_id,
+            "game_key": row.game_key,
+            "guard_tripped": bool(row.guard_tripped),
+            "guard_reason": row.guard_reason,
+        }
+
+
+async def trip_game_guard(account_id: int, game_key: str, reason: str, engine: Optional[AsyncEngine] = None) -> None:
+    from sqlalchemy import select
+    from core.models import GameGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(GameGuardState).where(
+                GameGuardState.account_id == account_id,
+                GameGuardState.game_key == game_key,
+            )
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            session.add(GameGuardState(account_id=account_id, game_key=game_key, guard_tripped=True, guard_reason=reason))
+        else:
+            row.guard_tripped = True
+            row.guard_reason = reason
+        await session.commit()
+
+
+async def reset_game_guard(account_id: int, game_key: str, engine: Optional[AsyncEngine] = None) -> None:
+    from sqlalchemy import select
+    from core.models import GameGuardState
+
+    async with get_session(engine) as session:
+        res = await session.execute(
+            select(GameGuardState).where(
+                GameGuardState.account_id == account_id,
+                GameGuardState.game_key == game_key,
+            )
+        )
+        row = res.scalar_one_or_none()
+        if row:
+            row.guard_tripped = False
             row.guard_reason = None
             await session.commit()
