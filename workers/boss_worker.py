@@ -1190,7 +1190,26 @@ class BossWorker:
                 if outcome == "victory" and before_prof is not None:
                     after_prof = await self._fetch_profile_snapshot_safe()
                     self._merge_profile_delta_rewards(parsed, before_prof, after_prof)
+                    if not (parsed.get("rewards") or parsed.get("drops")):
+                        await asyncio.sleep(1.5 if self.enable_jitter else 0.02)
+                        after_prof_retry = await self._fetch_profile_snapshot_safe()
+                        self._merge_profile_delta_rewards(parsed, before_prof, after_prof_retry)
 
+                if outcome == "victory" and not (parsed.get("rewards") or parsed.get("drops")):
+                    logger.warning(
+                        f"Победа над {resolved_boss_name}, но награды пустые после парсинга и дельты! claim_res={str(claim_res)[:600]}"
+                    )
+                    self._apply_catalog_fallback_rewards(
+                        parsed,
+                        boss_id=(battle.get("bossId") if isinstance(battle, dict) else None) or self._last_active_boss_id,
+                        boss_name=resolved_boss_name,
+                        mode=resolved_mode,
+                    )
+
+                logger.info(
+                    f"Итог боя с боссом '{resolved_boss_name}': outcome={outcome}, "
+                    f"rewards={parsed.get('rewards')}, drops={parsed.get('drops')}"
+                )
                 await self._log_action("claim_boss_reward", "/api/boss/claim", 200, outcome == "victory", {
                     "outcome": outcome,
                     "claim_res": claim_res,
@@ -1199,8 +1218,9 @@ class BossWorker:
                 if outcome == "defeat":
                     snap = await self._load_live_battle_snapshot()
                     b_id = (battle.get("bossId") if isinstance(battle, dict) else None) or self._last_active_boss_id
+                    claim_rw_dict = claim_res.get("rewards") if isinstance(claim_res, dict) and isinstance(claim_res.get("rewards"), dict) else None
                     resolved_hp = resolve_defeat_boss_hp(
-                        server_payload=claim_res if isinstance(claim_res, dict) else None,
+                        server_payload=claim_rw_dict or (claim_res if isinstance(claim_res, dict) else None),
                         battle=battle if isinstance(battle, dict) else None,
                         snapshot=snap,
                         boss_id=b_id,
@@ -1362,7 +1382,7 @@ class BossWorker:
             return True
         return False
 
-    async def _claim_reward_with_retry(self, cid: Optional[str], max_retries: int = 4) -> Any:
+    async def _claim_reward_with_retry(self, cid: Optional[str], max_retries: int = 6) -> Any:
         """Вызывает claim_reward с коротким ретраем при статусе not_ready / Reward is being finalized."""
         claim_res = await self.api.claim_reward(cid)
         attempt = 0
@@ -1400,10 +1420,13 @@ class BossWorker:
         if not isinstance(profile_data, dict):
             return {}
         p = profile_data.get("player") if isinstance(profile_data.get("player"), dict) else profile_data
+        cur_sub = p.get("currencies") if isinstance(p.get("currencies"), dict) else {}
         res_sub = p.get("resources") if isinstance(p.get("resources"), dict) else {}
         out: Dict[str, int] = {}
-        for key in ("cigarettes", "sugar", "rubles", "paper", "soap", "authority", "keys", "respect", "energy"):
-            val = res_sub.get(key)
+        for key in ("cigarettes", "sugar", "rubles", "paper", "soap", "authority", "keys", "respect", "energy", "signets", "chips"):
+            val = cur_sub.get(key)
+            if val is None:
+                val = res_sub.get(key)
             if val is None:
                 val = p.get(key)
             if val is not None:
@@ -1519,6 +1542,64 @@ class BossWorker:
         return dur_sec, f"{h:02d}:{m:02d}:{s:02d}"
 
     @staticmethod
+    def _apply_catalog_fallback_rewards(
+        parsed: Dict[str, Any],
+        *,
+        boss_id: Optional[Any] = None,
+        boss_name: Optional[str] = None,
+        mode: Optional[str] = None,
+    ) -> None:
+        """Fallback на гарантированные награды из bosses_catalog.json только при 100% подтверждённой победе."""
+        from core.drop_parser import CURRENCY_LABELS
+        items = _load_bosses_catalog() or FALLBACK_BOSSES
+        if not items:
+            return
+        norm_mode = _normalize_boss_mode(mode) or "pacansky"
+        norm_name = str(boss_name or "").strip().lower()
+        target = None
+        for b in items:
+            if not isinstance(b, dict):
+                continue
+            if boss_id is not None and b.get("id") is not None and str(b.get("id")) == str(boss_id):
+                target = b
+                break
+            if norm_name and str(b.get("name") or b.get("title") or "").strip().lower() == norm_name:
+                target = b
+                break
+        if not target:
+            return
+        modes = target.get("modes") if isinstance(target.get("modes"), dict) else {}
+        m_obj = modes.get(norm_mode) if isinstance(modes.get(norm_mode), dict) else {}
+        gr = m_obj.get("globalReward") or target.get("globalReward")
+        if not isinstance(gr, dict):
+            return
+        rewards = parsed.setdefault("rewards", [])
+        if gr.get("authority") and int(gr["authority"]) > 0:
+            rewards.append({"currency": "authority", "label": CURRENCY_LABELS.get("authority", "Авторитет"), "amount": int(gr["authority"])})
+        if gr.get("keys") and int(gr["keys"]) > 0:
+            rewards.append({"currency": "keys", "label": CURRENCY_LABELS.get("keys", "Ключи"), "amount": int(gr["keys"])})
+        for cur in (gr.get("currencies") or []):
+            if isinstance(cur, dict):
+                ck = DropParser._normalize_currency(str(cur.get("type") or cur.get("currency") or ""))
+                amt = int(cur.get("amount") or 0)
+                if ck and amt > 0 and not any(r["currency"] == ck for r in rewards):
+                    rewards.append({"currency": ck, "label": CURRENCY_LABELS.get(ck, ck), "amount": amt})
+        if rewards:
+            meta_j = parsed.setdefault("meta_json", {})
+            meta_j["reward_lines"] = DropParser.format_boss_rewards_lines(parsed)
+            meta_j["rewards"] = [
+                {
+                    "type": "currency",
+                    "key": rw["currency"],
+                    "name": rw["label"],
+                    "amount": rw["amount"],
+                    "icon": f"assets/icons/{rw['currency']}.webp",
+                }
+                for rw in rewards
+            ]
+            parsed["subtitle"] = "Босс повержен (по каталогу)"
+
+    @staticmethod
     def classify_boss_outcome(
         claim_res: Optional[Dict[str, Any]],
         *,
@@ -1526,34 +1607,69 @@ class BossWorker:
         battle: Optional[Dict[str, Any]] = None,
         parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Строгая классификация исхода боя с боссом: victory | defeat."""
+        """
+        Строгая классификация исхода боя с боссом: victory | defeat.
+        Уровень 1: Явный вердикт сервера (в т.ч. внутри claim_res['rewards']['result']).
+        Уровень 2: Наличие реальных непустых наград / истечение таймера.
+        Уровень 3: Быстрые победы с hp <= 0 (без ложных побед на голом status='claimed').
+        """
         res = claim_res if isinstance(claim_res, dict) else {}
-        res_str = str(res.get("result") or res.get("status") or res.get("outcome") or "").lower().strip()
-        if (
-            res_str in ("defeat", "lose", "lost", "timeout", "expired", "failed", "escaped")
-            or res.get("isWin") is False
-            or res.get("win") is False
-            or res.get("isDefeat") is True
-        ):
-            return "defeat"
-        if (
-            res_str in ("win", "victory", "killed", "defeated_boss", "claimed", "ok", "success")
-            or res.get("isWin") is True
-            or res.get("win") is True
-        ):
-            return "victory"
+        sub_dicts = [res]
+        for sub_k in ("rewards", "data", "result"):
+            sub_v = res.get(sub_k)
+            if isinstance(sub_v, dict):
+                sub_dicts.append(sub_v)
 
+        defeat_words = ("defeat", "lose", "loss", "lost", "timeout", "expired", "failed", "escaped")
+        victory_words = ("win", "victory", "won", "killed", "defeated_boss")
+
+        # Уровень 1: Явный вердикт сервера (в т.ч. вложенный rewards.result)
+        for d in sub_dicts:
+            for k in ("result", "outcome", "status"):
+                raw_val = d.get(k)
+                if isinstance(raw_val, str):
+                    val_low = raw_val.lower().strip()
+                    if val_low in defeat_words:
+                        return "defeat"
+                    if val_low in victory_words:
+                        return "victory"
+            if (
+                d.get("isWin") is False
+                or d.get("win") is False
+                or d.get("isVictory") is False
+                or d.get("victory") is False
+                or d.get("won") is False
+                or d.get("isDefeat") is True
+            ):
+                return "defeat"
+            if (
+                d.get("isWin") is True
+                or d.get("win") is True
+                or d.get("isVictory") is True
+                or d.get("victory") is True
+                or d.get("won") is True
+                or d.get("bossDefeated") is True
+            ):
+                return "victory"
+            msg_low = f"{d.get('message') or ''} {d.get('error') or ''}".lower()
+            if any(m in msg_low for m in ("time expired", "boss escaped", "you lost", "battle failed", "время вышло", "не побежден")):
+                return "defeat"
+
+        # Уровень 2: Реальные непустые награды
         has_loot = bool(parsed and ((parsed.get("rewards") or []) or (parsed.get("drops") or [])))
         if has_loot:
             return "victory"
-        if res.get("success") is True:
-            return "victory"
-        if last_hp is not None and int(last_hp) > 0:
-            return "defeat"
+
+        # Проверка истечения таймера боя
         if isinstance(battle, dict) and battle.get("endsAt"):
             ends_dt = parse_iso_utc(battle.get("endsAt"))
-            if ends_dt is not None and datetime.now(timezone.utc) >= ends_dt and (last_hp is None or int(last_hp) > 0):
-                return "defeat"
+            if ends_dt is not None and datetime.now(timezone.utc) >= ends_dt:
+                if last_hp is None or int(last_hp) > 0:
+                    return "defeat"
+
+        if last_hp is not None and int(last_hp) > 0:
+            return "defeat"
+
         return "victory" if (last_hp is not None and int(last_hp) <= 0) else "defeat"
 
     async def _try_summon_next_boss(
@@ -1972,7 +2088,7 @@ class BossWorker:
                         title_str = f"{vic['boss_name']} ({m_str})" if m_str else str(vic["boss_name"])
                         lines.append(f"👊 <b>Победа над боссом: {title_str}</b>")
                         reward_summary = DropParser.format_boss_rewards_inline(vic)
-                        lines.append(f"🔥 Награды: {reward_summary or 'получены'}")
+                        lines.append(f"🔥 Награды: {reward_summary or 'нет данных от сервера'}")
                         dur_fmt = vic.get("duration_formatted") or "00:00:00"
                         lines.append(f"⏱️ Бой продлился: {dur_fmt}")
                     for df in defeats:

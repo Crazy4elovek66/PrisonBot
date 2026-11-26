@@ -23,6 +23,11 @@ CURRENCY_LABELS = {
     "poison": "Яд",
     "knife": "Финка",
     "gunshot": "Самопал",
+    "experience": "Опыт",
+    "signet": "Печатки",
+    "signets": "Печатки",
+    "chips": "Фишки",
+    "votes": "Голоса",
 }
 
 MODE_TITLES = {
@@ -93,8 +98,10 @@ class DropParser:
             return "sugar"
         if k in ("rubles", "rub", "coins"):
             return "rubles"
-        if k in ("paper", "toiletpaper"):
+        if k in ("paper", "toiletpaper", "toilet_paper"):
             return "paper"
+        if k in ("authority", "auth", "avtoritet"):
+            return "authority"
         if k in ("soap",):
             return "soap"
         if k in ("keys", "key"):
@@ -115,6 +122,14 @@ class DropParser:
             return "knife"
         if k in ("gunshot", "samopal", "pistol"):
             return "gunshot"
+        if k in ("experience", "exp"):
+            return "experience"
+        if k in ("signet", "signets"):
+            return "signets"
+        if k in ("chips",):
+            return "chips"
+        if k in ("votes", "vote"):
+            return "votes"
         return None
 
     @staticmethod
@@ -235,69 +250,116 @@ class DropParser:
                             "amount": int(v),
                         })
 
-        # 3. Валюты внутри payload.get("currencies") / data / result / globalReward / personalReward / loot
+        # 3. Валюты внутри payload / data / result / rewards / globalReward / personalReward / loot
         data_sub = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         result_sub = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        rw_dict = raw_rewards if isinstance(raw_rewards, dict) else {}
         containers = [
             payload,
             data_sub,
             result_sub,
-            raw_rewards if isinstance(raw_rewards, dict) else {},
+            rw_dict,
             payload.get("globalReward") if isinstance(payload.get("globalReward"), dict) else {},
             payload.get("personalReward") if isinstance(payload.get("personalReward"), dict) else {},
             payload.get("loot") if isinstance(payload.get("loot"), dict) else {},
+            rw_dict.get("globalReward") if isinstance(rw_dict.get("globalReward"), dict) else {},
+            rw_dict.get("personalReward") if isinstance(rw_dict.get("personalReward"), dict) else {},
+            rw_dict.get("loot") if isinstance(rw_dict.get("loot"), dict) else {},
+            rw_dict.get("reward") if isinstance(rw_dict.get("reward"), dict) else {},
+            rw_dict.get("garant") if isinstance(rw_dict.get("garant"), dict) else {},
+            rw_dict.get("guaranteed") if isinstance(rw_dict.get("guaranteed"), dict) else {},
+            rw_dict.get("chance") if isinstance(rw_dict.get("chance"), dict) else {},
+            rw_dict.get("bonus") if isinstance(rw_dict.get("bonus"), dict) else {},
+            rw_dict.get("resources") if isinstance(rw_dict.get("resources"), dict) else {},
+            data_sub.get("globalReward") if isinstance(data_sub.get("globalReward"), dict) else {},
+            result_sub.get("globalReward") if isinstance(result_sub.get("globalReward"), dict) else {},
         ]
         consumed_keys = {
-            "success", "result", "status", "outcome", "win", "isWin", "isDefeat",
+            "success", "result", "status", "outcome", "win", "isWin", "isVictory", "victory", "won", "isDefeat",
             "bossId", "bossName", "title", "mode", "solo", "isSolo", "sessionId", "claimId",
             "rewards", "reward", "currencies", "globalReward", "personalReward", "loot", "drops", "items",
+            "droppedItems", "newItems", "resources", "garant", "guaranteed", "chance", "bonus", "stats",
             "rewardSets", "soloSetReward", "tattoo", "tattoos", "clothing", "clothes", "wardrobe",
             "complect", "complects", "room", "rooms", "camera", "chambers", "hata",
             "collectionDrop", "collections", "stashes", "nyachki", "caches",
-            "hiddenItems", "stashedGear", "stashGear", "zanykanny", "chests", "bauls",
+            "hiddenItems", "stashedGear", "stashGear", "stashGearReward", "bossChestDrop",
+            "zanykanny", "chests", "bauls",
+            "topDamage", "rublesByDamage", "authorityByDamage", "bonusKeysByDamage",
+            "playerStats", "combosForBoss", "newAchievements", "lastKillers", "lastComboSolver",
             "boss", "player", "message", "error", "time", "startedAt", "endsAt", "hp", "maxHp", "currentHp",
         }
+        def _add_reward_amt(c_key: str, amt_val: Any) -> None:
+            try:
+                amt_int = int(float(amt_val))
+            except (TypeError, ValueError):
+                return
+            if amt_int <= 0:
+                return
+            for existing_rw in rewards:
+                if existing_rw["currency"] == c_key:
+                    return
+            rewards.append({
+                "currency": c_key,
+                "label": CURRENCY_LABELS.get(c_key, c_key),
+                "amount": amt_int,
+            })
+
+        def _add_or_sum_reward(c_key: str, amt_val: Any) -> None:
+            try:
+                amt_int = int(float(amt_val))
+            except (TypeError, ValueError):
+                return
+            if amt_int <= 0:
+                return
+            for existing_rw in rewards:
+                if existing_rw["currency"] == c_key:
+                    existing_rw["amount"] = int(existing_rw["amount"]) + amt_int
+                    return
+            rewards.append({
+                "currency": c_key,
+                "label": CURRENCY_LABELS.get(c_key, c_key),
+                "amount": amt_int,
+            })
+
         for container in containers:
             if not container:
                 continue
-            cur_block = container.get("currencies")
-            if isinstance(cur_block, dict):
-                for k, v in cur_block.items():
-                    c_key = cls._normalize_currency(k)
-                    if c_key and isinstance(v, (int, float)) and v > 0:
-                        if not any(r["currency"] == c_key for r in rewards):
-                            rewards.append({
-                                "currency": c_key,
-                                "label": CURRENCY_LABELS.get(c_key, c_key),
-                                "amount": int(v),
-                            })
-            elif isinstance(cur_block, list):
-                for item in cur_block:
-                    if isinstance(item, dict):
-                        t = item.get("type") or item.get("currency")
-                        amt = item.get("amount") or item.get("value") or 0
-                        c_key = cls._normalize_currency(str(t))
-                        if c_key and isinstance(amt, (int, float)) and amt > 0:
-                            if not any(r["currency"] == c_key for r in rewards):
-                                rewards.append({
-                                    "currency": c_key,
-                                    "label": CURRENCY_LABELS.get(c_key, c_key),
-                                    "amount": int(amt),
-                                })
+            for block_name in ("currencies", "resources"):
+                cur_block = container.get(block_name)
+                if isinstance(cur_block, dict):
+                    for k, v in cur_block.items():
+                        c_key = cls._normalize_currency(str(k))
+                        if c_key:
+                            _add_reward_amt(c_key, v)
+                elif isinstance(cur_block, list):
+                    for item in cur_block:
+                        if isinstance(item, dict):
+                            t = item.get("type") or item.get("currency") or item.get("key") or item.get("name")
+                            amt = item.get("amount") or item.get("value") or item.get("count") or item.get("quantity") or 0
+                            c_key = cls._normalize_currency(str(t))
+                            if c_key:
+                                _add_reward_amt(c_key, amt)
             for k in (
                 "authority", "cigarettes", "rubles", "sugar", "toiletPaper", "paper",
                 "soap", "keys", "respect", "energy", "talents", "talentPoints",
-                "poison", "knife", "gunshot",
+                "poison", "knife", "gunshot", "experience", "exp", "signet", "signets", "chips", "votes",
             ):
                 val = container.get(k)
-                if isinstance(val, (int, float)) and val > 0:
+                if val is not None and not isinstance(val, (bool, dict, list)):
                     c_key = cls._normalize_currency(k)
-                    if c_key and not any(r["currency"] == c_key for r in rewards):
-                        rewards.append({
-                            "currency": c_key,
-                            "label": CURRENCY_LABELS.get(c_key, c_key),
-                            "amount": int(val),
-                        })
+                    if c_key:
+                        _add_reward_amt(c_key, val)
+
+        # Доп. бонусы за урон из rewards (rublesByDamage, authorityByDamage, bonusKeysByDamage)
+        for dmg_src in (payload, rw_dict, data_sub, result_sub):
+            if not dmg_src:
+                continue
+            if dmg_src.get("rublesByDamage"):
+                _add_or_sum_reward("rubles", dmg_src.get("rublesByDamage"))
+            if dmg_src.get("authorityByDamage"):
+                _add_or_sum_reward("authority", dmg_src.get("authorityByDamage"))
+            if dmg_src.get("bonusKeysByDamage"):
+                _add_or_sum_reward("keys", dmg_src.get("bonusKeysByDamage"))
 
         # 3.1. Нычки / предметы коллекций, заныканный шмот, баулы
         if not cls._collection_item_map:
@@ -332,7 +394,7 @@ class DropParser:
                         "imageUrl": s_img or None,
                     })
 
-            for gear_key in ("hiddenItems", "stashedGear", "stashGear", "zanykanny", "chests", "bauls"):
+            for gear_key in ("hiddenItems", "stashedGear", "stashGear", "stashGearReward", "bossChestDrop", "zanykanny", "chests", "bauls"):
                 raw_gr = c_src.get(gear_key)
                 if not raw_gr:
                     continue
@@ -341,7 +403,7 @@ class DropParser:
                     if isinstance(gr, dict):
                         g_name = gr.get("name") or gr.get("title") or "Трофей"
                         g_cnt = gr.get("count") or gr.get("amount") or 1
-                        prefix = "Баул / Сундук" if gear_key in ("chests", "bauls") else "Заныканный шмот"
+                        prefix = "Баул / Сундук" if gear_key in ("chests", "bauls", "bossChestDrop") else "Заныканный шмот"
                         drops.append({
                             "kind": "stashed_gear",
                             "type": "stashed_gear",
@@ -488,7 +550,7 @@ class DropParser:
         b_name = cls._resolve_boss_name(payload, boss_name)
         title = f"Победа над боссом: {b_name}" + (f" ({mode_str})" if mode_str else "")
         reward_lines = cls.format_boss_rewards_lines({"rewards": rewards, "drops": drops})
-        subtitle = "Босс повержен" if reward_lines else "Награда получена"
+        subtitle = "Босс повержен" if reward_lines else "Нет данных о наградах от сервера"
         meta_rewards = [
             {
                 "type": "currency",

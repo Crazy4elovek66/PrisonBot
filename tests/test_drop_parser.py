@@ -170,3 +170,47 @@ def test_zero_loss_boss_claim_all_categories_and_prison_stash_no_try_on():
     assert len(p_stash["drops"]) == 1
     assert p_stash["drops"][0]["kind"] == "stash"
     assert p_stash["drops"][0]["type"] == "stash"
+
+
+def test_parse_boss_claim_nested_global_reward_and_damage_bonuses():
+    """Парсинг реального контракта POST /api/boss/claim (rewards.globalReward, *ByDamage, stashGearReward)."""
+    from core.drop_parser import DropParser
+
+    claim_payload = {
+        "success": True,
+        "status": "claimed",
+        "claimId": "01a214b5a76d782f92a508f666130076",
+        "rewards": {
+            "mode": "pacansky",
+            "title": "Палыч",
+            "bossId": 9,
+            "result": "victory",
+            "globalReward": {
+                "keys": 1,
+                "authority": 25,
+                "currencies": [
+                    {"type": "sugar", "amount": 25},
+                    {"type": "cigarettes", "amount": "150"},
+                ],
+            },
+            "rublesByDamage": 15,
+            "authorityByDamage": 10,
+            "bonusKeysByDamage": 1,
+            "stashGearReward": {"id": 55, "name": "Заточка"},
+        },
+    }
+    parsed = DropParser.parse_boss_claim(claim_payload, boss_name="Палыч", mode="pacansky")
+    cur_map = {r["currency"]: r["amount"] for r in parsed["rewards"]}
+    assert cur_map["keys"] == 2          # 1 + bonusKeysByDamage 1
+    assert cur_map["authority"] == 35     # 25 + authorityByDamage 10
+    assert cur_map["sugar"] == 25
+    assert cur_map["cigarettes"] == 150
+    assert cur_map["rubles"] == 15
+    assert any("Заточка" in d["title"] for d in parsed["drops"])
+    inline = DropParser.format_boss_rewards_inline(parsed)
+    assert "Ключи +2" in inline
+    assert "Авторитет +35" in inline
+    assert "Сахар +25" in inline
+    assert "Папиросы +150" in inline
+    assert "Рубли +15" in inline
+    assert "получены" not in inline
