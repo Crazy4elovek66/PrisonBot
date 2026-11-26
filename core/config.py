@@ -1,5 +1,15 @@
+from datetime import timedelta, timezone
 from typing import Dict
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        MSK_TZ = ZoneInfo("Europe/Moscow")
+    except ZoneInfoNotFoundError:
+        MSK_TZ = timezone(timedelta(hours=3))
+except Exception:
+    MSK_TZ = timezone(timedelta(hours=3))
 
 
 class Settings(BaseSettings):

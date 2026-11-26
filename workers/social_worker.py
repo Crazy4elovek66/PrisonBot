@@ -476,8 +476,11 @@ class SocialWorker:
                         p = profiles_by_id.get(uid, {})
                         nick = p.get("nickname") or p.get("name")
                         photo = p.get("photoUrl") or p.get("avatarUrl") or p.get("photo")
-                        lvl = int(p.get("level") or p.get("lvl") or 0)
                         auth = int(p.get("authority") or 0)
+                        lvl = int(p.get("level") or p.get("lvl") or 0)
+                        if lvl == 0 and auth > 0:
+                            from client.api.social import calculate_level_from_authority
+                            lvl = calculate_level_from_authority(auth)
                         bic_raw = p.get("biceps")
                         bic = int(bic_raw) if bic_raw is not None else 0
                         tal = int(p.get("talents") or p.get("talentsCount") or p.get("TalentsCount") or 0)

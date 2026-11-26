@@ -198,3 +198,74 @@ def test_state_hub_collections_slice_preserves_icons():
     changed, _ = hub.update_slice(1, "collections", {"success": True, "collections": [], "stashes": []})
     assert changed is False
     assert len(hub.get_slice(1, "collections").data["collections"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_resource_snapshots_persistence_msk_rollover_and_validation(tmp_path):
+    """
+    Проверка суточных дельт ресурсов (МСК):
+    1) фиксация базы и расчёт дельт;
+    2) персистентность после перезапуска БД (нового engine);
+    3) смена суток строго по МСК (23:55 МСК vs 00:05 МСК, когда в UTC еще прежний день);
+    4) защита от битых/пустых данных;
+    5) пересчёт resource_deltas в LiveStateHub.patch_profile_resources.
+    """
+    from datetime import datetime, timezone
+    from core.config import MSK_TZ
+    from core.database import (
+        get_engine,
+        init_db,
+        compute_daily_resource_deltas,
+        ensure_daily_resource_baseline,
+        get_daily_resource_baseline,
+    )
+    from core.state_hub import LiveStateHub
+
+    db_path = tmp_path / "daily_deltas.db"
+    db_url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    engine1 = get_engine(db_url)
+    await init_db(engine1)
+
+    t_2355_msk = datetime(2026, 11, 26, 23, 55, 0, tzinfo=MSK_TZ)
+    base_res = {"cigarettes": 5000, "sugar": 30000, "rubles": 200, "paper": 100, "soap": 10}
+    d1 = await compute_daily_resource_deltas(base_res, now_msk=t_2355_msk, engine=engine1)
+    assert d1 is not None
+    assert d1["day_msk"] == "2026-11-26"
+    assert d1["deltas"] == {"cigarettes": 0, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0}
+
+    # Последующее обновление в те же сутки МСК
+    upd_res = {"cigarettes": 5225, "sugar": 29800, "rubles": 208, "paper": 100, "soap": 12}
+    d2 = await compute_daily_resource_deltas(upd_res, now_msk=t_2355_msk, engine=engine1)
+    assert d2["deltas"] == {"cigarettes": 225, "sugar": -200, "rubles": 8, "paper": 0, "soap": 2}
+    await engine1.dispose()
+
+    # Имитация перезапуска сервиса (новый engine на том же файле БД)
+    engine2 = get_engine(db_url)
+    d2_after_restart = await compute_daily_resource_deltas(upd_res, now_msk=t_2355_msk, engine=engine2)
+    assert d2_after_restart["baseline"] == base_res
+    assert d2_after_restart["deltas"] == {"cigarettes": 225, "sugar": -200, "rubles": 8, "paper": 0, "soap": 2}
+
+    # Смена суток по МСК: 2026-11-26 21:05 UTC == 2026-11-27 00:05 MSK!
+    t_0005_msk_from_utc = datetime(2026, 11, 26, 21, 5, 0, tzinfo=timezone.utc)
+    d_next = await compute_daily_resource_deltas(upd_res, now_msk=t_0005_msk_from_utc, engine=engine2)
+    assert d_next["day_msk"] == "2026-11-27"
+    assert d_next["baseline"] == upd_res
+    assert d_next["deltas"] == {"cigarettes": 0, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0}
+
+    # Защита от битых/пустых данных
+    assert await ensure_daily_resource_baseline("2026-11-28", {}, engine=engine2) is None
+    assert await ensure_daily_resource_baseline("2026-11-28", {"cigarettes": -5, "sugar": 0, "rubles": 0, "paper": 0, "soap": 0}, engine=engine2) is None
+    assert await get_daily_resource_baseline("2026-11-28", engine=engine2) is None
+    await engine2.dispose()
+
+    # Проверка patch_profile_resources в LiveStateHub
+    hub = LiveStateHub()
+    hub.update_slice(1, "profile", {
+        "profile": {"id": 1, "level": 10},
+        "currencies": dict(base_res),
+        "resource_deltas": d1,
+    })
+    hub.patch_profile_resources(1, cigarettes=5500, rubles=250)
+    patched = hub.get_slice(1, "profile").data
+    assert patched["resource_deltas"]["deltas"]["cigarettes"] == 500
+    assert patched["resource_deltas"]["deltas"]["rubles"] == 50

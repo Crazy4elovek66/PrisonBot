@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v12" in sw
+    assert "prisonbot-assets-v15" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,18 +197,18 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261125_17";' in js
+    assert 'const ASSET_VERSION = "20261126_03";' in js
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261125_17" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261126_03" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261125_17"',
-        'src="assets/icons/room_reward.webp?v=20261125_17"',
-        'src="assets/icons/complect.webp?v=20261125_17"',
-        'src="assets/icons/podogrev.webp?v=20261125_17"',
-        'src="assets/icons/authority.webp?v=20261125_17"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261125_17"',
+        'src="assets/icons/boss.webp?v=20261126_03"',
+        'src="assets/icons/room_reward.webp?v=20261126_03"',
+        'src="assets/icons/complect.webp?v=20261126_03"',
+        'src="assets/icons/podogrev.webp?v=20261126_03"',
+        'src="assets/icons/authority.webp?v=20261126_03"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_03"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -250,7 +250,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
         + "    const r1 = resolveAppAssetUrl(inp);\n"
         + "    const r2 = resolveAppAssetUrl(r1);\n"
         + "    if (r1 !== r2) throw new Error('Not idempotent: ' + r1 + ' vs ' + r2);\n"
-        + "    if (r1.includes('v=20261125_17')) throw new Error('Proxy url polluted with v=: ' + r1);\n"
+        + "    if (r1.includes('v=20261126_03')) throw new Error('Proxy url polluted with v=: ' + r1);\n"
         + "    if (p.startsWith('/prison')) {\n"
         + "      if (!r1.startsWith('/prison/api/v1/assets/proxy?path=')) throw new Error('Bad prison url: ' + r1);\n"
         + "      if (r1.includes('/prison/prison')) throw new Error('Double prefix: ' + r1);\n"
@@ -262,7 +262,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
         + "    const r1 = resolveAppAssetUrl(inp);\n"
         + "    const r2 = resolveAppAssetUrl(r1);\n"
         + "    if (r1 !== r2) throw new Error('Icon not idempotent: ' + r1 + ' vs ' + r2);\n"
-        + "    if (!r1.includes('v=20261125_17')) throw new Error('Missing icon version: ' + r1);\n"
+        + "    if (!r1.includes('v=20261126_03')) throw new Error('Missing icon version: ' + r1);\n"
         + "    if ((r1.match(/\\?v=/g) || []).length !== 1) throw new Error('Duplicate ?v=: ' + r1);\n"
         + "    if (p.startsWith('/prison')) {\n"
         + "      if (!r1.startsWith('/prison/')) throw new Error('Bad prison icon: ' + r1);\n"
@@ -475,3 +475,272 @@ console.log("OK_DEFEAT_NOTIF_RUNTIME");
     proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_DEFEAT_NOTIF_RUNTIME" in proc.stdout
+
+
+def test_wardrobe_currency_ru_hood_suppression_moscow_time_and_mobile_css():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "web" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    def _extract_fn(src: str, name: str) -> str:
+        s = src.index(f"function {name}(")
+        depth = 0
+        in_fn = False
+        for i in range(s, len(src)):
+            if src[i] == "{":
+                depth += 1
+                in_fn = True
+            elif src[i] == "}":
+                depth -= 1
+                if in_fn and depth == 0:
+                    return src[s : i + 1]
+        raise AssertionError(f"Could not extract {name}")
+
+    fn_currency = _extract_fn(js, "formatShopCurrencyRu")
+    fn_parse = _extract_fn(js, "parseUtcOrIsoDate")
+    fn_msk = _extract_fn(js, "formatMoscowTime")
+    fn_hood = _extract_fn(js, "applyClothingSuppressionRules")
+    rules_start = js.index("const CLOTHING_SUPPRESS_RULES =")
+    rules_end = js.index("function applyClothingSuppressionRules(")
+    rules_code = js[rules_start:rules_end]
+
+    node_script = "\n".join([fn_currency, fn_parse, fn_msk, rules_code, fn_hood]) + """
+// 1. Локализация валют
+const checks = [
+  ["soap", 700, "мыла"],
+  ["rubles", 1500, "руб."],
+  ["cigarettes", 200, "папирос"],
+  ["sugar", 50, "сахара"],
+  ["paper", 15, "туал. бумаги"],
+];
+for (const [cur, amt, exp] of checks) {
+  const got = formatShopCurrencyRu(cur, amt);
+  if (got !== exp) throw new Error(`Currency mismatch for ${cur}: got ${got}, expected ${exp}`);
+}
+
+// 2. Капюшон «Буйство» скрывает головной убор (zone 1) и очки/маску (zone 2)
+const hoodZones = {
+  "1": "assets/PrisonV3/Clotch/hat1.png",
+  "2": "assets/PrisonV3/Clotch/mask2.png",
+  "4": { clothingId: 83, imageUrl: "assets/PrisonV3/Clotch/dubil1/C/4.png" },
+  "5": "assets/PrisonV3/Clotch/dubil1/C/5.png",
+};
+applyClothingSuppressionRules(hoodZones);
+if (hoodZones["1"] || hoodZones["2"]) throw new Error("Hood must suppress zones 1 and 2");
+if (!hoodZones["4"] || !hoodZones["5"]) throw new Error("Hood must keep zones 4 and 5");
+
+// Обычная кофта НЕ скрывает головной убор
+const normalZones = {
+  "1": "assets/PrisonV3/Clotch/hat1.png",
+  "4": { clothingId: 10, imageUrl: "assets/PrisonV3/Clotch/jacket10.png" },
+};
+applyClothingSuppressionRules(normalZones);
+if (!normalZones["1"]) throw new Error("Normal clothing must keep zone 1");
+
+// 3. Часовой пояс МСК (UTC+3)
+const t1 = formatMoscowTime("2026-11-26 00:28:00");
+if (t1 !== "03:28") throw new Error(`Expected 03:28 MSK, got ${t1}`);
+const t2 = formatMoscowTime("2026-11-25 21:37:00");
+if (t2 !== "00:37") throw new Error(`Expected 00:37 MSK, got ${t2}`);
+
+console.log("OK_WARDROBE_TIME_RUNTIME");
+"""
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_WARDROBE_TIME_RUNTIME" in proc.stdout
+
+    # 4. Проверка адаптивных CSS-правил
+    for selector in (
+        ".routine-action-row",
+        ".routine-action-controls",
+        ".kolsik-currency-select",
+        ".prison-actions-row",
+        ".master-train-row",
+        ".wardrobe-subtabs-row",
+    ):
+        assert selector in css
+
+
+def test_prisons_energy_bar_and_wardrobe_stat_badges_runtime_node():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    # 1. Проверка разметки прогресс-бара энергии под кнопками в Ходках
+    pos_btns = html.index('id="btn-prison-work-all"')
+    pos_bar = html.index('id="prison-energy-bar-wrap"')
+    assert pos_bar > pos_btns
+    for el_id in ("prison-stat-energy", "prison-energy-progress-fill", "prison-energy-restore-timer"):
+        assert f'id="{el_id}"' in html
+
+    # 2. Runtime-тест renderItemStatBadges и синхронного updateEnergyTimer
+    def _extract_fn(src: str, name: str) -> str:
+        s = src.index(f"function {name}(")
+        depth = 0
+        in_fn = False
+        for i in range(s, len(src)):
+            if src[i] == "{":
+                depth += 1
+                in_fn = True
+            elif src[i] == "}":
+                depth -= 1
+                if in_fn and depth == 0:
+                    return src[s : i + 1]
+        raise AssertionError(f"Could not extract {name}")
+
+    fn_badges = _extract_fn(js, "renderItemStatBadges")
+    fn_energy = _extract_fn(js, "updateEnergyTimer")
+    fn_num = _extract_fn(js, "formatNum")
+
+    node_script = (
+        "function gameIcon(k) { return `<img src=\"/static/assets/icons/${k}.webp\">`; }\n"
+        "function setTextIfChanged(el, txt) { if (el) el.textContent = String(txt); }\n"
+        "function setWidthIfChanged(el, w) { if (el) el.style.width = String(w); }\n"
+        + "\n".join([fn_num, fn_badges, fn_energy])
+        + """
+// A. Проверка карточки тапок с authority: 100
+const tapkiHtml = renderItemStatBadges({ authority: 100 }, true);
+if (!tapkiHtml.includes("authority.webp") || !tapkiHtml.includes("+100")) {
+  throw new Error("Expected authority badge +100, got: " + tapkiHtml);
+}
+const multiHtml = renderItemStatBadges({ authority: 200, poison: 9, gunshot: 4 }, false);
+if (!multiHtml.includes("authority.webp") || !multiHtml.includes("poison.webp") || !multiHtml.includes("gunshot.webp")) {
+  throw new Error("Expected all badges, got: " + multiHtml);
+}
+
+// B. Проверка синхронизации двух прогресс-баров энергии
+const elems = {
+  "stat-energy": { textContent: "" },
+  "prison-stat-energy": { textContent: "" },
+  "energy-progress-fill": { style: { width: "" } },
+  "prison-energy-progress-fill": { style: { width: "" } },
+  "energy-restore-timer": { textContent: "" },
+  "prison-energy-restore-timer": { textContent: "" },
+};
+globalThis.document = { getElementById: (id) => elems[id] || null };
+
+globalThis.playerProfile = {
+  profile: {
+    energy: 1,
+    maxEnergy: 50,
+    lastEnergyRestoreTime: new Date(Date.now() - 154 * 1000).toISOString(),
+    energyRestoreIntervalSeconds: 300,
+  },
+};
+updateEnergyTimer();
+if (elems["stat-energy"].textContent !== "1/50" || elems["prison-stat-energy"].textContent !== "1/50") {
+  throw new Error("Energy text out of sync");
+}
+if (elems["energy-progress-fill"].style.width !== "2%" || elems["prison-energy-progress-fill"].style.width !== "2%") {
+  throw new Error("Energy fill out of sync");
+}
+if (!elems["prison-energy-restore-timer"].textContent.includes("02:") || elems["energy-restore-timer"].textContent !== elems["prison-energy-restore-timer"].textContent) {
+  throw new Error("Energy timer out of sync: " + elems["prison-energy-restore-timer"].textContent);
+}
+
+// Полная энергия 50/50
+globalThis.playerProfile.profile.energy = 50;
+updateEnergyTimer();
+if (elems["prison-stat-energy"].textContent !== "50/50" || elems["prison-energy-restore-timer"].textContent !== "восстановление: Максимум") {
+  throw new Error("Full energy state mismatch");
+}
+
+console.log("OK_PRISONS_ENERGY_AND_BADGES");
+"""
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_PRISONS_ENERGY_AND_BADGES" in proc.stdout
+
+
+def test_home_resource_deltas_html_and_node_runtime():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    for rk in ("cigarettes", "sugar", "rubles", "paper", "soap"):
+        assert f'id="res-{rk}-delta"' in html
+
+    def _extract_fn(src: str, name: str) -> str:
+        s = src.index(f"function {name}(")
+        depth = 0
+        in_fn = False
+        for i in range(s, len(src)):
+            if src[i] == "{":
+                depth += 1
+                in_fn = True
+            elif src[i] == "}":
+                depth -= 1
+                if in_fn and depth == 0:
+                    return src[s : i + 1]
+        raise AssertionError(f"Could not extract {name}")
+
+    fn_num = _extract_fn(js, "formatNum")
+    fn_parse = _extract_fn(js, "parseUtcOrIsoDate")
+    fn_msk = _extract_fn(js, "formatMoscowTime")
+    fn_fmt_delta = _extract_fn(js, "formatResourceDelta")
+    fn_render_deltas = _extract_fn(js, "renderResourceDeltas")
+
+    node_script = (
+        "function setTextIfChanged(el, txt) { if (el) el.textContent = String(txt); }\n"
+        + "\n".join([fn_num, fn_parse, fn_msk, fn_fmt_delta, fn_render_deltas])
+        + """
+const pos = formatResourceDelta(1250);
+if (!pos.text.startsWith("+1") || !pos.text.includes("250") || pos.cls !== "is-positive") {
+  throw new Error("Positive delta mismatch: " + JSON.stringify(pos));
+}
+const neg = formatResourceDelta(-340);
+if (neg.text !== "-340" || neg.cls !== "is-negative") {
+  throw new Error("Negative delta mismatch: " + JSON.stringify(neg));
+}
+const zero = formatResourceDelta(0);
+if (zero.text !== "0" || zero.cls !== "is-zero") {
+  throw new Error("Zero delta mismatch: " + JSON.stringify(zero));
+}
+const empty = formatResourceDelta(null);
+if (empty.text !== "" || empty.cls !== "is-empty") {
+  throw new Error("Empty delta mismatch: " + JSON.stringify(empty));
+}
+
+const elems = {
+  "res-cigarettes-delta": { className: "", textContent: "", title: "" },
+  "res-sugar-delta": { className: "", textContent: "", title: "" },
+  "res-rubles-delta": { className: "", textContent: "", title: "" },
+  "res-paper-delta": { className: "", textContent: "", title: "" },
+  "res-soap-delta": { className: "", textContent: "", title: "" },
+};
+globalThis.document = { getElementById: (id) => elems[id] || null };
+
+renderResourceDeltas(
+  {
+    day_msk: "2026-11-26",
+    captured_at: "2026-11-26T00:05:00+03:00",
+    baseline: { cigarettes: 5000, sugar: 30000, rubles: 200, paper: 100, soap: 10 },
+    deltas: { cigarettes: 1250, sugar: -340, rubles: 0, paper: 5, soap: -2 },
+  },
+  { cigarettes: 6250, sugar: 29660, rubles: 200, paper: 105, soap: 8 }
+);
+
+if (!elems["res-cigarettes-delta"].className.includes("is-positive")) throw new Error("Missing is-positive");
+if (!elems["res-cigarettes-delta"].title.includes("00:05") || !elems["res-cigarettes-delta"].title.includes("6") || !elems["res-cigarettes-delta"].title.includes("250")) {
+  throw new Error("Bad tooltip: " + elems["res-cigarettes-delta"].title);
+}
+if (!elems["res-sugar-delta"].className.includes("is-negative")) throw new Error("Missing is-negative");
+if (!elems["res-rubles-delta"].className.includes("is-zero")) throw new Error("Missing is-zero");
+
+console.log("OK_RESOURCE_DELTAS_RUNTIME");
+"""
+    )
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
+    assert "OK_RESOURCE_DELTAS_RUNTIME" in proc.stdout
+

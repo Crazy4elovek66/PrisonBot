@@ -105,3 +105,38 @@ async def test_katala_play_free_daily_game_safety():
     assert res["status"] == "success"
     assert k_api.started is True
     assert k_api.finished is True
+
+
+@pytest.mark.asyncio
+async def test_katala_last_free_play_time_24h_contract():
+    """Проверка реального поля ответа /api/card/state: lastFreePlayTime (24ч кулдаун)."""
+    from datetime import datetime, timedelta, timezone
+
+    class _FakeKatala:
+        def __init__(self, last_ts):
+            self.last_ts = last_ts
+            self.started = False
+
+        async def get_state(self):
+            return {"level": 5, "lastFreePlayTime": self.last_ts, "rerollsMax": 0}
+
+        async def start_game(self):
+            self.started = True
+            return {"card1": "A_h", "card2": "A_d"}
+
+        async def finish_game(self):
+            return {"success": True, "result": {"cigarettes": 1000}}
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat().replace("+00:00", "Z")
+    api_ready = _FakeKatala(old_ts)
+    res_ok = await play_free_daily_game(api_ready)
+    assert res_ok["success"] is True
+    assert api_ready.started is True
+
+    recent_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    api_cd = _FakeKatala(recent_ts)
+    res_cd = await play_free_daily_game(api_cd)
+    assert res_cd["success"] is False
+    assert res_cd["status"] == "already_played"
+    assert res_cd["seconds_left"] > 70000
+    assert api_cd.started is False

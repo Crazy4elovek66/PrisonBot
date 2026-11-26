@@ -160,6 +160,23 @@ class DropParser:
                 lines.append(f"{em} {title}")
         return lines
 
+    @staticmethod
+    def format_boss_rewards_inline(parsed: Dict[str, Any]) -> str:
+        """Форматирует награды и выпавшие предметы в одну строку для Telegram."""
+        parts: List[str] = []
+        for rw in parsed.get("rewards") or []:
+            lbl = rw.get("label") or rw.get("name") or rw.get("currency") or "Ресурс"
+            amt = rw.get("amount") or 0
+            parts.append(f"{lbl} +{amt}")
+        for dr in parsed.get("drops") or []:
+            title = dr.get("title") or dr.get("name") or "Предмет"
+            sub = dr.get("subtitle")
+            if sub and sub.lower() not in title.lower():
+                parts.append(f"{title} ({sub})")
+            else:
+                parts.append(str(title))
+        return ", ".join(parts)
+
     @classmethod
     def parse_boss_claim(
         cls,
@@ -472,6 +489,25 @@ class DropParser:
         title = f"Победа над боссом: {b_name}" + (f" ({mode_str})" if mode_str else "")
         reward_lines = cls.format_boss_rewards_lines({"rewards": rewards, "drops": drops})
         subtitle = "Босс повержен" if reward_lines else "Награда получена"
+        meta_rewards = [
+            {
+                "type": "currency",
+                "key": rw["currency"],
+                "name": rw["label"],
+                "amount": rw["amount"],
+                "icon": f"assets/icons/{rw['currency']}.webp",
+            }
+            for rw in rewards
+        ] + [
+            {
+                "type": dr.get("kind") or dr.get("type") or "item",
+                "key": str(dr.get("itemId") or dr.get("setId") or dr.get("title") or "item"),
+                "name": dr.get("title") or dr.get("name") or "Предмет",
+                "amount": 1,
+                "icon": dr.get("imageUrl") or "",
+            }
+            for dr in drops
+        ]
 
         return {
             "category": "bosses",
@@ -484,6 +520,7 @@ class DropParser:
                 "outcome": "victory",
                 "boss_name": b_name,
                 "mode": mode_str or mode,
+                "rewards": meta_rewards,
                 "cosmetic_drops": cosmetic_drops,
                 "reward_lines": reward_lines,
             },

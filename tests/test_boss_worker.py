@@ -37,6 +37,118 @@ async def boss_setup():
 
 
 @pytest.mark.asyncio
+async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
+    """
+    Быстрая победа между опросами + 'Reward is being finalized' ->
+    система НЕ шлет поражение, ретраит claim, дополняет награды из дельты профиля,
+    считает длительность ЧЧ:ММ:СС и шлет строгий TG-формат победы без промежуточных атак/призывов.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from datetime import datetime, timezone, timedelta
+    from core.database import get_engine, init_db, get_session
+    from core.models import Account, Notification
+    from workers.boss_worker import BossWorker
+    from sqlalchemy import select
+
+    db_path = tmp_path / "boss_finalizing.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79001112233", nickname="Test"))
+        await session.commit()
+
+    notifier = SimpleNamespace(notify=AsyncMock())
+    claim_calls = 0
+
+    async def _claim(cid=None):
+        nonlocal claim_calls
+        claim_calls += 1
+        if claim_calls == 1:
+            return {"success": False, "status": "not_ready", "message": "Reward is being finalized", "retryAfterMs": 500}
+        return {
+            "success": True,
+            "rewards": [{"type": "cigarettes", "amount": 200}],
+            "tattoo": {"id": 12, "name": "Перстень", "set": "Мафия"},
+        }
+
+    init_calls = 0
+
+    async def _init_player():
+        nonlocal init_calls
+        init_calls += 1
+        if init_calls == 1:
+            return {"player": {"resources": {"cigarettes": 1000, "authority": 500, "sugar": 10}}}
+        return {"player": {"resources": {"cigarettes": 1200, "authority": 550, "sugar": 25}}}
+
+    started_iso = (datetime.now(timezone.utc) - timedelta(seconds=95)).isoformat()
+    bootstrap = {
+        "state": "reward",
+        "session": {
+            "bossId": 1,
+            "title": "Кирпич",
+            "mode": "pacansky",
+            "currentHp": 891,
+            "maxHp": 1000,
+            "sessionId": "sess_kirpich_fast",
+            "startedAt": started_iso,
+        },
+        "unclaimedRewards": [{"claimId": "cid_fast_1", "bossId": 1}],
+    }
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(return_value=bootstrap),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=_claim,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=_init_player)
+    worker = BossWorker(
+        account_id=1,
+        boss_api=boss_api,
+        player_api=player_api,
+        db_engine=engine,
+        notifier=notifier,
+        enable_jitter=False,
+    )
+
+    res = await worker.run_cycle()
+    assert claim_calls == 2
+    assert len(res.get("defeats") or []) == 0
+    assert len(res["victories"]) == 1
+    vic = res["victories"][0]
+    assert vic["boss_name"] == "Кирпич"
+    assert vic["duration_sec"] >= 90
+    assert ":" in vic["duration_formatted"]
+
+    # Проверяем, что дельта профиля добавила authority (+50) и sugar (+15) без дублирования cigarettes (+200)
+    cur_map = {r["currency"]: r["amount"] for r in vic["rewards"]}
+    assert cur_map["cigarettes"] == 200
+    assert cur_map["authority"] == 50
+    assert cur_map["sugar"] == 15
+
+    # Проверяем строгий формат TG-уведомления
+    notifier.notify.assert_awaited_once()
+    tg_msg = notifier.notify.call_args[0][0]
+    assert "Победа над боссом: Кирпич (Пацанский)" in tg_msg
+    assert "🔥 Награды:" in tg_msg
+    assert "⏱️ Бой продлился:" in tg_msg
+    assert "Битва с боссом:" not in tg_msg
+    assert "Призвано боссов:" not in tg_msg
+
+    # Проверяем сохранение в БД для Web
+    async with get_session(engine) as session:
+        notifs = (await session.execute(select(Notification))).scalars().all()
+        assert len(notifs) == 1
+        assert "Победа над боссом: Кирпич (Пацанский)" in notifs[0].title
+        assert notifs[0].meta_json.get("duration_formatted")
+        assert len(notifs[0].meta_json.get("rewards") or []) >= 3
+
+    await engine.dispose()
+
+
+
+@pytest.mark.asyncio
 async def test_boss_worker_melee_cooldowns_and_hits(boss_setup):
     """
     Тест расчета кулдаунов:
@@ -1045,6 +1157,118 @@ async def test_boss_claim_defeat_does_not_emit_false_victory(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
+    """
+    Быстрая победа между опросами + 'Reward is being finalized' ->
+    система НЕ шлет поражение, ретраит claim, дополняет награды из дельты профиля,
+    считает длительность ЧЧ:ММ:СС и шлет строгий TG-формат победы без промежуточных атак/призывов.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from datetime import datetime, timezone, timedelta
+    from core.database import get_engine, init_db, get_session
+    from core.models import Account, Notification
+    from workers.boss_worker import BossWorker
+    from sqlalchemy import select
+
+    db_path = tmp_path / "boss_finalizing.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79001112233", nickname="Test"))
+        await session.commit()
+
+    notifier = SimpleNamespace(notify=AsyncMock())
+    claim_calls = 0
+
+    async def _claim(cid=None):
+        nonlocal claim_calls
+        claim_calls += 1
+        if claim_calls == 1:
+            return {"success": False, "status": "not_ready", "message": "Reward is being finalized", "retryAfterMs": 500}
+        return {
+            "success": True,
+            "rewards": [{"type": "cigarettes", "amount": 200}],
+            "tattoo": {"id": 12, "name": "Перстень", "set": "Мафия"},
+        }
+
+    init_calls = 0
+
+    async def _init_player():
+        nonlocal init_calls
+        init_calls += 1
+        if init_calls == 1:
+            return {"player": {"resources": {"cigarettes": 1000, "authority": 500, "sugar": 10}}}
+        return {"player": {"resources": {"cigarettes": 1200, "authority": 550, "sugar": 25}}}
+
+    started_iso = (datetime.now(timezone.utc) - timedelta(seconds=95)).isoformat()
+    bootstrap = {
+        "state": "reward",
+        "session": {
+            "bossId": 1,
+            "title": "Кирпич",
+            "mode": "pacansky",
+            "currentHp": 891,
+            "maxHp": 1000,
+            "sessionId": "sess_kirpich_fast",
+            "startedAt": started_iso,
+        },
+        "unclaimedRewards": [{"claimId": "cid_fast_1", "bossId": 1}],
+    }
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(return_value=bootstrap),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=_claim,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=_init_player)
+    worker = BossWorker(
+        account_id=1,
+        boss_api=boss_api,
+        player_api=player_api,
+        db_engine=engine,
+        notifier=notifier,
+        enable_jitter=False,
+    )
+
+    res = await worker.run_cycle()
+    assert claim_calls == 2
+    assert len(res.get("defeats") or []) == 0
+    assert len(res["victories"]) == 1
+    vic = res["victories"][0]
+    assert vic["boss_name"] == "Кирпич"
+    assert vic["duration_sec"] >= 90
+    assert ":" in vic["duration_formatted"]
+
+    # Проверяем, что дельта профиля добавила authority (+50) и sugar (+15) без дублирования cigarettes (+200)
+    cur_map = {r["currency"]: r["amount"] for r in vic["rewards"]}
+    assert cur_map["cigarettes"] == 200
+    assert cur_map["authority"] == 50
+    assert cur_map["sugar"] == 15
+
+    # Проверяем строгий формат TG-уведомления
+    notifier.notify.assert_awaited_once()
+    tg_msg = notifier.notify.call_args[0][0]
+    assert "Победа над боссом: Кирпич (Пацанский)" in tg_msg
+    assert "🔥 Награды:" in tg_msg
+    assert "⏱️ Бой продлился:" in tg_msg
+    assert "Битва с боссом:" not in tg_msg
+    assert "Призвано боссов:" not in tg_msg
+
+    # Проверяем сохранение в БД для Web
+    async with get_session(engine) as session:
+        notifs = (await session.execute(select(Notification))).scalars().all()
+        assert len(notifs) == 1
+        assert "Победа над боссом: Кирпич (Пацанский)" in notifs[0].title
+        assert notifs[0].meta_json.get("duration_formatted")
+        assert len(notifs[0].meta_json.get("rewards") or []) >= 3
+
+    await engine.dispose()
+
+
+
+@pytest.mark.asyncio
 async def test_boss_defeat_hp_cascade_all_cases(tmp_path):
     """
     Проверка каскада определения оставшегося HP при поражении от босса:
@@ -1132,6 +1356,118 @@ async def test_boss_defeat_hp_cascade_all_cases(tmp_path):
     assert parsed5["meta_json"]["max_hp"] is None
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_boss_finalizing_retry_profile_delta_duration_and_tg_format(tmp_path):
+    """
+    Быстрая победа между опросами + 'Reward is being finalized' ->
+    система НЕ шлет поражение, ретраит claim, дополняет награды из дельты профиля,
+    считает длительность ЧЧ:ММ:СС и шлет строгий TG-формат победы без промежуточных атак/призывов.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from datetime import datetime, timezone, timedelta
+    from core.database import get_engine, init_db, get_session
+    from core.models import Account, Notification
+    from workers.boss_worker import BossWorker
+    from sqlalchemy import select
+
+    db_path = tmp_path / "boss_finalizing.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        session.add(Account(id=1, phone="79001112233", nickname="Test"))
+        await session.commit()
+
+    notifier = SimpleNamespace(notify=AsyncMock())
+    claim_calls = 0
+
+    async def _claim(cid=None):
+        nonlocal claim_calls
+        claim_calls += 1
+        if claim_calls == 1:
+            return {"success": False, "status": "not_ready", "message": "Reward is being finalized", "retryAfterMs": 500}
+        return {
+            "success": True,
+            "rewards": [{"type": "cigarettes", "amount": 200}],
+            "tattoo": {"id": 12, "name": "Перстень", "set": "Мафия"},
+        }
+
+    init_calls = 0
+
+    async def _init_player():
+        nonlocal init_calls
+        init_calls += 1
+        if init_calls == 1:
+            return {"player": {"resources": {"cigarettes": 1000, "authority": 500, "sugar": 10}}}
+        return {"player": {"resources": {"cigarettes": 1200, "authority": 550, "sugar": 25}}}
+
+    started_iso = (datetime.now(timezone.utc) - timedelta(seconds=95)).isoformat()
+    bootstrap = {
+        "state": "reward",
+        "session": {
+            "bossId": 1,
+            "title": "Кирпич",
+            "mode": "pacansky",
+            "currentHp": 891,
+            "maxHp": 1000,
+            "sessionId": "sess_kirpich_fast",
+            "startedAt": started_iso,
+        },
+        "unclaimedRewards": [{"claimId": "cid_fast_1", "bossId": 1}],
+    }
+    boss_api = SimpleNamespace(
+        get_bootstrap=AsyncMock(return_value=bootstrap),
+        get_all_bosses=AsyncMock(return_value=[]),
+        get_weapons=AsyncMock(return_value={}),
+        claim_reward=_claim,
+        get_friend_damage=AsyncMock(return_value={"friends": []}),
+    )
+    player_api = SimpleNamespace(init_player=_init_player)
+    worker = BossWorker(
+        account_id=1,
+        boss_api=boss_api,
+        player_api=player_api,
+        db_engine=engine,
+        notifier=notifier,
+        enable_jitter=False,
+    )
+
+    res = await worker.run_cycle()
+    assert claim_calls == 2
+    assert len(res.get("defeats") or []) == 0
+    assert len(res["victories"]) == 1
+    vic = res["victories"][0]
+    assert vic["boss_name"] == "Кирпич"
+    assert vic["duration_sec"] >= 90
+    assert ":" in vic["duration_formatted"]
+
+    # Проверяем, что дельта профиля добавила authority (+50) и sugar (+15) без дублирования cigarettes (+200)
+    cur_map = {r["currency"]: r["amount"] for r in vic["rewards"]}
+    assert cur_map["cigarettes"] == 200
+    assert cur_map["authority"] == 50
+    assert cur_map["sugar"] == 15
+
+    # Проверяем строгий формат TG-уведомления
+    notifier.notify.assert_awaited_once()
+    tg_msg = notifier.notify.call_args[0][0]
+    assert "Победа над боссом: Кирпич (Пацанский)" in tg_msg
+    assert "🔥 Награды:" in tg_msg
+    assert "⏱️ Бой продлился:" in tg_msg
+    assert "Битва с боссом:" not in tg_msg
+    assert "Призвано боссов:" not in tg_msg
+
+    # Проверяем сохранение в БД для Web
+    async with get_session(engine) as session:
+        notifs = (await session.execute(select(Notification))).scalars().all()
+        assert len(notifs) == 1
+        assert "Победа над боссом: Кирпич (Пацанский)" in notifs[0].title
+        assert notifs[0].meta_json.get("duration_formatted")
+        assert len(notifs[0].meta_json.get("rewards") or []) >= 3
+
+    await engine.dispose()
+
 
 
 

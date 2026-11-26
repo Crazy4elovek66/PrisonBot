@@ -657,4 +657,39 @@ async def test_wardrobe_post_verification_and_statehub(wardrobe_setup, monkeypat
     assert res_cam.json()["ok"] is True
 
 
+def test_wardrobe_full_item_stats_authority_and_combo_bonuses():
+    """Шмотки и наколки с authorityValue (например, тапки +100 авторитета) отдают authority в bonuses и maxBonus."""
+    from web.routes import _build_wardrobe_sets
+
+    items = [
+        {
+            "id": 86,
+            "name": "Одежда",
+            "setName": "Одежда",
+            "zone": 7,
+            "price": 40,
+            "currency": "paper",
+            "authorityValue": 100,
+            "combat_stats_bonus": None,
+        },
+        {
+            "id": 92,
+            "name": "Отелло",
+            "setName": "Отелло",
+            "zone": 1,
+            "authorityValue": 200,
+            "combat_stats_bonus": {"poison": 9, "gunshot": 4},
+        },
+    ]
+    sets = _build_wardrobe_sets(items, owned_ids={92}, equipped_zones={})
+    tapki = next(s for s in sets if s["setName"] == "Одежда")["parts"][0]
+    assert tapki["bonuses"]["authority"] == 100
+    assert tapki["authorityValue"] == 100
+
+    otello = next(s for s in sets if s["setName"] == "Отелло")["parts"][0]
+    assert otello["bonuses"]["authority"] == 200
+    assert otello["bonuses"]["poison"] == 9
+    assert otello["bonuses"]["gunshot"] == 4
+
+
 

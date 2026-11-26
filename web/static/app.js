@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261125_17";
+const ASSET_VERSION = "20261126_03";
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -88,7 +88,7 @@ function resolveAppAssetUrl(rawUrl) {
   }
   if (!cleanPath) return "";
   if (/(?:^|\/)assets\/icons\/[^?#]+\.(?:webp|png|ico|svg)(?:$|\?|#)/i.test(cleanPath) && !/assets\/proxy/i.test(cleanPath)) {
-    const ver = (typeof ASSET_VERSION !== "undefined" ? ASSET_VERSION : "20261125_17");
+    const ver = (typeof ASSET_VERSION !== "undefined" ? ASSET_VERSION : "20261126_03");
     const [pathAndQuery, hashPart] = cleanPath.split("#");
     const qIdx = pathAndQuery.indexOf("?");
     const pathOnly = qIdx >= 0 ? pathAndQuery.slice(0, qIdx) : pathAndQuery;
@@ -575,6 +575,78 @@ function formatNum(num) {
   return Number(num).toLocaleString("ru-RU");
 }
 
+function formatShopCurrencyRu(currency, amount = 0) {
+  const key = String(currency || "").trim().toLowerCase();
+  const n = Math.abs(Math.floor(Number(amount) || 0));
+  const r100 = n % 100;
+  const r10 = n % 10;
+  const form = (r100 >= 11 && r100 <= 14) ? 2 : (r10 === 1 ? 0 : (r10 >= 2 && r10 <= 4 ? 1 : 2));
+  const formsMap = {
+    soap: ["мыла", "мыла", "мыла"],
+    rubles: ["руб.", "руб.", "руб."],
+    ruble: ["руб.", "руб.", "руб."],
+    rub: ["руб.", "руб.", "руб."],
+    coins: ["руб.", "руб.", "руб."],
+    cigarettes: ["папирос", "папирос", "папирос"],
+    cigs: ["папирос", "папирос", "папирос"],
+    sugar: ["сахара", "сахара", "сахара"],
+    paper: ["туал. бумаги", "туал. бумаги", "туал. бумаги"],
+    toilet_paper: ["туал. бумаги", "туал. бумаги", "туал. бумаги"],
+    toiletpaper: ["туал. бумаги", "туал. бумаги", "туал. бумаги"],
+    tp: ["туал. бумаги", "туал. бумаги", "туал. бумаги"],
+    signet: ["печатки", "печаток", "печаток"],
+    signets: ["печатки", "печаток", "печаток"],
+    vote: ["голоса", "голосов", "голосов"],
+    votes: ["голоса", "голосов", "голосов"],
+    energy: ["энергии", "энергии", "энергии"],
+    chips: ["фишки", "фишек", "фишек"],
+    gold: ["золота", "золота", "золота"],
+    keys: ["ключа", "ключей", "ключей"],
+    key: ["ключа", "ключей", "ключей"],
+    authority: ["авторитета", "авторитета", "авторитета"],
+    respect: ["уважения", "уважения", "уважения"],
+  };
+  if (formsMap[key]) return formsMap[key][form];
+  return currency ? String(currency) : "";
+}
+
+function parseUtcOrIsoDate(raw) {
+  if (!raw) return null;
+  if (raw instanceof Date) return Number.isNaN(raw.getTime()) ? null : raw;
+  let s = String(raw).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+    s += "Z";
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatMoscowTime(raw) {
+  const d = parseUtcOrIsoDate(raw);
+  if (!d) return "";
+  return d.toLocaleTimeString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMoscowDateTime(raw) {
+  const d = parseUtcOrIsoDate(raw);
+  if (!d) return "";
+  return d.toLocaleString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatCountdown(sec) {
   if (sec <= 0) return "00:00:00";
   const h = Math.floor(sec / 3600);
@@ -752,8 +824,10 @@ function renderProfileData(data) {
   const curEnergy = prof.energy || 0;
   const maxEnergy = prof.maxEnergy || 50;
   setTextIfChanged(document.getElementById("stat-energy"), `${curEnergy}/${maxEnergy}`);
+  setTextIfChanged(document.getElementById("prison-stat-energy"), `${curEnergy}/${maxEnergy}`);
   const energyPct = Math.min(100, Math.round((curEnergy / maxEnergy) * 100));
   setWidthIfChanged(document.getElementById("energy-progress-fill"), `${energyPct}%`);
+  setWidthIfChanged(document.getElementById("prison-energy-progress-fill"), `${energyPct}%`);
   updateEnergyTimer();
 
   setTextIfChanged(document.getElementById("cur-cigs"), formatNum(cur.cigarettes));
@@ -761,6 +835,7 @@ function renderProfileData(data) {
   setTextIfChanged(document.getElementById("cur-rubles"), formatNum(cur.rubles));
   setTextIfChanged(document.getElementById("cur-paper"), formatNum(cur.paper));
   setTextIfChanged(document.getElementById("cur-soap"), formatNum(cur.soap));
+  renderResourceDeltas(data.resource_deltas, cur);
 
   setTextIfChanged(document.getElementById("inv-poison-count"), `${wep.poisonCount || 0} шт.`);
   setTextIfChanged(document.getElementById("inv-gunshot-count"), `${wep.gunshotCount || 0} шт.`);
@@ -776,6 +851,42 @@ function renderProfileData(data) {
     updateToiletPaperState(data.toiletPaper || prof.toiletPaper);
   } else {
     updateToiletPaperState({ canClaim: Boolean(prof.canClaimToiletPaper), resetMode: "midnight_msk" });
+  }
+}
+
+function formatResourceDelta(value) {
+  if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) {
+    return { text: "", cls: "is-empty" };
+  }
+  const n = Math.trunc(Number(value));
+  if (n > 0) return { text: `+${formatNum(n)}`, cls: "is-positive" };
+  if (n < 0) return { text: `-${formatNum(Math.abs(n))}`, cls: "is-negative" };
+  return { text: "0", cls: "is-zero" };
+}
+
+function renderResourceDeltas(resourceDeltas, currentCurrencies = null) {
+  const keys = ["cigarettes", "sugar", "rubles", "paper", "soap"];
+  const deltas = (resourceDeltas && resourceDeltas.deltas) || {};
+  const baseline = (resourceDeltas && resourceDeltas.baseline) || {};
+  const capturedAt = resourceDeltas && resourceDeltas.captured_at ? formatMoscowTime(resourceDeltas.captured_at) : "";
+  const timePrefix = capturedAt ? `с ${capturedAt}` : "за сутки";
+
+  for (const key of keys) {
+    const el = document.getElementById(`res-${key}-delta`);
+    if (!el) continue;
+    const rawVal = Object.prototype.hasOwnProperty.call(deltas, key) ? deltas[key] : null;
+    const formatted = formatResourceDelta(rawVal);
+    el.className = `resource-delta ${formatted.cls}`;
+    setTextIfChanged(el, formatted.text);
+    if (formatted.cls !== "is-empty" && Object.prototype.hasOwnProperty.call(baseline, key)) {
+      const baseVal = Number(baseline[key] || 0);
+      const curVal = currentCurrencies && currentCurrencies[key] !== undefined
+        ? Number(currentCurrencies[key])
+        : baseVal + Number(rawVal || 0);
+      el.title = `Суточная дельта (МСК, ${timePrefix}): было ${formatNum(baseVal)} → стало ${formatNum(curVal)} (${formatted.text})`;
+    } else {
+      el.title = "";
+    }
   }
 }
 
@@ -853,7 +964,10 @@ function updateToiletPaperTimer() {
 }
 
 function updateEnergyTimer() {
-  const el = document.getElementById("energy-restore-timer");
+  const timerEls = [
+    document.getElementById("energy-restore-timer"),
+    document.getElementById("prison-energy-restore-timer"),
+  ].filter(Boolean);
   if (!playerProfile || !playerProfile.profile) return;
   const prof = playerProfile.profile;
   const rawEnergy = Number(prof.energy || 0);
@@ -878,30 +992,31 @@ function updateEnergyTimer() {
     }
   }
 
-  // Плавная локальная интерполяция энергии в заголовке между пушами сервера
-  const statEnergyEl = document.getElementById("stat-energy");
-  const fillEnergyEl = document.getElementById("energy-progress-fill");
-  if (statEnergyEl) {
-    setTextIfChanged(statEnergyEl, `${effectiveEnergy}/${maxEnergy}`);
+  // Плавная локальная интерполяция энергии на Главной и в Ходках синхронно
+  for (const statEl of [document.getElementById("stat-energy"), document.getElementById("prison-stat-energy")]) {
+    if (statEl) {
+      setTextIfChanged(statEl, `${effectiveEnergy}/${maxEnergy}`);
+    }
   }
-  if (fillEnergyEl && maxEnergy > 0) {
-    const pct = Math.min(100, Math.round((effectiveEnergy / maxEnergy) * 100));
-    setWidthIfChanged(fillEnergyEl, `${pct}%`);
+  const pct = maxEnergy > 0 ? Math.min(100, Math.round((effectiveEnergy / maxEnergy) * 100)) : 0;
+  for (const fillEl of [document.getElementById("energy-progress-fill"), document.getElementById("prison-energy-progress-fill")]) {
+    if (fillEl && maxEnergy > 0) {
+      setWidthIfChanged(fillEl, `${pct}%`);
+    }
   }
 
-  if (!el) return;
+  if (timerEls.length === 0) return;
+  let timerText = "восстановление: --:--";
   if (effectiveEnergy >= maxEnergy) {
-    setTextIfChanged(el, "восстановление: Максимум");
-    return;
+    timerText = "восстановление: Максимум";
+  } else if (lastTimeStr && !isNaN(new Date(lastTimeStr).getTime())) {
+    const m = Math.floor(remaining / 60);
+    const s = Math.floor(remaining % 60);
+    timerText = `восстановление: ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
-  if (!lastTimeStr || isNaN(new Date(lastTimeStr).getTime())) {
-    setTextIfChanged(el, "восстановление: --:--");
-    return;
+  for (const tEl of timerEls) {
+    setTextIfChanged(tEl, timerText);
   }
-
-  const m = Math.floor(remaining / 60);
-  const s = Math.floor(remaining % 60);
-  setTextIfChanged(el, `восстановление: ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
 }
 
 // --- 4.3 Live Boss (Боссы) ---
@@ -1520,14 +1635,20 @@ async function loadNotifications(category = "all") {
       const isDefeat = meta.type === "boss_defeat" || meta.outcome === "defeat";
       card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}${n.is_read ? ' is-read' : ''}`;
 
+      const effectiveRewards = (Array.isArray(n.rewards) && n.rewards.length > 0)
+        ? n.rewards
+        : (Array.isArray(meta.rewards) ? meta.rewards.filter(r => !r.type || r.type === "currency") : []);
       let rewardsHtml = "";
-      if (Array.isArray(n.rewards) && n.rewards.length > 0) {
+      if (effectiveRewards.length > 0) {
         rewardsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
-            ${n.rewards.map(r => renderResourceBadge(r)).join("")}
+            ${effectiveRewards.map(r => renderResourceBadge(r)).join("")}
           </div>
         `;
       }
+      const durationBadgeHtml = (!isDefeat && meta.duration_formatted)
+        ? `<div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">⏱️ Бой продлился: ${meta.duration_formatted}</div>`
+        : "";
 
       let defeatBarHtml = "";
       if (isDefeat) {
@@ -1597,7 +1718,7 @@ async function loadNotifications(category = "all") {
         `;
       }
 
-      const timeStr = n.created_at ? new Date(n.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
+      const timeStr = formatMoscowTime(n.created_at);
 
       card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
@@ -1608,6 +1729,7 @@ async function loadNotifications(category = "all") {
           <span style="font-size: 10px; color: var(--muted-foreground);">${timeStr}</span>
         </div>
         ${defeatBarHtml}
+        ${durationBadgeHtml}
         ${rewardsHtml}
         ${dropsHtml}
       `;
@@ -1699,7 +1821,7 @@ function renderFriendsSummaryData(data) {
       deltaBadge.className = "friends-delta-zero";
       setTextIfChanged(deltaBadge, "(0)");
     }
-    const timeStr = data.baselineAt ? new Date(data.baselineAt).toLocaleString() : "";
+    const timeStr = data.baselineAt ? formatMoscowDateTime(data.baselineAt) : "";
     deltaBadge.title = `Изменение за 24ч (база: ${base} корешей, замер: ${timeStr})`;
   }
 
@@ -1846,11 +1968,11 @@ function renderFriendsAuditData(data) {
   );
 }
 
-async function loadFriendsAudit() {
+async function loadFriendsAudit(force = false) {
   const container = document.getElementById("friends-audit-list");
   if (!container) return;
   try {
-    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=100`);
+    const data = await apiFetch(`/friends/stats?sort=${currentAuditSort}&limit=100${force ? "&force=true" : ""}`);
     renderFriendsAuditData(data);
   } catch (err) {
     if (!container.querySelector(".friend-card")) {
@@ -3384,11 +3506,11 @@ function renderWardrobeSets() {
     const bonuses = [];
     const maxB = s.maxBonus || {};
     const colB = s.collectedBonus || {};
-    ["knife", "poison", "gunshot", "energy", "biceps"].forEach(b => {
+    ["knife", "poison", "gunshot", "energy", "biceps", "authority"].forEach(b => {
       if (maxB[b]) {
         bonuses.push(`
           <span class="set-bonus-badge ${colB[b] ? 'green' : 'gold'}">
-            ${gameIcon(b, '', 'game-icon-sm')} +${colB[b] || 0}/${maxB[b]}
+            ${gameIcon(b, '', 'game-icon-sm')} +${formatNum(colB[b] || 0)}/${formatNum(maxB[b])}
           </span>
         `);
       }
@@ -3531,7 +3653,7 @@ function renderLazySetParts(partsCont, s) {
           </div>
           <div class="part-name" title="${p.name}">${p.name}</div>
           <div class="part-bonus-text">
-            ${Object.entries(p.bonuses || {}).map(([k, v]) => `${gameIcon(k, '', 'game-icon-sm')} +${v}`).join(" ")}
+            ${renderItemStatBadges(p.bonuses, true)}
           </div>
           <div style="margin-top: 4px;">
             ${p.equipped ? `
@@ -4241,13 +4363,43 @@ function canRotateFittingPreview(previewData) {
   return true;
 }
 
-function formatFittingBonusesHtml(bonuses) {
+function renderItemStatBadges(bonuses, compact = false) {
   if (!bonuses || typeof bonuses !== "object") return "";
-  const entries = Object.entries(bonuses).filter(([, v]) => Number(v) > 0);
+  const statOrder = ["authority", "biceps", "energy", "knife", "poison", "gunshot", "respect", "bossAttackLimit", "comboSaveChance"];
+  const statLabels = {
+    authority: "Авторитет",
+    biceps: "Бицуха",
+    energy: "Энергия",
+    knife: "Финка",
+    poison: "Яд",
+    gunshot: "Самопал",
+    respect: "Уважение",
+    bossAttackLimit: "Лимит атак",
+    comboSaveChance: "Шанс комбо",
+  };
+  const entries = Object.entries(bonuses)
+    .filter(([, v]) => Number(v) > 0)
+    .sort((a, b) => {
+      const ia = statOrder.indexOf(a[0]);
+      const ib = statOrder.indexOf(b[0]);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
   if (entries.length === 0) return "";
   return entries
-    .map(([k, v]) => `<span class="set-bonus-badge gold" style="margin-right:4px;">${gameIcon(k, '', 'game-icon-sm')} +${v}</span>`)
-    .join("");
+    .map(([k, v]) => {
+      const label = statLabels[k] || k;
+      const iconHtml = gameIcon(k, label, "game-icon-sm");
+      const valStr = typeof formatNum === "function" ? formatNum(Number(v)) : String(v);
+      if (compact) {
+        return `<span class="part-stat-pill" title="${label}: +${valStr}">${iconHtml} +${valStr}</span>`;
+      }
+      return `<span class="set-bonus-badge gold" style="margin-right:4px;" title="${label}">${iconHtml} +${valStr}</span>`;
+    })
+    .join(" ");
+}
+
+function formatFittingBonusesHtml(bonuses) {
+  return renderItemStatBadges(bonuses, false);
 }
 
 function extractRoomFolderId(cameraUrl, fallbackId = "1") {
@@ -4544,6 +4696,44 @@ async function prepareFittingRoomLayers(currentToken = null) {
     }
   } catch (e) { }
 
+  // Правила перекрытия зон одежды из bundle.js (капюшоны «Буйство», «Отшельник», «Шаман» скрывают головной убор и очки/маску)
+  const CLOTHING_SUPPRESS_RULES = {
+    83: ["1", "2"],
+    274: ["1", "2"],
+    323: ["1", "2"],
+  };
+  const CLOTHING_SUPPRESS_URLS = [
+    { match: "clotch/dubil1/", hideZones: ["1", "2"] },
+    { match: "clotch/newboss/2/", hideZones: ["1", "2"] },
+    { match: "clotch/newclothmain/13/", hideZones: ["1", "2"] },
+  ];
+  function applyClothingSuppressionRules(zonesMap) {
+    if (!zonesMap || typeof zonesMap !== "object") return zonesMap;
+    const hidden = new Set();
+    for (const val of Object.values(zonesMap)) {
+      if (!val) continue;
+      const cid = typeof val === "object" ? Number(val.clothingId || val.id || 0) : 0;
+      const rawUrl = (typeof val === "object" ? (val.imageUrl || val.url || val.imageBackUrl || "") : String(val)).toLowerCase();
+      if (cid && CLOTHING_SUPPRESS_RULES[cid]) {
+        CLOTHING_SUPPRESS_RULES[cid].forEach(z => hidden.add(String(z)));
+      }
+      if (typeof val === "object" && Array.isArray(val.hideZones)) {
+        val.hideZones.forEach(z => hidden.add(String(z)));
+      }
+      if (rawUrl) {
+        for (const rule of CLOTHING_SUPPRESS_URLS) {
+          if (rawUrl.includes(rule.match)) {
+            rule.hideZones.forEach(z => hidden.add(String(z)));
+          }
+        }
+      }
+    }
+    hidden.forEach(z => {
+      delete zonesMap[z];
+    });
+    return zonesMap;
+  }
+
   // ========================================================================
   // RENDER BACK VIEW (Вид со спины: PlayerSpriteBack + зоны 23..42 + back clothing)
   // ========================================================================
@@ -4607,6 +4797,7 @@ async function prepareFittingRoomLayers(currentToken = null) {
         }
       }
     }
+    applyClothingSuppressionRules(clothingBackZones);
     for (const [z, cVal] of Object.entries(clothingBackZones)) {
       if (!cVal) continue;
       const cUrl = typeof cVal === "object" ? cVal.imageUrl || cVal.url : String(cVal);
@@ -4749,6 +4940,9 @@ async function prepareFittingRoomLayers(currentToken = null) {
     if (!clothingZones["6"]) {
       clothingZones["6"] = FITTING_CONFIG.defaultKist;
     }
+
+    // Применяем игровое правило перекрытия зон (капюшон скрывает головной убор и очки/маску)
+    applyClothingSuppressionRules(clothingZones);
 
     // Footwear / lower clothing: Zone 7 (shoes/socks) first, then Zone 5 (pants) on top
     for (const z of ["7", "5"]) {
@@ -5004,7 +5198,8 @@ function openFittingRoom(previewData = null) {
           applyBtn.textContent = "Надеть в игре";
         } else if (previewData.item.price && Number(previewData.item.price) > 0) {
           applyBtn.style.display = "block";
-          applyBtn.textContent = `Купить в игре (${previewData.item.price} ${previewData.item.currency || ''})`;
+          const curRu = formatShopCurrencyRu(previewData.item.currency, previewData.item.price);
+          applyBtn.textContent = `Купить в игре (${formatNum(previewData.item.price)}${curRu ? ' ' + curRu : ''})`;
         } else {
           applyBtn.style.display = "none";
         }
@@ -5030,7 +5225,8 @@ function openFittingRoom(previewData = null) {
     } else if (previewData.type === "camera") {
       badgeEl.textContent = `Примерка хаты: ${previewData.camera.name}`;
       const bonusHtml = formatFittingBonusesHtml(previewData.camera.bonuses);
-      const statusTxt = previewData.camera.owned ? "В наличии" : `Цена: ${previewData.camera.price} ${previewData.camera.currency}`;
+      const curCamRu = formatShopCurrencyRu(previewData.camera.currency, previewData.camera.price);
+      const statusTxt = previewData.camera.owned ? "В наличии" : `Цена: ${formatNum(previewData.camera.price)}${curCamRu ? ' ' + curCamRu : ''}`;
       descEl.innerHTML = `${statusTxt}${bonusHtml ? ` | ${bonusHtml}` : ''}`;
       if (applyBtn) {
         applyBtn.disabled = false;
@@ -7635,7 +7831,7 @@ async function loadNews() {
       card.className = "news-post-card";
 
       const title = p.title || p.header || "Объявление";
-      const dateStr = p.date ? new Date(p.date * 1000).toLocaleString("ru-RU") : (p.created_at || "");
+      const dateStr = p.date ? formatMoscowDateTime(new Date(p.date * 1000)) : (formatMoscowDateTime(p.created_at) || p.created_at || "");
       const body = p.text || p.content || p.body || "";
 
       let imagesHtml = "";

@@ -234,12 +234,16 @@ async def play_free_daily_game(
         logger.warning(f"Катала: ошибка получения состояния: {e}")
         return {"success": False, "status": "error", "error": f"state_error: {e}"}
 
-    # Проверка бесплатной попытки и точного серверного таймера отката
+    # Проверка бесплатной попытки и точного серверного таймера отката (1-в-1 с bundle.js calcFreeBy24h)
     from datetime import timezone as _tz
-    free_available = (
-        state.get("freeGameAvailable", False)
-        or state.get("canPlayFree", False)
-        or state.get("freeGamesLeft", 0) > 0
+    explicit_free = (
+        state.get("freeGameAvailable") is True
+        or state.get("canPlayFree") is True
+        or (state.get("freeGamesLeft") or 0) > 0
+    )
+    explicit_blocked = (
+        state.get("freeGameAvailable") is False
+        or state.get("canPlayFree") is False
     )
     now_utc = datetime.now(_tz.utc)
     seconds_left: Optional[float] = None
@@ -263,15 +267,23 @@ async def play_free_daily_game(
                 except Exception:
                     pass
 
-    last_game_str = state.get("lastGameTime")
+    last_game_str = (
+        state.get("lastFreePlayTime")
+        or state.get("lastGameTime")
+        or state.get("lastFreeGameAt")
+        or state.get("lastPlayTime")
+    )
+    free_available = explicit_free
     if not free_available and last_game_str and not force:
         try:
-            # Проверка 24ч
+            # Проверка 24ч (calcFreeBy24h в bundle.js)
             last_dt = datetime.fromisoformat(str(last_game_str).replace("Z", "+00:00"))
             if last_dt.tzinfo is None:
                 last_dt = last_dt.replace(tzinfo=_tz.utc)
             diff = (now_utc - last_dt).total_seconds()
-            if diff < 86400:
+            if diff >= 86400:
+                free_available = True
+            else:
                 rem = seconds_left if seconds_left is not None else max(1.0, 86400.0 - diff)
                 logger.info(f"Катала: бесплатная суточная игра еще на кулдауне (осталось {int(rem)}с)")
                 return {
@@ -281,7 +293,18 @@ async def play_free_daily_game(
                     "message": "Бесплатная попытка у Каталы сегодня уже использована",
                 }
         except Exception:
-            pass
+            free_available = not explicit_blocked
+    elif not free_available and not explicit_blocked and not force:
+        if seconds_left is not None and seconds_left > 0:
+            logger.info(f"Катала: бесплатная игра на кулдауне ({int(seconds_left)}с)")
+            return {
+                "success": False,
+                "status": "already_played",
+                "seconds_left": int(seconds_left),
+                "message": "Бесплатная суточная игра у Каталы на кулдауне",
+            }
+        # Если lastFreePlayTime отсутствует/пустой и нет явного запрета — бесплатная игра доступна (как в bundle.js)
+        free_available = True
 
     if not free_available and not force:
         return {

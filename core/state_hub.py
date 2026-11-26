@@ -246,6 +246,20 @@ class LiveStateHub:
             existing.monotonic_ts = now_mono
             return False, existing
 
+        if slice_name == "profile" and isinstance(data, dict):
+            prof_obj = data.get("profile") if isinstance(data.get("profile"), dict) else {}
+            cur_obj = data.get("currencies") if isinstance(data.get("currencies"), dict) else {}
+            is_valid_prof = bool(prof_obj.get("id") or int(prof_obj.get("level") or 0) > 0)
+            if is_valid_prof and cur_obj:
+                try:
+                    loop = asyncio.get_running_loop()
+                    from core.config import MSK_TZ
+                    from core.database import ensure_daily_resource_baseline
+                    day_msk = datetime.now(MSK_TZ).strftime("%Y-%m-%d")
+                    loop.create_task(ensure_daily_resource_baseline(day_msk, cur_obj))
+                except Exception:
+                    pass
+
         new_version = (existing.version + 1) if existing is not None else 1
         entry = SliceEntry(
             name=slice_name,
@@ -290,6 +304,22 @@ class LiveStateHub:
                     target_profile[k] = v
                 if k in patched or target_profile is None:
                     patched[k] = v
+            if isinstance(patched.get("currencies"), dict):
+                for rk in ("cigarettes", "sugar", "rubles", "paper", "soap"):
+                    if rk in changes and changes[rk] is not None:
+                        patched["currencies"][rk] = changes[rk]
+                rd = patched.get("resource_deltas")
+                if isinstance(rd, dict) and isinstance(rd.get("baseline"), dict):
+                    base_map = rd["baseline"]
+                    new_deltas = {}
+                    for rk in ("cigarettes", "sugar", "rubles", "paper", "soap"):
+                        if rk in base_map and rk in patched["currencies"]:
+                            try:
+                                new_deltas[rk] = int(patched["currencies"][rk]) - int(base_map[rk])
+                            except (TypeError, ValueError):
+                                pass
+                    if len(new_deltas) == 5:
+                        rd["deltas"] = new_deltas
             changed, _ = self.update_slice(account_id, "profile", patched, source_tag=prof_entry.source_tag)
             updated_any = updated_any or changed
 

@@ -793,6 +793,113 @@ async def test_fast_friend_requests_job_interval_and_instant_hub_sync(social_set
     assert int(job.trigger.interval.total_seconds()) <= 45
 
 
+@pytest.mark.asyncio
+async def test_enriched_friend_requests_many_with_429_retry():
+    """Все 25 заявок в кореша получают level > 0 и authority > 0 даже при временных 429 от API."""
+    from unittest.mock import AsyncMock, MagicMock
+    from client.api.social import SocialAPI
+
+    reqs = [{"userId": 9000 + i, "nickname": f"Player_{i}", "talentsCount": 10 + i} for i in range(25)]
+    attempts = {}
+
+    async def _get_player_view(uid):
+        attempts[uid] = attempts.get(uid, 0) + 1
+        if attempts[uid] == 1 and uid % 3 == 0:
+            raise RuntimeError("HTTP 429 Too many requests. Slow down.")
+        return {
+            "userId": uid,
+            "nickname": f"Player_{uid - 9000}",
+            "resources": {"authority": 1000 + (uid - 9000) * 100},
+        }
+
+    mock_http = MagicMock()
+    social_api = SocialAPI(http_client=mock_http)
+    social_api.get_friend_requests = AsyncMock(return_value=reqs)
+    player_api = MagicMock()
+    player_api.get_player_view = AsyncMock(side_effect=_get_player_view)
+
+    enriched = await social_api.get_enriched_friend_requests(player_api=player_api)
+    assert len(enriched) == 25
+    for idx, item in enumerate(enriched):
+        assert item["userId"] == 9000 + idx
+        assert item["authority"] == 1000 + idx * 100
+        assert item["level"] > 0
+
+
+@pytest.mark.asyncio
+async def test_friends_stats_and_summary_auto_sync_from_api(social_setup):
+    """
+    При пустой таблице FriendStats эндпоинты /api/v1/friends/stats и /api/v1/friends/summary
+    автоматически синхронизируют список друзей, урон по боссу, % конверсии и средний урон.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from datetime import datetime, timedelta
+    from core.models import SentFriendRequest
+    from web.routes import get_friends_stats, get_friends_summary, bot_context, _flight_cache
+
+    engine, acc_id = social_setup
+    _flight_cache.invalidate()
+
+    async with get_session(engine) as session:
+        session.add(SentFriendRequest(
+            account_id=acc_id,
+            target_user_id=7001,
+            source="radar_batch",
+            status="sent",
+            created_at=datetime.utcnow() - timedelta(hours=1),
+        ))
+        session.add(SentFriendRequest(
+            account_id=acc_id,
+            target_user_id=7002,
+            source="radar_batch",
+            status="sent",
+            created_at=datetime.utcnow() - timedelta(hours=1),
+        ))
+        await session.commit()
+
+    mock_social = MagicMock()
+    mock_social.get_all_friend_profiles = AsyncMock(return_value=[
+        {"userId": 7001, "nickname": "ActiveBro", "authority": 50000},
+        {"userId": 7003, "nickname": "BallastBro", "authority": 1000},
+    ])
+    mock_social.get_all_friend_ids = AsyncMock(return_value={7001, 7003})
+
+    mock_boss = MagicMock()
+    mock_boss.get_friend_damage = AsyncMock(return_value={
+        "sessionId": "sess_sync_1",
+        "items": [{"userId": 7001, "nickname": "ActiveBro", "totalDamage": 250000}],
+    })
+
+    old_engine = bot_context.db_engine
+    old_social = bot_context.social_api
+    old_boss = bot_context.boss_api
+    try:
+        bot_context.db_engine = engine
+        bot_context.social_api = mock_social
+        bot_context.boss_api = mock_boss
+
+        stats_res = await get_friends_stats(sort="damage_7d", limit=100, account_id=acc_id, force=False)
+        assert stats_res["success"] is True
+        assert stats_res["total"] == 2
+        f_map = {f["userId"]: f for f in stats_res["friends"]}
+        assert f_map[7001]["damage7d"] == 250000
+        assert f_map[7001]["level"] > 0
+        assert f_map[7003]["damage7d"] == 0
+
+        sum_res = await get_friends_summary(account_id=acc_id, force=True)
+        assert sum_res["totalFriends"] == 2
+        assert len(sum_res["conversionBySource"]) == 1
+        row = sum_res["conversionBySource"][0]
+        assert row["sent"] == 2
+        assert row["accepted"] == 1
+        assert row["conversionRate"] == 50.0
+        assert row["avgDamage"] == 250000
+    finally:
+        bot_context.db_engine = old_engine
+        bot_context.social_api = old_social
+        bot_context.boss_api = old_boss
+
+
 
 
 

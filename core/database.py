@@ -254,6 +254,21 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
         await conn.run_sync(_migrate_tracked_candidates)
         await conn.run_sync(_migrate_sent_friend_requests)
         await conn.run_sync(_migrate_boss_presets)
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS daily_resource_snapshots (
+                    day_msk TEXT PRIMARY KEY,
+                    cigarettes INTEGER NOT NULL,
+                    sugar INTEGER NOT NULL,
+                    rubles INTEGER NOT NULL,
+                    paper INTEGER NOT NULL,
+                    soap INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL
+                );
+                """
+            )
+        )
 
 
 @asynccontextmanager
@@ -320,3 +335,144 @@ async def prune_old_notifications(engine: Optional[AsyncEngine] = None, days: in
         )
         await session.commit()
         return int(res.rowcount or 0)
+
+
+_DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap")
+_last_known_resources: Optional[dict] = None
+
+
+def _validate_daily_resources(resources: object) -> Optional[dict]:
+    """Проверяет, что словарь ресурсов содержит все 5 целевых ключей с целыми значениями >= 0."""
+    if not isinstance(resources, dict):
+        return None
+    out = {}
+    for k in _DAILY_RESOURCE_KEYS:
+        raw = resources.get(k)
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if val < 0:
+            return None
+        out[k] = val
+    return out
+
+
+async def get_daily_resource_baseline(
+    day_msk: str,
+    engine: Optional[AsyncEngine] = None,
+) -> Optional[dict]:
+    """Возвращает сохранённый базовый снимок ресурсов за указанную московскую дату (YYYY-MM-DD)."""
+    async with get_session(engine) as session:
+        res = await session.execute(
+            text(
+                "SELECT day_msk, cigarettes, sugar, rubles, paper, soap, captured_at "
+                "FROM daily_resource_snapshots WHERE day_msk = :day_msk"
+            ),
+            {"day_msk": day_msk},
+        )
+        row = res.fetchone()
+        if not row:
+            return None
+        return {
+            "day_msk": row[0],
+            "cigarettes": int(row[1]),
+            "sugar": int(row[2]),
+            "rubles": int(row[3]),
+            "paper": int(row[4]),
+            "soap": int(row[5]),
+            "captured_at": str(row[6]),
+        }
+
+
+async def ensure_daily_resource_baseline(
+    day_msk: str,
+    resources: dict,
+    captured_at: Optional[str] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> Optional[dict]:
+    """
+    Атомарно (INSERT OR IGNORE) фиксирует базовый снимок ресурсов за day_msk, если его ещё нет,
+    и возвращает актуальную базовую запись за day_msk. Защищена от невалидных/пустых данных.
+    """
+    global _last_known_resources
+    from datetime import datetime, timedelta
+    from core.config import MSK_TZ
+
+    valid = _validate_daily_resources(resources)
+    if valid is None:
+        return None
+
+    _last_known_resources = dict(valid)
+    cap_ts = captured_at or datetime.now(MSK_TZ).isoformat()
+    cutoff_day = (datetime.now(MSK_TZ) - timedelta(days=90)).strftime("%Y-%m-%d")
+
+    async with get_session(engine) as session:
+        await session.execute(
+            text(
+                "INSERT OR IGNORE INTO daily_resource_snapshots "
+                "(day_msk, cigarettes, sugar, rubles, paper, soap, captured_at) "
+                "VALUES (:day_msk, :cigarettes, :sugar, :rubles, :paper, :soap, :captured_at)"
+            ),
+            {
+                "day_msk": day_msk,
+                "cigarettes": valid["cigarettes"],
+                "sugar": valid["sugar"],
+                "rubles": valid["rubles"],
+                "paper": valid["paper"],
+                "soap": valid["soap"],
+                "captured_at": cap_ts,
+            },
+        )
+        await session.execute(
+            text("DELETE FROM daily_resource_snapshots WHERE day_msk < :cutoff_day"),
+            {"cutoff_day": cutoff_day},
+        )
+        await session.commit()
+
+    return await get_daily_resource_baseline(day_msk, engine=engine)
+
+
+async def compute_daily_resource_deltas(
+    current_resources: dict,
+    now_msk=None,
+    engine: Optional[AsyncEngine] = None,
+) -> Optional[dict]:
+    """
+    Фиксирует/читает суточную базу по MSK_TZ (YYYY-MM-DD) и возвращает:
+    {day_msk, captured_at, baseline: {...}, deltas: {...}}.
+    """
+    from datetime import datetime
+    from core.config import MSK_TZ
+
+    valid = _validate_daily_resources(current_resources)
+    if valid is None:
+        return None
+
+    if now_msk is None:
+        now_dt = datetime.now(MSK_TZ)
+    elif now_msk.tzinfo is None:
+        now_dt = now_msk.replace(tzinfo=MSK_TZ)
+    else:
+        now_dt = now_msk.astimezone(MSK_TZ)
+
+    day_msk = now_dt.strftime("%Y-%m-%d")
+    baseline_row = await ensure_daily_resource_baseline(
+        day_msk,
+        valid,
+        captured_at=now_dt.isoformat(),
+        engine=engine,
+    )
+    if not baseline_row:
+        return None
+
+    baseline = {k: int(baseline_row[k]) for k in _DAILY_RESOURCE_KEYS}
+    deltas = {k: int(valid[k]) - baseline[k] for k in _DAILY_RESOURCE_KEYS}
+    return {
+        "day_msk": day_msk,
+        "captured_at": baseline_row["captured_at"],
+        "baseline": baseline,
+        "deltas": deltas,
+    }

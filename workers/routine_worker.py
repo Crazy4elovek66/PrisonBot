@@ -183,6 +183,10 @@ class RoutineWorker:
                         pass
             else:
                 sec_left = katala_res.get("seconds_left")
+                logger.info(
+                    f"Катала пропущена: status={katala_res.get('status')}, "
+                    f"seconds_left={sec_left}, msg={katala_res.get('message') or katala_res.get('error')}"
+                )
                 if sec_left is not None and float(sec_left) > 0 and self.on_katala_reschedule is not None:
                     try:
                         self.on_katala_reschedule(float(sec_left) + 2.0)

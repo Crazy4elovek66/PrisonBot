@@ -477,7 +477,39 @@ class SocialAPI:
             else []
         )
 
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(2)
+        if not hasattr(self, "_player_view_cache"):
+            self._player_view_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+        async def _fetch_player_view_safe(uid: Any) -> Dict[str, Any]:
+            uid_key = str(uid)
+            now_ts = asyncio.get_running_loop().time()
+            cached = self._player_view_cache.get(uid_key)
+            if cached and (now_ts - cached[0]) < 60.0:
+                return cached[1]
+            for attempt in range(3):
+                try:
+                    async with sem:
+                        await asyncio.sleep(0.08 * (attempt + 1))
+                        if player_api:
+                            p_view = await player_api.get_player_view(uid)
+                        else:
+                            resp = await self.http.get(f"/api/player/view/{uid}")
+                            if resp.status_code == 429:
+                                raise RuntimeError("HTTP 429 Too many requests")
+                            p_view = resp.json() if resp.status_code == 200 else {}
+                    if isinstance(p_view, dict) and p_view:
+                        self._player_view_cache[uid_key] = (asyncio.get_running_loop().time(), p_view)
+                        return p_view
+                    return {}
+                except Exception as exc:
+                    err_s = str(exc).lower()
+                    if ("429" in err_s or "too many" in err_s or "timeout" in err_s) and attempt < 2:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    logger.debug(f"Не удалось обогатить профиль игрока {uid}: {exc}")
+                    return {}
+            return {}
 
         async def _enrich_candidate(c: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(c, dict):
@@ -498,43 +530,35 @@ class SocialAPI:
             biceps = base_stats["biceps"]
 
             # Если базовые характеристики (уровень, авторитет, бицуха, таланты или урон) не заданы в заявке,
-            # дозагружаем через /api/player/view/{userId}
+            # дозагружаем через /api/player/view/{userId} с семафором и ретраем при 429
             if uid and (level == 0 or authority == 0 or biceps is None or talents == 0 or tot_dmg == 0):
-                try:
-                    async with sem:
-                        if player_api:
-                            p_view = await player_api.get_player_view(uid)
-                        else:
-                            resp = await self.http.get(f"/api/player/view/{uid}")
-                            p_view = resp.json() if resp.status_code == 200 else {}
-
-                        ext_stats = extract_player_combat_stats(p_view)
-                        p_data = p_view.get("data") if isinstance(p_view.get("data"), dict) else p_view
-                        if isinstance(p_data, dict):
-                            if not authority:
-                                authority = ext_stats["authority"]
-                            if not level:
-                                level = ext_stats["level"]
-                            if biceps is None:
-                                biceps = ext_stats["biceps"]
-                            if not talents:
-                                talents = ext_stats["talents"]
-                            if not poi_dmg:
-                                poi_dmg = ext_stats["poisonDamage"]
-                            if not gun_dmg:
-                                gun_dmg = ext_stats["gunshotDamage"]
-                            if not kni_dmg:
-                                kni_dmg = ext_stats["knifeDamage"]
-                            if not tot_dmg:
-                                tot_dmg = ext_stats["totalDamage"]
-                            if not nick or nick.startswith("Игрок"):
-                                ext_nick = p_data.get("nickname") or p_data.get("name")
-                                if ext_nick:
-                                    nick = ext_nick
-                            if not photo:
-                                photo = p_data.get("photoUrl") or p_data.get("avatarUrl") or p_data.get("photo")
-                except Exception as e:
-                    logger.debug(f"Не удалось обогатить профиль игрока {uid}: {e}")
+                p_view = await _fetch_player_view_safe(uid)
+                if isinstance(p_view, dict) and p_view:
+                    ext_stats = extract_player_combat_stats(p_view)
+                    p_data = p_view.get("data") if isinstance(p_view.get("data"), dict) else p_view
+                    if isinstance(p_data, dict):
+                        if not authority:
+                            authority = ext_stats["authority"]
+                        if not level:
+                            level = ext_stats["level"]
+                        if biceps is None:
+                            biceps = ext_stats["biceps"]
+                        if not talents:
+                            talents = ext_stats["talents"]
+                        if not poi_dmg:
+                            poi_dmg = ext_stats["poisonDamage"]
+                        if not gun_dmg:
+                            gun_dmg = ext_stats["gunshotDamage"]
+                        if not kni_dmg:
+                            kni_dmg = ext_stats["knifeDamage"]
+                        if not tot_dmg:
+                            tot_dmg = ext_stats["totalDamage"]
+                        if not nick or nick.startswith("Игрок"):
+                            ext_nick = p_data.get("nickname") or p_data.get("name")
+                            if ext_nick:
+                                nick = ext_nick
+                        if not photo:
+                            photo = p_data.get("photoUrl") or p_data.get("avatarUrl") or p_data.get("photo")
 
             if level == 0 and authority > 0:
                 level = calculate_level_from_authority(authority)
@@ -638,10 +662,20 @@ class SocialAPI:
         """
         all_profiles: List[Dict[str, Any]] = []
         for page in range(max_pages):
-            try:
-                res = await self.get_friend_profiles(page=page, page_size=page_size)
-            except Exception as e:
-                logger.warning(f"Ошибка пагинации профилей друзей на странице {page}: {e}")
+            res = None
+            for attempt in range(3):
+                try:
+                    if page > 0 or attempt > 0:
+                        await asyncio.sleep(0.25 if attempt == 0 else 1.0 * attempt)
+                    res = await self.get_friend_profiles(page=page, page_size=page_size)
+                    break
+                except Exception as e:
+                    if ("429" in str(e).lower() or "too many" in str(e).lower()) and attempt < 2:
+                        continue
+                    logger.warning(f"Ошибка пагинации профилей друзей на странице {page}: {e}")
+                    res = None
+                    break
+            if res is None:
                 break
 
             items = (

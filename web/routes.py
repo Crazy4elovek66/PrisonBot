@@ -587,9 +587,18 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
 
     scheduler_status = "paused" if bot_context.is_paused() else "active"
 
+    resource_deltas = None
+    if snap_data and int(snap_data.get("level") or 0) > 0:
+        try:
+            from core.database import compute_daily_resource_deltas
+            resource_deltas = await compute_daily_resource_deltas(snap_data, engine=engine)
+        except Exception as rd_err:
+            logger.debug("compute_daily_resource_deltas in get_state failed: %s", rd_err)
+
     payload = {
         "success": True,
         "snapshot": snap_data,
+        "resource_deltas": resource_deltas,
         "config": cfg_data,
         "scheduler": {
             "is_paused": bot_context.is_paused(),
@@ -840,6 +849,16 @@ async def get_notifications(
             if cat in counts:
                 counts[cat] += cnt
 
+    from core.config import MSK_TZ
+    from datetime import timezone as _tz
+
+    def _to_msk_iso(dt_val):
+        if not dt_val:
+            return None
+        if dt_val.tzinfo is None:
+            dt_val = dt_val.replace(tzinfo=_tz.utc)
+        return dt_val.astimezone(MSK_TZ).isoformat()
+
     result = [
         {
             "id": n.id,
@@ -850,7 +869,7 @@ async def get_notifications(
             "drops": n.drops or [],
             "meta_json": getattr(n, "meta_json", None) or {},
             "is_read": n.is_read,
-            "created_at": n.created_at.isoformat() if n.created_at else None,
+            "created_at": _to_msk_iso(n.created_at),
         }
         for n in items
     ]
@@ -1331,6 +1350,23 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
     from workers.routine_worker import get_toilet_paper_reset_info
     tp_info = get_toilet_paper_reset_info(can_claim_paper)
 
+    currencies_payload = {
+        "cigarettes": currencies.get("cigarettes", 0),
+        "sugar": currencies.get("sugar", 0),
+        "rubles": currencies.get("rubles", 0),
+        "paper": currencies.get("paper", 0),
+        "soap": currencies.get("soap", 0),
+        "keys": currencies.get("keys", 0),
+    }
+    resource_deltas = None
+    is_valid_player = bool(player_data.get("id") or int(player_data.get("level") or 0) > 0)
+    if is_valid_player:
+        try:
+            from core.database import compute_daily_resource_deltas
+            resource_deltas = await compute_daily_resource_deltas(currencies_payload, engine=engine)
+        except Exception as rd_err:
+            logger.debug("compute_daily_resource_deltas in get_live_profile failed: %s", rd_err)
+
     payload = {
         "success": True,
         "profile": {
@@ -1351,14 +1387,8 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
             "toiletPaper": tp_info,
         },
         "toiletPaper": tp_info,
-        "currencies": {
-            "cigarettes": currencies.get("cigarettes", 0),
-            "sugar": currencies.get("sugar", 0),
-            "rubles": currencies.get("rubles", 0),
-            "paper": currencies.get("paper", 0),
-            "soap": currencies.get("soap", 0),
-            "keys": currencies.get("keys", 0),
-        },
+        "currencies": currencies_payload,
+        "resource_deltas": resource_deltas,
         "weapons": {
             "poisonCount": poison_cnt,
             "gunshotCount": gunshot_cnt,
@@ -3252,6 +3282,48 @@ def parse_set_description(desc: str, has_item_bonuses: bool = False) -> Optional
     return None
 
 
+def _extract_item_bonuses(itm: Dict[str, Any]) -> Dict[str, int]:
+    """Извлекает все реальные игровые показатели предмета (авторитет, бицуха, энергия, оружие, особые)."""
+    bonuses: Dict[str, int] = {}
+
+    def _add_bonus(raw_k: str, raw_v: Any) -> None:
+        try:
+            val = int(raw_v or 0)
+        except (TypeError, ValueError):
+            return
+        if val <= 0:
+            return
+        k_low = str(raw_k or "").strip()
+        if k_low in ("maxEnergy", "maxenergy"):
+            norm_k = "energy"
+        elif k_low in ("authorityValue", "giveAuthority", "avtoritet"):
+            norm_k = "authority"
+        elif k_low in ("rating",):
+            norm_k = "respect"
+        else:
+            norm_k = k_low
+        bonuses[norm_k] = bonuses.get(norm_k, 0) + val
+
+    for src_key in ("combat_stats_bonus", "bonuses", "stats"):
+        src = itm.get(src_key)
+        if isinstance(src, dict):
+            for bk, bv in src.items():
+                _add_bonus(bk, bv)
+
+    for top_key in (
+        "authorityValue", "authority", "giveAuthority",
+        "biceps", "energy", "maxEnergy", "respect", "rating",
+        "knife", "poison", "gunshot",
+    ):
+        if itm.get(top_key) is not None:
+            # authorityValue и authority не дублируем, берем первый ненулевой
+            if top_key in ("authorityValue", "authority", "giveAuthority") and "authority" in bonuses:
+                continue
+            _add_bonus(top_key, itm.get(top_key))
+
+    return bonuses
+
+
 def _build_wardrobe_sets(
     items: List[Dict[str, Any]],
     owned_ids: set,
@@ -3307,6 +3379,7 @@ def _build_wardrobe_sets(
         side = "back" if z_int >= 23 else "front"
         back_url = itm.get("imageBackUrl") or itm.get("backImageUrl") or ""
 
+        part_bonuses = _extract_item_bonuses(itm)
         sets_map[sname]["parts"].append({
             "id": iid,
             "name": itm.get("name") or "",
@@ -3323,7 +3396,8 @@ def _build_wardrobe_sets(
             "imageUrl": _proxy_asset_url(raw_item_url),
             "rawImageUrl": raw_item_url,
             "cardPreviewUrl": _proxy_asset_url(itm.get("cardPreviewUrl") or ""),
-            "bonuses": itm.get("combat_stats_bonus") or {},
+            "authorityValue": int(itm.get("authorityValue") or part_bonuses.get("authority") or 0),
+            "bonuses": part_bonuses,
             "description": itm.get("description") or "",
         })
 
@@ -4934,36 +5008,35 @@ async def get_friends_summary(account_id: int = 1, force: bool = Query(False)) -
             )
             snaps_count = int((await session.execute(snaps_count_stmt)).scalar() or 0)
 
-            # 2. Актуальное число друзей (из FriendStats, если 0 - проверяем самый свежий снимок)
+            # 2. Актуальное число друзей (при пустом FriendStats или устаревшем снимке > 15 мин синхронизируем с API)
             cur_stmt = select(func.count(FriendStats.id)).where(
                 FriendStats.account_id == account_id,
                 FriendStats.is_current_friend == True,
             )
             total_friends = int((await session.execute(cur_stmt)).scalar() or 0)
-            if total_friends == 0:
-                latest_snap_stmt = select(FriendsCountSnapshot.friends_count).where(
-                    FriendsCountSnapshot.account_id == account_id
-                ).order_by(FriendsCountSnapshot.created_at.desc()).limit(1)
-                latest_val = (await session.execute(latest_snap_stmt)).scalar_one_or_none()
-                if latest_val is not None:
-                    total_friends = int(latest_val)
+            latest_snap = (
+                await session.execute(
+                    select(FriendsCountSnapshot)
+                    .where(FriendsCountSnapshot.account_id == account_id)
+                    .order_by(FriendsCountSnapshot.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
 
-            # Если снимков еще нет в БД (или total_friends == 0), запрашиваем список друзей у social_api
-            if (snaps_count == 0 or total_friends == 0) and bot_context.social_api:
-                try:
-                    f_ids = await bot_context.social_api.get_all_friend_ids()
-                    if f_ids is not None:
-                        total_friends = len(f_ids)
-                        first_snap = FriendsCountSnapshot(
-                            account_id=account_id,
-                            friends_count=total_friends,
-                            created_at=now,
-                        )
-                        session.add(first_snap)
-                        await session.commit()
-                        snaps_count = 1
-                except Exception as e:
-                    logger.warning(f"Не удалось получить список друзей для первичного снимка: {e}")
+            need_sync = (
+                total_friends == 0
+                or force
+                or latest_snap is None
+                or (now - latest_snap.created_at).total_seconds() >= 900
+            )
+            if need_sync and bot_context.social_api:
+                synced_cnt = await _sync_friends_stats_to_db(account_id, engine, force=force)
+                if synced_cnt > 0:
+                    total_friends = synced_cnt
+                    snaps_count = max(snaps_count, 1)
+
+            if total_friends == 0 and latest_snap is not None:
+                total_friends = int(latest_snap.friends_count)
 
             # 3. Поиск снимка за 24ч
             snap_24h_stmt = select(FriendsCountSnapshot).where(
@@ -5066,6 +5139,216 @@ async def get_friends_summary(account_id: int = 1, force: bool = Query(False)) -
     return summary_payload
 
 
+async def _sync_friends_stats_to_db(account_id: int, engine: Any, force: bool = False) -> int:
+    """
+    Синхронизирует актуальный список друзей (профили + ID), урон по боссам и статус отправленных заявок
+    в таблицы FriendStats, BossFriendDamageLog, FriendsCountSnapshot и SentFriendRequest.
+    """
+    social_api = bot_context.social_api
+    if not social_api:
+        return 0
+
+    now = datetime.utcnow()
+    profiles_by_id: Dict[int, Dict[str, Any]] = {}
+    current_friend_ids: set = set()
+
+    try:
+        if hasattr(social_api, "get_all_friend_profiles"):
+            raw_profiles = await social_api.get_all_friend_profiles()
+            if isinstance(raw_profiles, list):
+                for p in raw_profiles:
+                    if isinstance(p, dict) and p.get("userId") is not None:
+                        try:
+                            uid_int = int(p["userId"])
+                            current_friend_ids.add(uid_int)
+                            profiles_by_id[uid_int] = p
+                        except (ValueError, TypeError):
+                            pass
+    except Exception as e:
+        logger.debug("Sync friend profiles error: %s", e)
+
+    try:
+        if hasattr(social_api, "get_all_friend_ids"):
+            ids_res = await social_api.get_all_friend_ids()
+            if isinstance(ids_res, (set, list)):
+                for uid in ids_res:
+                    try:
+                        current_friend_ids.add(int(uid))
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as e:
+        logger.debug("Sync friend ids error: %s", e)
+
+    # Подтягиваем живой урон друзей по текущему боссу (если доступно)
+    boss_dmg_map: Dict[int, Dict[str, Any]] = {}
+    boss_sess_id: Optional[str] = None
+    if bot_context.boss_api and hasattr(bot_context.boss_api, "get_friend_damage"):
+        try:
+            fd_res = await bot_context.boss_api.get_friend_damage()
+            if isinstance(fd_res, dict):
+                boss_sess_id = str(fd_res.get("sessionId") or "") or None
+                items = fd_res.get("items") or fd_res.get("damage") or []
+            elif isinstance(fd_res, list):
+                items = fd_res
+            else:
+                items = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                uid = it.get("userId") or it.get("id")
+                dmg = int(it.get("damage") or it.get("totalDamage") or it.get("recordedDamage") or 0)
+                if uid and dmg > 0:
+                    try:
+                        boss_dmg_map[int(uid)] = {
+                            "damage": dmg,
+                            "nickname": it.get("nickname") or it.get("name"),
+                            "photoUrl": it.get("photoUrl") or it.get("avatarUrl"),
+                        }
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as e:
+            logger.debug("Sync boss friend damage error: %s", e)
+
+    if not current_friend_ids and not boss_dmg_map:
+        return 0
+
+    from client.api.social import calculate_level_from_authority
+
+    async with get_session(engine) as session:
+        existing_stats = (
+            await session.execute(select(FriendStats).where(FriendStats.account_id == account_id))
+        ).scalars().all()
+        stats_map = {s.user_id: s for s in existing_stats}
+
+        for uid in current_friend_ids:
+            p = profiles_by_id.get(uid, {})
+            b_info = boss_dmg_map.get(uid, {})
+            nick = p.get("nickname") or p.get("name") or b_info.get("nickname")
+            photo = p.get("photoUrl") or p.get("avatarUrl") or p.get("photo") or b_info.get("photoUrl")
+            auth = int(p.get("authority") or 0)
+            lvl = int(p.get("level") or p.get("lvl") or 0)
+            if lvl == 0 and auth > 0:
+                lvl = calculate_level_from_authority(auth)
+
+            if uid in stats_map:
+                fs = stats_map[uid]
+                fs.is_current_friend = True
+                if nick:
+                    fs.nickname = nick
+                if photo:
+                    fs.photo_url = photo
+                if lvl > 0:
+                    fs.level = lvl
+                if auth > 0:
+                    if auth > (fs.authority or 0):
+                        fs.last_active_at = now
+                        fs.prev_authority = fs.authority or 0
+                    fs.authority = auth
+                fs.updated_at = now
+            else:
+                fs = FriendStats(
+                    account_id=account_id,
+                    user_id=uid,
+                    nickname=nick or f"Кореш {uid}",
+                    photo_url=photo,
+                    level=lvl,
+                    authority=auth,
+                    prev_authority=auth,
+                    total_damage_to_my_bosses=0,
+                    boss_hits_count=0,
+                    last_active_at=now,
+                    is_whitelisted=False,
+                    is_current_friend=True,
+                    first_seen_at=now,
+                    updated_at=now,
+                )
+                session.add(fs)
+                stats_map[uid] = fs
+
+        if current_friend_ids:
+            for uid, fs in stats_map.items():
+                if uid not in current_friend_ids and fs.is_current_friend:
+                    fs.is_current_friend = False
+                    fs.updated_at = now
+
+        # Урон по текущему боссу в BossFriendDamageLog + FriendStats
+        if boss_dmg_map and boss_sess_id:
+            for uid, b_info in boss_dmg_map.items():
+                cur_dmg = b_info["damage"]
+                log_entry = (
+                    await session.execute(
+                        select(BossFriendDamageLog).where(
+                            BossFriendDamageLog.account_id == account_id,
+                            BossFriendDamageLog.boss_session_id == boss_sess_id,
+                            BossFriendDamageLog.user_id == uid,
+                        )
+                    )
+                ).scalar_one_or_none()
+                delta = 0
+                is_new_hit = False
+                if not log_entry:
+                    is_new_hit = True
+                    delta = cur_dmg
+                    session.add(
+                        BossFriendDamageLog(
+                            account_id=account_id,
+                            boss_session_id=boss_sess_id,
+                            user_id=uid,
+                            recorded_damage=cur_dmg,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    delta = max(0, cur_dmg - int(log_entry.recorded_damage or 0))
+                    if delta > 0:
+                        log_entry.recorded_damage = cur_dmg
+                        log_entry.updated_at = now
+                fs = stats_map.get(uid)
+                if fs:
+                    if is_new_hit:
+                        fs.boss_hits_count = int(fs.boss_hits_count or 0) + 1
+                    if delta > 0:
+                        fs.total_damage_to_my_bosses = int(fs.total_damage_to_my_bosses or 0) + delta
+                        fs.last_boss_hit_at = now
+                        fs.last_active_at = now
+
+        # Сверка SentFriendRequest(status="sent")
+        if current_friend_ids:
+            pending_reqs = (
+                await session.execute(
+                    select(SentFriendRequest).where(
+                        SentFriendRequest.account_id == account_id,
+                        SentFriendRequest.status == "sent",
+                    )
+                )
+            ).scalars().all()
+            for req in pending_reqs:
+                if req.target_user_id in current_friend_ids:
+                    req.status = "accepted"
+                    req.resolved_at = now
+                elif req.created_at and (now - req.created_at).total_seconds() > 72 * 3600:
+                    req.status = "ignored"
+                    req.resolved_at = now
+
+        # Снимок количества друзей
+        total_now = len(current_friend_ids)
+        if total_now > 0:
+            last_snap = (
+                await session.execute(
+                    select(FriendsCountSnapshot)
+                    .where(FriendsCountSnapshot.account_id == account_id)
+                    .order_by(FriendsCountSnapshot.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if last_snap is None or last_snap.friends_count != total_now or (now - last_snap.created_at).total_seconds() >= 900:
+                session.add(FriendsCountSnapshot(account_id=account_id, friends_count=total_now, created_at=now))
+
+        await session.commit()
+    return len(current_friend_ids)
+
+
 @api_router.get("/friends/stats")
 async def get_friends_stats(
     sort: str = Query("damage_7d"),
@@ -5090,6 +5373,22 @@ async def get_friends_stats(
 
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
+
+    async with get_session(engine) as session:
+        cur_cnt = int(
+            (
+                await session.execute(
+                    select(func.count(FriendStats.id)).where(
+                        FriendStats.account_id == account_id,
+                        FriendStats.is_current_friend == True,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    if (cur_cnt == 0 or force) and bot_context.social_api:
+        await _sync_friends_stats_to_db(account_id, engine, force=force)
 
     async with get_session(engine) as session:
         stmt = select(FriendStats).where(

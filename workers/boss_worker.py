@@ -225,6 +225,8 @@ class BossWorker:
         self._last_active_boss_mode: Optional[str] = None
         self._last_live_battle_snapshot: Optional[Dict[str, Any]] = None
         self._notified_victory_keys: Set[str] = set()
+        self._battle_started_at_by_session: Dict[str, float] = {}
+        self._last_battle_started_at: Optional[float] = None
 
     async def _save_live_battle_snapshot(
         self,
@@ -508,7 +510,14 @@ class BossWorker:
             logger.debug(f"Не удалось получить friend_damage от API: {e}")
 
         reward_data = bootstrap.get("reward") or {}
-        top_dmg = reward_data.get("topDamage") or bootstrap.get("topDamage") or bootstrap.get("friendDamageItems") or []
+        fd_obj = bootstrap.get("friendDamage") if isinstance(bootstrap.get("friendDamage"), dict) else {}
+        top_dmg = (
+            fd_obj.get("items")
+            or reward_data.get("topDamage")
+            or bootstrap.get("topDamage")
+            or bootstrap.get("friendDamageItems")
+            or []
+        )
         if isinstance(top_dmg, list):
             friend_damage_items.extend(top_dmg)
 
@@ -872,10 +881,15 @@ class BossWorker:
                     results["killed"] = True
                     if hit_res.get("claimId"):
                         try:
-                            claim_res = await self.api.claim_reward(str(hit_res["claimId"]))
-                            results["rewards_claimed"] += 1
-                            results["claim_id"] = str(hit_res["claimId"])
-                            results["claim_response"] = claim_res
+                            before_prof = await self._fetch_profile_snapshot_safe()
+                            claim_res = await self._claim_reward_with_retry(str(hit_res["claimId"]))
+                            if not self._is_claim_not_ready(claim_res):
+                                after_prof = await self._fetch_profile_snapshot_safe() if before_prof else None
+                                results["rewards_claimed"] += 1
+                                results["claim_id"] = str(hit_res["claimId"])
+                                results["claim_response"] = claim_res
+                                results["claim_before_profile"] = before_prof
+                                results["claim_after_profile"] = after_prof
                         except Exception:
                             pass
                     break
@@ -1142,9 +1156,13 @@ class BossWorker:
                 continue
             try:
                 await self.record_friends_damage(bootstrap, boss_session_id=cid)
+                before_prof = await self._fetch_profile_snapshot_safe()
                 logger.info(f"Сбор награды за босса (claimId={cid})...")
-                claim_res = await self.api.claim_reward(cid)
+                claim_res = await self._claim_reward_with_retry(cid)
                 logger.info(f"Сырой ответ claim_reward (cid={cid}): {str(claim_res)[:500]}")
+                if self._is_claim_not_ready(claim_res):
+                    logger.info(f"Награда за босса (claimId={cid}) еще финализируется сервером (not_ready), повторим на следующем тике.")
+                    continue
                 claimed_keys_in_cycle.add(dedup_key)
 
                 resolved_boss_name = self._resolve_boss_name(
@@ -1169,6 +1187,10 @@ class BossWorker:
                     battle=battle,
                     parsed=parsed,
                 )
+                if outcome == "victory" and before_prof is not None:
+                    after_prof = await self._fetch_profile_snapshot_safe()
+                    self._merge_profile_delta_rewards(parsed, before_prof, after_prof)
+
                 await self._log_action("claim_boss_reward", "/api/boss/claim", 200, outcome == "victory", {
                     "outcome": outcome,
                     "claim_res": claim_res,
@@ -1236,6 +1258,10 @@ class BossWorker:
                 else:
                     claimed_here += 1
                     results["rewards_claimed"] += 1
+                    dur_sec, dur_fmt = self._resolve_battle_duration(battle, b_sess_id)
+                    meta_j = parsed.setdefault("meta_json", {})
+                    meta_j["duration_sec"] = dur_sec
+                    meta_j["duration_formatted"] = dur_fmt
                     event_key = f"boss_claim_{b_sess_id}"
                     parsed["event_key"] = event_key
                     await DropParser.save_notification(self.account_id, parsed, self.db_engine)
@@ -1243,10 +1269,12 @@ class BossWorker:
                     if event_key not in self._notified_victory_keys:
                         self._notified_victory_keys.add(event_key)
                         results.setdefault("victories", []).append({
-                            "boss_name": parsed.get("meta_json", {}).get("boss_name") or parsed.get("meta", {}).get("boss_name") or resolved_boss_name,
+                            "boss_name": meta_j.get("boss_name") or parsed.get("meta", {}).get("boss_name") or resolved_boss_name,
                             "mode": resolved_mode,
                             "rewards": parsed.get("rewards") or [],
                             "drops": parsed.get("drops") or [],
+                            "duration_sec": dur_sec,
+                            "duration_formatted": dur_fmt,
                             "event_key": event_key,
                         })
 
@@ -1318,6 +1346,179 @@ class BossWorker:
         return claimed_here, active_preset
 
     @staticmethod
+    def _is_claim_not_ready(claim_res: Any) -> bool:
+        """Возвращает True, если сервер еще финализирует награду за босса (not_ready / Reward is being finalized)."""
+        if not isinstance(claim_res, dict):
+            return False
+        if claim_res.get("success") is True:
+            return False
+        status = str(claim_res.get("status") or "").lower().strip()
+        msg = str(claim_res.get("message") or "").lower()
+        if status in ("not_ready", "pending", "processing", "finalizing", "reward_processing"):
+            return True
+        if "being finalized" in msg or "not ready" in msg or "not_ready" in msg:
+            return True
+        if claim_res.get("retryAfterMs") is not None and not claim_res.get("rewards") and not claim_res.get("drops"):
+            return True
+        return False
+
+    async def _claim_reward_with_retry(self, cid: Optional[str], max_retries: int = 4) -> Any:
+        """Вызывает claim_reward с коротким ретраем при статусе not_ready / Reward is being finalized."""
+        claim_res = await self.api.claim_reward(cid)
+        attempt = 0
+        while self._is_claim_not_ready(claim_res) and attempt < max_retries:
+            attempt += 1
+            retry_ms = claim_res.get("retryAfterMs") if isinstance(claim_res, dict) else 1500
+            try:
+                raw_sec = float(retry_ms or 1500) / 1000.0
+            except (TypeError, ValueError):
+                raw_sec = 1.5
+            delay = max(1.0, min(5.0, raw_sec)) if self.enable_jitter else min(0.05, raw_sec)
+            logger.info(
+                f"Награда (claimId={cid}) финализируется (попытка {attempt}/{max_retries}), ждем {delay:.2f}с..."
+            )
+            await asyncio.sleep(delay)
+            claim_res = await self.api.claim_reward(cid)
+        return claim_res
+
+    async def _fetch_profile_snapshot_safe(self) -> Optional[Dict[str, Any]]:
+        """Безопасно запрашивает профиль игрока для вычисления дельты наград до/после claim."""
+        try:
+            if self.player_api is not None and hasattr(self.player_api, "init_player"):
+                return await self.player_api.init_player()
+            http = getattr(self.api, "http", None)
+            if http is not None and hasattr(http, "post"):
+                resp = await http.post("/api/player/init", json={})
+                if getattr(resp, "status_code", 0) == 200:
+                    return resp.json()
+        except Exception as e:
+            logger.debug(f"Не удалось получить снимок профиля для дельты наград: {e}")
+        return None
+
+    @staticmethod
+    def _extract_profile_resources(profile_data: Optional[Dict[str, Any]]) -> Dict[str, int]:
+        if not isinstance(profile_data, dict):
+            return {}
+        p = profile_data.get("player") if isinstance(profile_data.get("player"), dict) else profile_data
+        res_sub = p.get("resources") if isinstance(p.get("resources"), dict) else {}
+        out: Dict[str, int] = {}
+        for key in ("cigarettes", "sugar", "rubles", "paper", "soap", "authority", "keys", "respect", "energy"):
+            val = res_sub.get(key)
+            if val is None:
+                val = p.get(key)
+            if val is not None:
+                try:
+                    out[key] = int(val)
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    @classmethod
+    def _merge_profile_delta_rewards(
+        cls,
+        parsed: Dict[str, Any],
+        before_prof: Optional[Dict[str, Any]],
+        after_prof: Optional[Dict[str, Any]],
+    ) -> None:
+        """Дополняет parsed['rewards'] и meta_json['rewards'] ресурсами из дельты профиля без дублирования."""
+        from core.drop_parser import CURRENCY_LABELS
+        before_res = cls._extract_profile_resources(before_prof)
+        after_res = cls._extract_profile_resources(after_prof)
+        if not before_res or not after_res:
+            return
+        rewards = parsed.setdefault("rewards", [])
+        existing_currencies = {str(r.get("currency")) for r in rewards if isinstance(r, dict)}
+        added = False
+        for c_key, after_val in after_res.items():
+            before_val = before_res.get(c_key)
+            if before_val is None:
+                continue
+            delta = after_val - before_val
+            if delta > 0 and c_key not in existing_currencies:
+                label = CURRENCY_LABELS.get(c_key, c_key)
+                rewards.append({"currency": c_key, "label": label, "amount": delta})
+                existing_currencies.add(c_key)
+                added = True
+        if added:
+            meta_j = parsed.setdefault("meta_json", {})
+            meta_j["reward_lines"] = DropParser.format_boss_rewards_lines(parsed)
+            meta_j["rewards"] = [
+                {
+                    "type": "currency",
+                    "key": rw["currency"],
+                    "name": rw["label"],
+                    "amount": rw["amount"],
+                    "icon": f"assets/icons/{rw['currency']}.webp",
+                }
+                for rw in rewards
+            ] + [
+                {
+                    "type": dr.get("kind") or dr.get("type") or "item",
+                    "key": str(dr.get("itemId") or dr.get("setId") or dr.get("title") or "item"),
+                    "name": dr.get("title") or dr.get("name") or "Предмет",
+                    "amount": 1,
+                    "icon": dr.get("imageUrl") or "",
+                }
+                for dr in (parsed.get("drops") or [])
+            ]
+            if meta_j["reward_lines"]:
+                parsed["subtitle"] = "Босс повержен"
+
+    def _record_battle_start(self, battle: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(battle, dict):
+            return
+        sess_id = str(battle.get("sessionId") or "")
+        start_ts: Optional[float] = None
+        for key in ("startedAt", "createdAt", "startTime"):
+            if battle.get(key):
+                dt = parse_iso_utc(battle.get(key))
+                if dt is not None:
+                    start_ts = dt.timestamp()
+                    break
+        if start_ts is None and battle.get("endsAt") and (battle.get("durationSec") or battle.get("battleDurationSec")):
+            ends_dt = parse_iso_utc(battle.get("endsAt"))
+            if ends_dt is not None:
+                try:
+                    dur = float(battle.get("durationSec") or battle.get("battleDurationSec"))
+                    start_ts = ends_dt.timestamp() - dur
+                except (TypeError, ValueError):
+                    pass
+        if start_ts is None:
+            if sess_id and sess_id in self._battle_started_at_by_session:
+                start_ts = self._battle_started_at_by_session[sess_id]
+            else:
+                start_ts = datetime.now(timezone.utc).timestamp()
+        if sess_id:
+            self._battle_started_at_by_session.setdefault(sess_id, start_ts)
+        self._last_battle_started_at = start_ts
+
+    def _resolve_battle_duration(self, battle: Optional[Dict[str, Any]], session_id: Optional[Any] = None) -> Tuple[int, str]:
+        start_ts: Optional[float] = None
+        if isinstance(battle, dict):
+            for key in ("startedAt", "createdAt", "startTime"):
+                if battle.get(key):
+                    dt = parse_iso_utc(battle.get(key))
+                    if dt is not None:
+                        start_ts = dt.timestamp()
+                        break
+        sess_key = str(session_id or (battle.get("sessionId") if isinstance(battle, dict) else "") or "")
+        if start_ts is None and sess_key and sess_key in self._battle_started_at_by_session:
+            start_ts = self._battle_started_at_by_session.pop(sess_key)
+        elif sess_key:
+            self._battle_started_at_by_session.pop(sess_key, None)
+        if start_ts is None:
+            start_ts = self._last_battle_started_at
+        self._last_battle_started_at = None
+        if start_ts is None:
+            dur_sec = 0
+        else:
+            dur_sec = max(0, int(datetime.now(timezone.utc).timestamp() - start_ts))
+        h = dur_sec // 3600
+        m = (dur_sec % 3600) // 60
+        s = dur_sec % 60
+        return dur_sec, f"{h:02d}:{m:02d}:{s:02d}"
+
+    @staticmethod
     def classify_boss_outcome(
         claim_res: Optional[Dict[str, Any]],
         *,
@@ -1336,17 +1537,19 @@ class BossWorker:
         ):
             return "defeat"
         if (
-            res_str in ("win", "victory", "killed", "defeated_boss")
+            res_str in ("win", "victory", "killed", "defeated_boss", "claimed", "ok", "success")
             or res.get("isWin") is True
             or res.get("win") is True
         ):
             return "victory"
 
         has_loot = bool(parsed and ((parsed.get("rewards") or []) or (parsed.get("drops") or [])))
-        if last_hp is not None and int(last_hp) > 0 and not has_loot:
-            return "defeat"
         if has_loot:
             return "victory"
+        if res.get("success") is True:
+            return "victory"
+        if last_hp is not None and int(last_hp) > 0:
+            return "defeat"
         if isinstance(battle, dict) and battle.get("endsAt"):
             ends_dt = parse_iso_utc(battle.get("endsAt"))
             if ends_dt is not None and datetime.now(timezone.utc) >= ends_dt and (last_hp is None or int(last_hp) > 0):
@@ -1682,6 +1885,7 @@ class BossWorker:
                     nm = self._resolve_boss_name(battle, bootstrap, fallback_id=self._last_active_boss_id)
                     if nm and nm != "Босс":
                         self._last_active_boss_name = nm
+                    self._record_battle_start(battle)
                     await self._save_live_battle_snapshot(battle, boss_name=nm)
                 logger.info(f"Активен бой с боссом! Оставшееся HP: {current_hp}")
 
@@ -1716,17 +1920,30 @@ class BossWorker:
                             boss_name=r_name,
                             mode=r_mode,
                         )
-                        ev_key = f"boss_claim_{battle.get('sessionId') or melee_res['claim_id'] if isinstance(battle, dict) else melee_res['claim_id']}"
+                        if melee_res.get("claim_before_profile") is not None:
+                            self._merge_profile_delta_rewards(
+                                parsed_win,
+                                melee_res.get("claim_before_profile"),
+                                melee_res.get("claim_after_profile"),
+                            )
+                        b_sid = battle.get("sessionId") or melee_res["claim_id"] if isinstance(battle, dict) else melee_res["claim_id"]
+                        dur_sec, dur_fmt = self._resolve_battle_duration(battle if isinstance(battle, dict) else None, b_sid)
+                        meta_win = parsed_win.setdefault("meta_json", {})
+                        meta_win["duration_sec"] = dur_sec
+                        meta_win["duration_formatted"] = dur_fmt
+                        ev_key = f"boss_claim_{b_sid}"
                         parsed_win["event_key"] = ev_key
                         if self.db_engine:
                             await DropParser.save_notification(self.account_id, parsed_win, self.db_engine)
                         if ev_key not in self._notified_victory_keys:
                             self._notified_victory_keys.add(ev_key)
                             results["victories"].append({
-                                "boss_name": parsed_win.get("meta", {}).get("boss_name") or r_name,
+                                "boss_name": meta_win.get("boss_name") or r_name,
                                 "mode": r_mode,
                                 "rewards": parsed_win.get("rewards") or [],
                                 "drops": parsed_win.get("drops") or [],
+                                "duration_sec": dur_sec,
+                                "duration_formatted": dur_fmt,
                                 "event_key": ev_key,
                             })
                     if active_preset:
@@ -1744,20 +1961,20 @@ class BossWorker:
                 except Exception as e:
                     logger.debug(f"Ошибка callback on_activity_change: {e}")
 
-            # Telegram уведомление только по итогам значимых событий
+            # Telegram уведомление отправляем ТОЛЬКО по итогам побед и поражений
             if self.notifier is not None:
                 victories = results.get("victories") or []
                 defeats = results.get("defeats") or []
-                if victories or defeats or len(results["hits_performed"]) > 0 or len(results["summoned_bosses"]) > 0:
+                if victories or defeats:
                     lines: List[str] = []
                     for vic in victories:
                         m_str = DropParser.format_boss_mode(vic.get("mode"))
                         title_str = f"{vic['boss_name']} ({m_str})" if m_str else str(vic["boss_name"])
-                        lines.append(f"🏆 <b>Победа над боссом: {title_str}</b>")
-                        reward_lines = DropParser.format_boss_rewards_lines(vic)
-                        if reward_lines:
-                            lines.append("🎁 <b>Получено с босса:</b>")
-                            lines.extend(reward_lines)
+                        lines.append(f"👊 <b>Победа над боссом: {title_str}</b>")
+                        reward_summary = DropParser.format_boss_rewards_inline(vic)
+                        lines.append(f"🔥 Награды: {reward_summary or 'получены'}")
+                        dur_fmt = vic.get("duration_formatted") or "00:00:00"
+                        lines.append(f"⏱️ Бой продлился: {dur_fmt}")
                     for df in defeats:
                         m_str = DropParser.format_boss_mode(df.get("mode"))
                         title_str = f"{df['boss_name']} ({m_str})" if m_str else str(df["boss_name"])
@@ -1777,15 +1994,8 @@ class BossWorker:
                             lines.append("❤️ Осталось HP: <b>нет данных</b>")
                         if df.get("personal_damage") and int(df["personal_damage"]) > 0:
                             lines.append(f"⚔️ Личный урон: <b>{DropParser.format_space_num(int(df['personal_damage']))}</b>")
-                    if not victories and not defeats:
-                        b_label = self._last_active_boss_name or "Босс"
-                        lines.append(f"👊 <b>Битва с боссом: {b_label}</b>")
-                    if len(results["summoned_bosses"]) > 0:
-                        lines.append(f"🔥 Призвано боссов: <b>{len(results['summoned_bosses'])}</b>")
-                    if len(results["hits_performed"]) > 0:
-                        lines.append(f"⚔️ Нанесено рукопашных ударов: <b>{len(results['hits_performed'])}</b>")
-                        if not victories and not defeats and results["boss_hp_remaining"] is not None:
-                            lines.append(f"❤️ Оставшееся HP босса: <b>{results['boss_hp_remaining']}</b>")
+                        hits_cnt = df.get("melee_hits") if df.get("melee_hits") is not None else len(results["hits_performed"])
+                        lines.append(f"⚔️ Нанесено рукопашных ударов: <b>{hits_cnt}</b>")
                     await self.notifier.notify("\n".join(lines))
 
             logger.info(f"=== [Аккаунт {self.account_id}] Цикл проверки боссов завершен ===")
