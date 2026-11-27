@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ASSET_CACHE_MIN_FREE_GB: float = 5.0
     ASSET_CACHE_NGINX_ACCEL_PREFIX: str = ""
 
+    # Official Telegram News Channel (@itheprison) & Media Cache
+    NEWS_CHANNEL_USERNAME: str = "itheprison"
+    NEWS_CACHE_TTL_SEC: int = 300
+    NEWS_MEDIA_CACHE_MAX_MB: int = 64
+    NEWS_PAGE_LIMIT_DEFAULT: int = 12
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

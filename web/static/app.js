@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_05";
+const ASSET_VERSION = "20261127_07";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -1552,13 +1552,25 @@ function renderPrisonsGrid(prisons) {
       ? `☀️ День: ${p.dayRuns || 0}  |  🌙 Ночь: ${p.nightRuns || 0}`
       : `🔒 ${unlockReq}`;
     setTextIfChanged(tile.querySelector(".prison-tile-meta"), runsInfo);
+    const energyEl = tile.querySelector(".prison-tile-energy");
+    if (energyEl) {
+      if (isUnlocked && (p.day_full_energy > 0 || p.night_full_energy > 0)) {
+        const dTxt = p.day_full_energy > 0 ? `День: ${formatNum(p.day_full_energy)}` : "День: -";
+        const nTxt = p.night_full_energy > 0 ? `Ночь: ${formatNum(p.night_full_energy)}` : "Ночь: -";
+        energyEl.innerHTML = `${gameIcon("energy", "⚡", "game-icon-sm")} <span>${dTxt} / ${nTxt}</span>`;
+        energyEl.title = `Полный круг: День ${p.day_full_energy || 0} (осталось ${p.day_remaining_energy || 0}), Ночь ${p.night_full_energy || 0} (осталось ${p.night_remaining_energy || 0})`;
+        energyEl.style.display = "flex";
+      } else {
+        energyEl.style.display = "none";
+      }
+    }
   };
 
   reconcileKeyedList(
     container,
     prisons || [],
     p => p.id,
-    p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.unlockRequirement || p.unlock_requirement || p.requiredLevel || ''}|${p.dayRuns || 0}|${p.nightRuns || 0}`,
+    p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.unlockRequirement || p.unlock_requirement || p.requiredLevel || ''}|${p.dayRuns || 0}|${p.nightRuns || 0}|${p.day_full_energy || 0}|${p.night_full_energy || 0}`,
     p => {
       const tile = document.createElement("div");
       tile.setAttribute("data-prison-id", String(p.id));
@@ -1568,6 +1580,7 @@ function renderPrisonsGrid(prisons) {
           <span class="prison-tile-lock"></span>
         </div>
         <div class="prison-tile-meta" style="font-size: 10px; color: var(--muted-foreground);"></div>
+        <div class="prison-tile-energy" style="display: none; align-items: center; gap: 4px; font-size: 10px; color: #fbbf24; margin-top: 2px;"></div>
       `;
       tile.addEventListener("click", async () => {
         if (tile.classList.contains("locked")) return;
@@ -1588,22 +1601,67 @@ function renderPrisonsGrid(prisons) {
   );
 }
 
+let _mastersCatalogCache = [];
+
+function updateSelectedMasterEnergyInfo() {
+  const select = document.getElementById("select-master");
+  const infoEl = document.getElementById("master-cycle-energy-info");
+  if (!select || !infoEl) return;
+  const selId = Number(select.value || 0);
+  const m = (_mastersCatalogCache || []).find(item => Number(item.id) === selId);
+  if (!m) {
+    infoEl.style.display = "none";
+    return;
+  }
+  const fullE = Number(m.full_cycle_energy || 0);
+  const remE = Number(m.remaining_cycle_energy || 0);
+  if (fullE > 0) {
+    const remPart = remE < fullE ? ` (осталось ${formatNum(remE)})` : "";
+    infoEl.innerHTML = `${gameIcon("energy", "⚡", "game-icon-sm")} <span>Полный круг: <b>${formatNum(fullE)}</b>${remPart}</span>`;
+    infoEl.style.display = "flex";
+  } else if (m.locked) {
+    infoEl.innerHTML = `<span style="color: var(--muted-foreground);">🔒 Мастер пока закрыт — затраты энергии круга откроются после разблокировки</span>`;
+    infoEl.style.display = "flex";
+  } else {
+    infoEl.style.display = "none";
+  }
+}
+
 function renderMastersSelect(masters) {
   const select = document.getElementById("select-master");
   if (!select) return;
+  const prevVal = select.value;
+  _mastersCatalogCache = Array.isArray(masters) ? masters : [];
   select.innerHTML = "";
 
-  if (masters.length === 0) {
+  if (_mastersCatalogCache.length === 0) {
     select.innerHTML = '<option value="">Нет доступных мастеров</option>';
+    updateSelectedMasterEnergyInfo();
     return;
   }
 
-  masters.forEach(m => {
+  _mastersCatalogCache.forEach(m => {
     const opt = document.createElement("option");
     opt.value = m.id;
-    opt.textContent = `${m.name || 'Мастер #' + m.id} (ур. ${m.level || 1})`;
+    const fullE = Number(m.full_cycle_energy || 0);
+    const remE = Number(m.remaining_cycle_energy || 0);
+    const eSuffix = fullE > 0
+      ? (remE > 0 && remE < fullE ? ` • круг: ${fullE} эн. (ост. ${remE})` : ` • круг: ${fullE} эн.`)
+      : "";
+    opt.textContent = `${m.name || 'Мастер #' + m.id} (ур. ${m.level || 1}${eSuffix})`;
     select.appendChild(opt);
   });
+
+  if (prevVal && _mastersCatalogCache.some(m => String(m.id) === String(prevVal))) {
+    select.value = prevVal;
+  } else if (_mastersCatalogCache.length > 0) {
+    select.value = String(_mastersCatalogCache[0].id);
+  }
+  if (!select.dataset.energyBound) {
+    select.dataset.energyBound = "1";
+    select.addEventListener("change", updateSelectedMasterEnergyInfo);
+  }
+  updateSelectedMasterEnergyInfo();
 }
 
 // --- 4.5 Live Catalogs ---
@@ -2435,6 +2493,12 @@ async function loadFriendsAudit(force = false) {
 }
 
 // --- 4.8 Friend Requests (Кореша) ---
+function getFriendRequestKey(r) {
+  if (!r || typeof r !== "object") return "";
+  const raw = r.userId ?? r.fromUserId ?? r.senderId ?? r.id;
+  return raw !== undefined && raw !== null ? String(raw) : "";
+}
+
 function renderFriendRequestsData(data) {
   const container = document.getElementById("friend-requests-list");
   if (!container || !data) return;
@@ -2451,10 +2515,11 @@ function renderFriendRequestsData(data) {
   reconcileKeyedList(
     container,
     reqs,
-    r => r.userId || r.fromUserId || r.id,
-    r => `${r.userId || r.fromUserId || r.id}|${r.authority}|${r.level || r.lvl}|${r.talentsCount || r.talents}`,
+    r => getFriendRequestKey(r),
+    r => `${getFriendRequestKey(r)}|${r.authority}|${r.level || r.lvl}|${r.talentsCount || r.talents}`,
     r => {
-      const uId = r.userId || r.fromUserId || r.id;
+      const uId = r.userId ?? r.fromUserId ?? r.senderId ?? r.id;
+      const reqKey = getFriendRequestKey(r);
       const nick = r.nickname || `Игрок #${uId}`;
       const talents = r.talents !== undefined ? r.talents : (r.talentsCount || r.TalentsCount || 0);
       const wDmg = r.weaponDamage || r.WeaponDamage || {};
@@ -2500,27 +2565,30 @@ function renderFriendRequestsData(data) {
       const btnAccept = card.querySelector(".btn-accept-friend");
       const btnDecline = card.querySelector(".btn-decline-friend");
 
-      const updateFriendBadgeAndCount = () => {
-        const currentCount = parseInt(countEl?.textContent || "0", 10);
-        const newCount = Math.max(0, currentCount - 1);
-        if (countEl) countEl.textContent = newCount;
+      const syncFriendRequestRemoval = () => {
+        const curSlice = liveSlices.data.friend_requests || { success: true, requests: [], total: 0 };
+        const curList = Array.isArray(curSlice.requests) ? curSlice.requests : [];
+        const nextReqs = curList.filter(item => getFriendRequestKey(item) !== reqKey);
+        liveSlices.data.friend_requests = { ...curSlice, requests: nextReqs, total: nextReqs.length };
+        if (countEl) setTextIfChanged(countEl, nextReqs.length);
         if (badgeEl) {
-          badgeEl.textContent = newCount;
-          badgeEl.style.display = newCount > 0 ? "inline-block" : "none";
+          setTextIfChanged(badgeEl, nextReqs.length);
+          badgeEl.style.display = nextReqs.length > 0 ? "inline-block" : "none";
         }
-        if (newCount === 0) {
-          container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>';
-          container.dataset.emptySig = "empty";
-        }
+        return nextReqs.length;
       };
 
       const animateCardRemoval = () => {
+        const remainingCount = syncFriendRequestRemoval();
         card.style.transition = "opacity 0.25s ease, transform 0.25s ease";
         card.style.opacity = "0";
         card.style.transform = "translateY(-6px)";
         setTimeout(() => {
-          card.remove();
-          updateFriendBadgeAndCount();
+          if (card.parentNode) card.remove();
+          if (remainingCount === 0 && container.children.length === 0) {
+            container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 16px;">Входящих заявок в друзья нет</div>';
+            container.dataset.emptySig = "empty";
+          }
         }, 250);
       };
 
@@ -6254,9 +6322,9 @@ const liveSyncClient = (() => {
     const processed = new Set([
       ...(Array.isArray(payload.accepted_ids) ? payload.accepted_ids : []),
       ...(Array.isArray(payload.rejected_ids) ? payload.rejected_ids : []),
-    ].map(x => Number(x)));
+    ].map(x => String(x)));
     if (!Array.isArray(payload.incoming_requests) && processed.size > 0) {
-      nextReqs = nextReqs.filter(r => !processed.has(Number(r.userId || r.fromUserId || r.id || 0)));
+      nextReqs = nextReqs.filter(r => !processed.has(getFriendRequestKey(r)));
     }
     const updatedPayload = { ...existing, requests: nextReqs, total: nextReqs.length };
     renderFriendRequestsData(updatedPayload);
@@ -8121,10 +8189,13 @@ function switchRaidsTab(tabName, opts = {}) {
     activeView.style.display = "block";
   }
 
-  // Load data for active tab
-  if (tabName === "raids") loadRaids();
-  else if (tabName === "news") loadNews();
-  else if (tabName === "radar") loadActivePlayersRadar(opts);
+  // Load data for active tab (strictly 2 tabs: raids & news)
+  if (tabName === "news") {
+    loadNews();
+  } else {
+    loadRaids();
+    if (typeof loadUnifiedRaidsPlayers === "function") loadUnifiedRaidsPlayers();
+  }
 }
 
 async function loadRaidsSection(opts = {}) {
@@ -8545,67 +8616,261 @@ function renderRaidsList(raids, container) {
 let _lastNewsHash = "";
 let _newsFetchSeq = 0;
 
-// --- Subview 2: Новости ---
-async function loadNews() {
+// --- Subview 2: Новости (@itheprison Telegram Dark + GIF/Video Optimization) ---
+let _newsNextBefore = null;
+let _newsVideoObserver = null;
+
+function isSlowNetworkConnection() {
+  try {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!conn) return false;
+    if (conn.saveData === true) return true;
+    return ["slow-2g", "2g", "3g"].includes(String(conn.effectiveType || "").toLowerCase());
+  } catch (e) {
+    return false;
+  }
+}
+
+function setupNewsVideoObserver(rootEl) {
+  if (!rootEl || typeof IntersectionObserver === "undefined") return;
+  if (_newsVideoObserver) _newsVideoObserver.disconnect();
+  const slowNet = isSlowNetworkConnection();
+  const videos = rootEl.querySelectorAll("video.news-gif-video");
+  if (!videos.length) return;
+
+  _newsVideoObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const vid = entry.target;
+      if (entry.isIntersecting) {
+        if (!slowNet) {
+          if (!vid.getAttribute("src") && vid.dataset.src) {
+            vid.src = vid.dataset.src;
+          }
+          vid.play?.().catch(() => { });
+        }
+      } else {
+        vid.pause?.();
+      }
+    });
+  }, { threshold: 0.25 });
+
+  videos.forEach(v => _newsVideoObserver.observe(v));
+}
+
+function renderNewsPostCard(p) {
+  const card = document.createElement("div");
+  card.className = "news-post-card";
+  const mediaList = Array.isArray(p.media) ? p.media : [];
+  const slowNet = isSlowNetworkConnection();
+
+  let mediaHtml = "";
+  if (mediaList.length > 0) {
+    mediaHtml = mediaList.map(m => {
+      const mUrl = resolveAppAssetUrl(m.url || "");
+      const pUrl = m.poster_url ? resolveAppAssetUrl(m.poster_url) : "";
+      if (m.type === "gif") {
+        return `
+          <div class="news-media-wrap is-gif">
+            <video class="news-gif-video" loop muted playsinline preload="none" ${pUrl ? `poster="${escapeHtml(pUrl)}"` : ""} data-src="${escapeHtml(mUrl)}"></video>
+            <span class="news-gif-badge">GIF</span>
+            ${slowNet ? `<button type="button" class="news-gif-play-btn" title="Воспроизвести GIF">▶ GIF</button>` : ""}
+          </div>
+        `;
+      }
+      return `
+        <div class="news-media-wrap">
+          <img src="${escapeHtml(mUrl)}" class="news-post-img" loading="lazy" decoding="async" alt="Фото" onerror="this.closest('.news-media-wrap')?.remove()">
+        </div>
+      `;
+    }).join("");
+  }
+
+  const dateStr = p.published_at ? (formatMoscowTime(p.published_at) || p.published_at) : "";
+  const viewsHtml = p.views ? `<span>👁 ${escapeHtml(p.views)}</span>` : "";
+  const linkUrl = p.url ? escapeHtml(p.url) : "https://t.me/itheprison";
+
+  card.innerHTML = `
+    ${mediaHtml}
+    <div class="news-post-body">${p.html || escapeHtml(p.text || "")}</div>
+    <div class="news-post-footer">
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <span>${escapeHtml(dateStr)}</span>
+        ${viewsHtml}
+      </div>
+      <a href="${linkUrl}" target="_blank" rel="noopener noreferrer" style="color: #6ab2f2; text-decoration: none; font-weight: 600;">Открыть в Telegram ↗</a>
+    </div>
+  `;
+
+  card.querySelectorAll(".news-gif-play-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const wrap = btn.closest(".news-media-wrap");
+      const vid = wrap?.querySelector("video.news-gif-video");
+      if (vid && vid.dataset.src) {
+        vid.src = vid.dataset.src;
+        vid.play?.().catch(() => { });
+        btn.remove();
+      }
+    });
+  });
+
+  card.querySelectorAll("video.news-gif-video").forEach(vid => {
+    vid.addEventListener("error", () => {
+      const poster = vid.getAttribute("poster");
+      const wrap = vid.closest(".news-media-wrap");
+      if (!wrap) return;
+      if (poster) {
+        wrap.classList.remove("is-gif");
+        wrap.innerHTML = `<img src="${escapeHtml(poster)}" class="news-post-img" loading="lazy" decoding="async" alt="Фото" onerror="this.closest('.news-media-wrap')?.remove()">`;
+      } else {
+        wrap.remove();
+      }
+    });
+  });
+
+  return card;
+}
+
+async function loadNews(opts = {}) {
   const container = document.getElementById("news-list-container");
   if (!container) return;
 
+  const isMore = Boolean(opts.before);
   const seq = ++_newsFetchSeq;
-  const hasCards = Boolean(container.querySelector(".news-post-card"));
-  if (!hasCards) {
-    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка новостей...</div>';
+  if (!isMore && !container.querySelector(".news-post-card")) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;"><div class="spinner-sm" style="margin: 0 auto 8px auto;"></div>Загрузка новостей @itheprison...</div>';
   }
 
   try {
-    const res = await apiFetch("/news");
+    const q = new URLSearchParams({ limit: "12" });
+    if (opts.before) q.set("before", String(opts.before));
+    if (opts.refresh) q.set("refresh", "1");
+    const res = await apiFetch(`/news?${q.toString()}`);
     if (seq !== _newsFetchSeq) return;
-    const posts = res.news || res.posts || res.items || [];
-    if (posts.length === 0) {
-      _lastNewsHash = "empty";
-      container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Новостей и объявлений пока нет</div>';
+    const posts = res.posts || res.news || res.items || [];
+
+    if (!isMore && posts.length === 0) {
+      container.innerHTML = '<div style="color: var(--muted-foreground); text-align: center; padding: 24px; font-size: 12px;">Новостей в @itheprison пока нет</div>';
       return;
     }
 
-    const newsHash = JSON.stringify(posts.map(p => [p.id || p.title, p.date, (p.text || p.content || "").slice(0, 60)]));
-    if (newsHash === _lastNewsHash && hasCards) return;
-    _lastNewsHash = newsHash;
+    if (!isMore) {
+      container.innerHTML = "";
+    } else {
+      container.querySelector("#btn-news-load-more")?.remove();
+    }
 
     const frag = document.createDocumentFragment();
-    posts.forEach(p => {
-      const card = document.createElement("div");
-      card.className = "news-post-card";
+    posts.forEach(p => frag.appendChild(renderNewsPostCard(p)));
 
-      const title = p.title || p.header || "Объявление";
-      const dateStr = p.date ? formatMoscowDateTime(new Date(p.date * 1000)) : (formatMoscowDateTime(p.created_at) || p.created_at || "");
-      const body = p.text || p.content || p.body || "";
+    if (res.has_more && posts.length > 0) {
+      const minId = posts[posts.length - 1].post_id;
+      _newsNextBefore = minId;
+      const moreBtn = document.createElement("button");
+      moreBtn.id = "btn-news-load-more";
+      moreBtn.className = "btn btn-secondary btn-sm";
+      moreBtn.style.cssText = "width: 100%; margin-top: 6px;";
+      moreBtn.textContent = "Показать еще";
+      moreBtn.addEventListener("click", () => loadNews({ before: _newsNextBefore }));
+      frag.appendChild(moreBtn);
+    }
 
-      let imagesHtml = "";
-      const images = p.images || p.photos || [];
-      if (Array.isArray(images) && images.length > 0) {
-        imagesHtml = '<div class="news-post-images">';
-        images.forEach(imgUrl => {
-          imagesHtml += `<img src="${imgUrl}" class="news-post-img" alt="Медиа" onerror="this.style.display='none'">`;
-        });
-        imagesHtml += '</div>';
-      }
-
-      card.innerHTML = `
-        <div class="news-post-header">
-          <div class="news-post-title">${title}</div>
-          <div class="news-post-date">${dateStr}</div>
-        </div>
-        <div class="news-post-body">${body}</div>
-        ${imagesHtml}
-      `;
-      frag.appendChild(card);
-    });
-    container.replaceChildren(frag);
+    container.appendChild(frag);
+    setupNewsVideoObserver(container);
   } catch (err) {
-    if (!hasCards) {
-      container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка загрузки новостей: ${err.message}</div>`;
+    if (!isMore) {
+      container.innerHTML = `<div style="color: var(--destructive); text-align: center; padding: 20px; font-size: 12px;">Ошибка загрузки новостей: ${escapeHtml(err.message)}</div>`;
     }
   }
 }
+
+async function loadUnifiedRaidsPlayers() {
+  const container = document.getElementById("unified-raids-players-list");
+  if (!container) return;
+  const sortEl = document.getElementById("raids-players-sort");
+  const srcEl = document.getElementById("raids-players-source");
+  const sortVal = sortEl ? sortEl.value : "fresh";
+  const srcVal = srcEl ? srcEl.value : "all";
+
+  try {
+    const res = await apiFetch(`/raids/players?sort=${encodeURIComponent(sortVal)}&source=${encodeURIComponent(srcVal)}`);
+    renderUnifiedRaidsPlayers(res);
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--destructive); font-size: 12px; padding: 8px;">Ошибка загрузки игроков: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderUnifiedRaidsPlayers(res) {
+  const container = document.getElementById("unified-raids-players-list");
+  const toggleEl = document.getElementById("raids-auto-invite-toggle");
+  const statusEl = document.getElementById("raids-auto-invite-status");
+  const autoInfo = (res && res.auto_invite) || {};
+
+  if (toggleEl) toggleEl.checked = Boolean(autoInfo.enabled);
+  if (statusEl) {
+    const st = autoInfo.enabled ? "Вкл" : "Выкл";
+    statusEl.textContent = `Авто-рассылка: ${st} (${autoInfo.sentLast24h || 0}/${autoInfo.dailyLimit || 50} за 24ч)`;
+  }
+
+  if (!container) return;
+  const players = (res && res.players) || [];
+  if (players.length === 0) {
+    container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 12px;">Активные игроки не найдены</div>';
+    return;
+  }
+
+  container.innerHTML = players.map(p => {
+    const stLabel = p.status === "friend" ? "Друг" : (p.status === "sent" ? "Отправлена" : "Новый");
+    const stColor = p.status === "friend" ? "#34d399" : (p.status === "sent" ? "#fbbf24" : "#93c5fd");
+    const sourcesTxt = (p.sources || [p.source]).join(", ");
+    const canInvite = p.status === "none";
+    return `
+      <div class="friend-card" data-user-id="${p.userId}" style="padding: 8px 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <div style="min-width: 0;">
+            <div style="font-weight: 700; font-size: 12px; color: #fff;">${escapeHtml(p.nickname || `Игрок #${p.userId}`)}</div>
+            <div style="font-size: 10px; color: var(--muted-foreground);">Урон: ${formatNum(p.damage || 0)} · Авторитет: ${formatNum(p.authority || 0)} · ${escapeHtml(sourcesTxt)}</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 10px; font-weight: 700; color: ${stColor};">${stLabel}</span>
+            ${canInvite ? `<button type="button" class="btn btn-primary btn-sm btn-unified-invite" data-user-id="${p.userId}">+ В друзья</button>` : ""}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  container.querySelectorAll(".btn-unified-invite").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const uid = Number(btn.getAttribute("data-user-id"));
+      if (!uid) return;
+      btn.disabled = true;
+      btn.textContent = "...";
+      try {
+        await apiFetch("/raids/invite", { method: "POST", body: JSON.stringify({ userId: uid }) });
+        btn.textContent = "Отправлено";
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "+ В друзья";
+      }
+    });
+  });
+}
+
+document.getElementById("raids-players-sort")?.addEventListener("change", loadUnifiedRaidsPlayers);
+document.getElementById("raids-players-source")?.addEventListener("change", loadUnifiedRaidsPlayers);
+document.getElementById("btn-refresh-unified-players")?.addEventListener("click", loadUnifiedRaidsPlayers);
+document.getElementById("raids-auto-invite-toggle")?.addEventListener("change", async (e) => {
+  const checked = Boolean(e.target.checked);
+  try {
+    await apiFetch("/config", { method: "PATCH", body: JSON.stringify({ auto_friend_outreach: checked }) });
+    if (botConfig) botConfig.auto_friend_outreach = checked;
+    showToast(checked ? "Авто-рассылка заявок включена" : "Авто-рассылка заявок выключена", "info");
+    loadUnifiedRaidsPlayers();
+  } catch (err) {
+    e.target.checked = !checked;
+    showToast(`Ошибка: ${err.message}`, "error");
+  }
+});
 
 // --- Subview 3: Радар активных дамагеров ---
 let _radarFetchSeq = 0;
@@ -9546,13 +9811,13 @@ function renderZarubyState(data) {
   if (tasksList) {
     tasksList.innerHTML = tasks.length
       ? tasks.map(t => {
-          const cur = Number(t.current ?? t.progress ?? 0);
-          const need = Number(t.target ?? t.need ?? 1);
-          const done = Boolean(t.completed || cur >= need);
-          const cls = t.classification || "unknown";
-          const tag = cls === "safe_auto" ? "Авто" : cls === "skip_damage" ? "Урон (пропуск)" : cls === "skip_paid" ? "Платное (пропуск)" : cls === "skip_energy_conflict" ? "Энергия (пауза)" : "Ручное";
-          return `<div class="zaruba-task-row" style="display:flex;justify-content:space-between;gap:8px;"><span>${escapeHtml(t.title || t.name || `Задание #${t.id || t.type}`)} (${cur}/${need})</span><span style="color:${done ? "#4ade80" : "#93c5fd"};">${done ? "Готово" : tag}</span></div>`;
-        }).join("")
+        const cur = Number(t.current ?? t.progress ?? 0);
+        const need = Number(t.target ?? t.need ?? 1);
+        const done = Boolean(t.completed || cur >= need);
+        const cls = t.classification || "unknown";
+        const tag = cls === "safe_auto" ? "Авто" : cls === "skip_damage" ? "Урон (пропуск)" : cls === "skip_paid" ? "Платное (пропуск)" : cls === "skip_energy_conflict" ? "Энергия (пауза)" : "Ручное";
+        return `<div class="zaruba-task-row" style="display:flex;justify-content:space-between;gap:8px;"><span>${escapeHtml(t.title || t.name || `Задание #${t.id || t.type}`)} (${cur}/${need})</span><span style="color:${done ? "#4ade80" : "#93c5fd"};">${done ? "Готово" : tag}</span></div>`;
+      }).join("")
       : `<div style="font-size:12px;color:var(--muted-foreground);">Задания появятся после старта зарубы</div>`;
   }
 

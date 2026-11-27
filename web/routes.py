@@ -2032,17 +2032,41 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
         if target_id not in unlocked_ids:
             unlocked_ids.append(int(target_id))
 
-        sem = asyncio.Semaphore(6)
-        async def _fetch_pstate(pid: int):
-            async with sem:
-                return pid, await _safe_state(pid)
+        from client.api.prison import compute_prison_shift_energy, compute_master_cycle_energy
 
-        state_pairs, checkpoints = await asyncio.gather(
-            asyncio.gather(*(_fetch_pstate(pid) for pid in unlocked_ids)),
-            _safe_checkpoints(target_id),
-        )
-        states_by_id = {pid: st for pid, st in state_pairs}
+        sem = asyncio.Semaphore(4)
+        async def _fetch_pstate_and_cps(pid: int):
+            async with sem:
+                st, cp_d, cp_n = await asyncio.gather(
+                    _safe_state(pid),
+                    _safe_checkpoints_for(pid, True),
+                    _safe_checkpoints_for(pid, False),
+                )
+                return pid, st, cp_d, cp_n
+
+        async def _safe_checkpoints_for(tid: int, day_flag: bool):
+            try:
+                cp = await prison_api.get_checkpoints(tid, day_flag)
+                if isinstance(cp, dict):
+                    data_cp = cp.get("data")
+                    if isinstance(data_cp, list):
+                        return data_cp
+                    fallback_cp = cp.get("checkpoints")
+                    if isinstance(fallback_cp, list):
+                        return fallback_cp
+                    return []
+                return cp if isinstance(cp, list) else []
+            except Exception:
+                return []
+
+        bundle_results = await asyncio.gather(*(_fetch_pstate_and_cps(pid) for pid in unlocked_ids))
+        states_by_id = {pid: st for pid, st, _, _ in bundle_results}
+        cps_day_by_id = {pid: cp_d for pid, _, cp_d, _ in bundle_results}
+        cps_night_by_id = {pid: cp_n for pid, _, _, cp_n in bundle_results}
         state_data = states_by_id.get(int(target_id), {})
+        checkpoints = cps_day_by_id.get(int(target_id), []) if is_day else cps_night_by_id.get(int(target_id), [])
+        if not checkpoints:
+            checkpoints = await _safe_checkpoints(target_id)
 
         enriched_prisons = []
         for idx, p in enumerate(raw_prisons):
@@ -2054,9 +2078,28 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
             if isinstance(st, dict):
                 p_copy["dayRuns"] = int(st.get("dayRuns", p_copy.get("dayRuns", 0)) or 0)
                 p_copy["nightRuns"] = int(st.get("nightRuns", p_copy.get("nightRuns", 0)) or 0)
+                d_full, d_rem = compute_prison_shift_energy(
+                    cps_day_by_id.get(int(pid), []),
+                    completed_cps=int(st.get("dayCurrentCheckpoint") or 0),
+                    current_clicks=int(st.get("dayClicksInCheckpoint") or 0),
+                )
+                n_full, n_rem = compute_prison_shift_energy(
+                    cps_night_by_id.get(int(pid), []),
+                    completed_cps=int(st.get("nightCurrentCheckpoint") or 0),
+                    current_clicks=int(st.get("nightClicksInCheckpoint") or 0),
+                )
+                p_copy["day_full_energy"] = d_full
+                p_copy["day_remaining_energy"] = d_rem
+                p_copy["night_full_energy"] = n_full
+                p_copy["night_remaining_energy"] = n_rem
             else:
                 p_copy.setdefault("dayRuns", 0)
                 p_copy.setdefault("nightRuns", 0)
+                p_copy["day_full_energy"] = 0
+                p_copy["day_remaining_energy"] = 0
+                p_copy["night_full_energy"] = 0
+                p_copy["night_remaining_energy"] = 0
+
             if not p_copy.get("isUnlocked", True):
                 req_text = p_copy.get("unlockRequirement") or p_copy.get("unlock_requirement")
                 if not req_text and idx > 0 and isinstance(raw_prisons[idx - 1], dict):
@@ -2068,6 +2111,32 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
                 p_copy["unlockRequirement"] = req_text
                 p_copy["unlock_requirement"] = req_text
             enriched_prisons.append(p_copy)
+
+        if isinstance(masters, list) and masters:
+            async def _enrich_master(m: Any) -> None:
+                if not isinstance(m, dict):
+                    return
+                mid = m.get("id")
+                if mid is not None and not (m.get("checkpoints") or m.get("steps")):
+                    try:
+                        async with sem:
+                            m_enter = await prison_api.enter_master(int(mid))
+                        if isinstance(m_enter, dict):
+                            if m_enter.get("locked"):
+                                m["locked"] = True
+                            if isinstance(m_enter.get("checkpoints"), list):
+                                m["checkpoints"] = m_enter["checkpoints"]
+                            if isinstance(m_enter.get("data"), dict) and isinstance(m_enter["data"].get("progress"), dict):
+                                m["progress"] = m_enter["data"]["progress"]
+                                if m_enter["data"]["progress"].get("level") is not None:
+                                    m["level"] = m_enter["data"]["progress"].get("level")
+                    except Exception:
+                        pass
+                m_full, m_rem = compute_master_cycle_energy(m)
+                m["full_cycle_energy"] = m_full
+                m["remaining_cycle_energy"] = m_rem
+
+            await asyncio.gather(*(_enrich_master(m) for m in masters))
 
         completed_cps = int(
             (state_data.get("dayCurrentCheckpoint") if is_day else state_data.get("nightCurrentCheckpoint"))
@@ -5129,6 +5198,165 @@ async def action_buy_baul(payload: Dict[str, Any] = Body(...), account_id: int =
 
 
 _raids_api = RaidsAPI()
+
+
+@api_router.get("/news")
+async def get_official_news(
+    limit: int = Query(12, ge=1, le=30),
+    before: Optional[int] = Query(None),
+    refresh: bool = Query(False),
+) -> Dict[str, Any]:
+    """Лента новостей официального Telegram-канала @itheprison с кэшированием и пагинацией."""
+    from telegram.news_feed_service import news_feed_service
+
+    return await news_feed_service.get_feed(limit=limit, before=before, force_refresh=refresh)
+
+
+@public_router.get("/news/media/{media_id}")
+async def get_official_news_media(media_id: str, request: Request):
+    """Публичный прокси-кэш медиафайлов новостей (для <img>/<video> без Bearer) с поддержкой HTTP Range (206)."""
+    import re as _re
+    from fastapi.responses import Response
+    from telegram.news_feed_service import news_feed_service
+
+    if not _re.fullmatch(r"[a-fA-F0-9]{8,64}", str(media_id or "")):
+        raise HTTPException(status_code=404, detail="News media not found")
+
+    file_path, ctype = await news_feed_service.get_or_fetch_media(media_id)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="News media not found")
+
+    raw_bytes = file_path.read_bytes()
+    total_len = len(raw_bytes)
+    etag = f'"{media_id}-{total_len}"'
+    base_headers = {
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Accept-Ranges": "bytes",
+        "ETag": etag,
+    }
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if range_header and range_header.lower().startswith("bytes="):
+        spec = range_header.split("=", 1)[1].strip().split(",")[0].strip()
+        start_str, _, end_str = spec.partition("-")
+        try:
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else (total_len - 1)
+            start = max(0, min(start, max(0, total_len - 1)))
+            end = max(start, min(end, max(0, total_len - 1)))
+            chunk = raw_bytes[start : end + 1]
+            headers = {
+                **base_headers,
+                "Content-Range": f"bytes {start}-{end}/{total_len}",
+                "Content-Length": str(len(chunk)),
+            }
+            return Response(content=chunk, status_code=206, media_type=ctype or "application/octet-stream", headers=headers)
+        except ValueError:
+            pass
+
+    return Response(content=raw_bytes, status_code=200, media_type=ctype or "application/octet-stream", headers=base_headers)
+
+
+@api_router.get("/raids/players")
+async def get_unified_raids_players(
+    sort: str = Query("fresh"),
+    source: str = Query("all"),
+    limit: int = Query(80, ge=1, le=200),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Единый дедуплицированный список активных игроков из всех источников с сортировкой и статусом Авто."""
+    from core.models import TrackedCandidate, SentFriendRequest, FriendStats
+
+    engine = bot_context.db_engine
+    if not engine:
+        return {"success": True, "players": [], "total": 0, "auto_invite": {"enabled": False, "sentLast24h": 0, "dailyLimit": 50}}
+
+    cfg = await get_or_create_config(account_id, engine)
+    safety = await _raids_api.rate_guard.get_safety_status(
+        account_id=account_id,
+        daily_limit=getattr(cfg, "auto_friend_outreach_daily_limit", 50),
+        db_engine=engine,
+    )
+
+    async with get_session(engine) as session:
+        stmt = select(TrackedCandidate).where(TrackedCandidate.account_id == account_id)
+        if source and source != "all":
+            stmt = stmt.where(TrackedCandidate.source == source)
+        rows = (await session.execute(stmt)).scalars().all()
+
+        sent_rows = (
+            await session.execute(
+                select(SentFriendRequest.target_user_id, SentFriendRequest.status).where(
+                    SentFriendRequest.account_id == account_id
+                )
+            )
+        ).all()
+        sent_map = {int(uid): str(st or "sent") for uid, st in sent_rows if uid is not None}
+
+        friend_rows = (
+            await session.execute(
+                select(FriendStats.user_id).where(
+                    FriendStats.account_id == account_id,
+                    FriendStats.is_current_friend == True,
+                )
+            )
+        ).scalars().all()
+        friend_ids = {int(uid) for uid in friend_rows if uid is not None}
+
+    dedup: Dict[int, Dict[str, Any]] = {}
+    for c in rows:
+        uid = int(c.user_id)
+        dmg = max(int(c.poison_damage or 0), int(c.total_damage or 0))
+        auth = int(c.authority or 0)
+        status = "friend" if uid in friend_ids else sent_map.get(uid, "none")
+        ts = c.last_seen_at.isoformat() if c.last_seen_at else ""
+        src_name = str(c.source or "radar")
+        if uid in dedup:
+            existing = dedup[uid]
+            if src_name not in existing["sources"]:
+                existing["sources"].append(src_name)
+            if dmg > existing["damage"]:
+                existing["damage"] = dmg
+            if auth > existing["authority"]:
+                existing["authority"] = auth
+            if ts > existing["last_seen_at"]:
+                existing["last_seen_at"] = ts
+        else:
+            dedup[uid] = {
+                "userId": uid,
+                "nickname": c.nickname or f"Игрок #{uid}",
+                "authority": auth,
+                "damage": dmg,
+                "poisonDamage": int(c.poison_damage or 0),
+                "totalDamage": int(c.total_damage or 0),
+                "biceps": int(getattr(c, "biceps", 0) or 0),
+                "source": src_name,
+                "sources": [src_name],
+                "status": status,
+                "last_seen_at": ts,
+            }
+
+    players = list(dedup.values())
+    sort_key = str(sort or "fresh").lower()
+    if sort_key == "damage":
+        players.sort(key=lambda x: (x["damage"], x["authority"]), reverse=True)
+    elif sort_key == "authority":
+        players.sort(key=lambda x: (x["authority"], x["damage"]), reverse=True)
+    elif sort_key == "source":
+        players.sort(key=lambda x: (x["source"], -x["damage"]))
+    else:
+        players.sort(key=lambda x: (x["last_seen_at"], x["damage"]), reverse=True)
+
+    return {
+        "success": True,
+        "players": players[:limit],
+        "total": len(players),
+        "auto_invite": {
+            "enabled": bool(getattr(cfg, "auto_friend_outreach", False)),
+            "sentLast24h": int(safety.get("sentLast24h") or 0),
+            "dailyLimit": int(safety.get("dailyLimit") or 50),
+        },
+    }
 
 
 @api_router.get("/raids")

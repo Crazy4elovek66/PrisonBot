@@ -501,3 +501,47 @@ def test_compute_next_stage_wait_seconds():
     )
     assert abs(w_partial - 184.0) < 0.1
 
+
+def test_compute_prison_shift_energy_and_master_cycle_energy():
+    from client.api.prison import compute_prison_shift_energy, compute_master_cycle_energy
+
+    checkpoints = [
+        {"checkpointId": 1, "clicksRequired": 5, "energyCost": 2},   # 10
+        {"checkpointId": 2, "clicksRequired": 10, "energyCost": 3},  # 30
+        {"checkpointId": 3, "clicksRequired": 4, "energyCost": 5},   # 20
+    ]
+    full, rem = compute_prison_shift_energy(checkpoints, completed_cps=0, current_clicks=0)
+    assert (full, rem) == (60, 60)
+
+    full_mid, rem_mid = compute_prison_shift_energy(checkpoints, completed_cps=1, current_clicks=4)
+    assert full_mid == 60
+    assert rem_mid == (10 - 4) * 3 + 20  # 38
+
+    full_done, rem_done = compute_prison_shift_energy(checkpoints, completed_cps=3, current_clicks=0)
+    assert (full_done, rem_done) == (60, 0)
+
+    m_full, m_rem = compute_master_cycle_energy({"energyCost": 4, "maxProgress": 10, "progress": 3})
+    assert (m_full, m_rem) == (40, 28)
+
+    m_steps_full, m_steps_rem = compute_master_cycle_energy(
+        {"steps": [{"clicksRequired": 3, "energyCost": 5}, {"clicksRequired": 2, "energyCost": 5}], "currentStep": 1, "currentClicks": 1}
+    )
+    assert (m_steps_full, m_steps_rem) == (25, 5)
+
+    # Реальная структура ответа /api/player/masters/{id}/enter
+    real_enter_payload = {
+        "success": True,
+        "data": {
+            "masterId": 1,
+            "progress": {"masterId": 1, "currentCheckpoint": 1, "clicksInCheckpoint": 2, "level": 0},
+        },
+        "checkpoints": [
+            {"checkpointId": 1, "clicksRequired": 5, "energyCost": 2},  # 10 (пройден)
+            {"checkpointId": 2, "clicksRequired": 6, "energyCost": 2},  # 12 (2 клика сделано -> ост. 8)
+            {"checkpointId": 3, "clicksRequired": 7, "energyCost": 4},  # 28
+        ],
+    }
+    r_full, r_rem = compute_master_cycle_energy(real_enter_payload)
+    assert (r_full, r_rem) == (50, 36)
+
+

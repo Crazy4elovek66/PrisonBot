@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v26" in sw
+    assert "prisonbot-assets-v28" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_05";' in js
+    assert 'const ASSET_VERSION = "20261127_07";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_05" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_07" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_05"',
-        'src="assets/icons/room_reward.webp?v=20261127_05"',
-        'src="assets/icons/complect.webp?v=20261127_05"',
-        'src="assets/icons/podogrev.webp?v=20261127_05"',
-        'src="assets/icons/authority.webp?v=20261127_05"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_05"',
+        'src="assets/icons/boss.webp?v=20261127_07"',
+        'src="assets/icons/room_reward.webp?v=20261127_07"',
+        'src="assets/icons/complect.webp?v=20261127_07"',
+        'src="assets/icons/podogrev.webp?v=20261127_07"',
+        'src="assets/icons/authority.webp?v=20261127_07"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_07"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1352,3 +1352,260 @@ console.log('HOME_STEW_PARCELS_SMOKE_OK');
     assert not re.search(r'stew\.webp[^>]*>\s*До гарантированной вещи', card_html)
     for val_block in re.findall(r'<span class="parcel-progress-val">(.*?)</span>\s*</div>', card_html, re.S):
         assert "<img" not in val_block
+
+
+def test_js_smoke_friend_request_removal_and_news_raids_and_energy():
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js_text = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+
+    # Вкладка Рейды и Новости: строго 2 основные вкладки
+    assert 'data-raids-tab="raids"' in html
+    assert 'data-raids-tab="news"' in html
+    assert 'data-raids-tab="radar"' not in html
+    assert 'data-raids-tab="invites"' not in html
+    assert 'id="unified-raids-players-list"' in html
+    assert 'id="raids-auto-invite-toggle"' in html
+    assert '<input type="checkbox" id="raids-auto-invite-toggle">\n                <span class="toggle-slider"></span>' in html.replace("\r\n", "\n")
+    assert 'id="master-cycle-energy-info"' in html
+
+    def extract_fn(src: str, sig: str) -> str:
+        idx = src.index(sig)
+        brace_start = src.index("{", idx)
+        depth = 0
+        for pos in range(brace_start, len(src)):
+            ch = src[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[idx : pos + 1]
+        raise AssertionError(f"Unclosed function: {sig}")
+
+    extracted_js = "\n\n".join([
+        extract_fn(js_text, "function getAppBasePrefix("),
+        extract_fn(js_text, "function resolveAppAssetUrl("),
+        extract_fn(js_text, "function getFriendRequestKey("),
+        extract_fn(js_text, "function renderFriendRequestsData("),
+        extract_fn(js_text, "function applySocialUpdatedEvent("),
+        extract_fn(js_text, "function renderPrisonsGrid("),
+        "let _mastersCatalogCache = [];\n" + extract_fn(js_text, "function updateSelectedMasterEnergyInfo("),
+        extract_fn(js_text, "function renderMastersSelect("),
+        extract_fn(js_text, "function renderNewsPostCard("),
+    ])
+
+    node_script = f"""
+const vm = require('vm');
+const els = {{}};
+function makeEl(id) {{
+  let html = '';
+  let text = '';
+  const children = [];
+  const attrs = {{}};
+  const slots = {{}};
+  const el = {{
+    id,
+    children,
+    slots,
+    style: {{}},
+    dataset: {{}},
+    parentNode: null,
+    classList: {{
+      _set: new Set(),
+      add(...c) {{ c.forEach(x => this._set.add(x)); }},
+      remove(...c) {{ c.forEach(x => this._set.delete(x)); }},
+      toggle(c, force) {{
+        if (force === undefined) {{ if (this._set.has(c)) this._set.delete(c); else this._set.add(c); }}
+        else if (force) this._set.add(c); else this._set.delete(c);
+      }},
+      contains(c) {{ return this._set.has(c); }},
+    }},
+    get innerHTML() {{ return html; }},
+    set innerHTML(v) {{ html = String(v); if (!html) children.length = 0; }},
+    get textContent() {{ return text; }},
+    set textContent(v) {{ text = String(v); }},
+    setAttribute(k, v) {{ attrs[k] = String(v); }},
+    getAttribute(k) {{ return attrs[k] || null; }},
+    addEventListener() {{}},
+    querySelectorAll() {{ return []; }},
+    querySelector(sel) {{
+      if (!slots[sel]) slots[sel] = makeEl(sel);
+      return slots[sel];
+    }},
+    closest() {{ return null; }},
+    appendChild(ch) {{ ch.parentNode = el; children.push(ch); return ch; }},
+    remove() {{
+      if (el.parentNode) {{
+        const idx = el.parentNode.children.indexOf(el);
+        if (idx >= 0) el.parentNode.children.splice(idx, 1);
+      }}
+    }},
+  }};
+  return el;
+}}
+for (const id of [
+  'friend-requests-list', 'friend-requests-count', 'drawer-friends-badge',
+  'prisons-catalog-grid', 'select-master', 'master-cycle-energy-info',
+  'news-list-container'
+]) {{
+  els[id] = makeEl(id);
+}}
+
+const sandbox = {{
+  console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
+  ASSET_VERSION: '20261127_07',
+  currentPrisonId: 1,
+  liveSlices: {{ data: {{}} }},
+  domainRevisions: {{}},
+  escapeHtml: (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+  formatNum: (n) => String(n ?? 0),
+  formatCompactNumber: (n) => String(n ?? 0),
+  formatMoscowTime: (s) => String(s ?? ''),
+  gameIcon: (name) => `<img src="/static/assets/icons/${{name}}">`,
+  setTextIfChanged: (el, val) => {{ if (el) el.textContent = String(val ?? ''); }},
+  reconcileKeyedList: (container, items, keyFn, sigFn, createFn) => {{
+    container.innerHTML = '';
+    for (const item of items) {{
+      container.appendChild(createFn(item));
+    }}
+  }},
+  isSlowNetworkConnection: () => false,
+  showToast: () => {{}},
+  applyAuthQuery: (u) => String(u || ''),
+  setTimeout: (fn) => {{ fn(); return 1; }},
+  clearTimeout: () => {{}},
+  navigator: {{}},
+  location: {{ search: '', hostname: 'zvezdoed.space', origin: 'https://zvezdoed.space', pathname: '/prison/' }},
+  IntersectionObserver: undefined,
+  document: {{
+    getElementById: (id) => els[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => makeEl('dyn'),
+  }},
+}};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext({json.dumps(extracted_js)}, sandbox);
+
+// 1) Принятие 1 из 2 заявок не удаляет 2-ю заявку и ставит счетчик 1
+vm.runInContext(`
+  liveSlices.data.friend_requests = {{
+    success: true,
+    requests: [
+      {{ userId: 101, nickname: 'First', authority: 100 }},
+      {{ userId: 202, nickname: 'Second', authority: 200 }}
+    ],
+    total: 2
+  }};
+  renderFriendRequestsData(liveSlices.data.friend_requests);
+  applySocialUpdatedEvent({{ accepted_ids: [101], revision: 2 }});
+`, sandbox);
+
+const frChildren = els['friend-requests-list'].children;
+if (frChildren.length !== 1 || !frChildren[0].innerHTML.includes('Second')) {{
+  throw new Error('Second friend request disappeared! children=' + frChildren.length);
+}}
+if (els['friend-requests-count'].textContent !== '1') {{
+  throw new Error('Expected friend-requests-count === 1, got ' + els['friend-requests-count'].textContent);
+}}
+
+// 2) Все 15 тюрем + полная энергия тюрем и мастеров
+vm.runInContext(`
+  const fifteenPrisons = Array.from({{ length: 15 }}, (_, i) => ({{
+    id: i + 1,
+    name: 'Тюрьма ' + (i + 1),
+    isUnlocked: i < 5,
+    day_full_energy: 60 + i,
+    day_remaining_energy: 60 + i,
+    night_full_energy: 40 + i,
+    night_remaining_energy: 25,
+  }}));
+  renderPrisonsGrid(fifteenPrisons);
+  renderMastersSelect([
+    {{ id: 10, name: 'ПЕТЯ ВЕРСТАК', level: 1, full_cycle_energy: 50, remaining_cycle_energy: 20 }}
+  ]);
+`, sandbox);
+if (els['prisons-catalog-grid'].children.length !== 15) {{
+  throw new Error('Expected 15 prison cards, got ' + els['prisons-catalog-grid'].children.length);
+}}
+const prisonEnergyHtml = els['prisons-catalog-grid'].children[0]?.slots['.prison-tile-energy']?.innerHTML || '';
+if (!prisonEnergyHtml.includes('60') || !prisonEnergyHtml.includes('40')) {{
+  throw new Error('Prison full energy missing: ' + prisonEnergyHtml);
+}}
+const masterText = els['select-master'].children[0]?.textContent || '';
+if (!masterText.includes('50')) {{
+  throw new Error('Master full energy missing: ' + masterText);
+}}
+if (!els['master-cycle-energy-info'].innerHTML.includes('50')) {{
+  throw new Error('Master energy info bar missing: ' + els['master-cycle-energy-info'].innerHTML);
+}}
+
+// 3) Новости (blockquote + lazy video + префикс /prison/)
+const newsCardHtml = vm.runInContext(`
+  renderNewsPostCard({{
+    post_id: 77,
+    published_at: '2026-11-27T12:00:00Z',
+    views: '1.5K',
+    html: '<b>Тест</b><blockquote>Цитата</blockquote>',
+    media: [{{ id: 'm1', type: 'gif', url: '/api/v1/news/media/m1', poster_url: '/api/v1/news/media/p1' }}],
+    url: 'https://t.me/itheprison/77'
+  }}).innerHTML;
+`, sandbox);
+if (!newsCardHtml.includes('<blockquote>Цитата</blockquote>') || !newsCardHtml.includes('news-gif-video')) {{
+  throw new Error('News render missing blockquote/video: ' + newsCardHtml);
+}}
+if (!newsCardHtml.includes('/prison/api/v1/news/media/m1') || !newsCardHtml.includes('/prison/api/v1/news/media/p1')) {{
+  throw new Error('News media missing /prison/ prefix: ' + newsCardHtml);
+}}
+console.log('ALL_JS_SMOKES_OK');
+"""
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert proc.returncode == 0, f"Node smoke failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+    assert "ALL_JS_SMOKES_OK" in proc.stdout
+
+
+@pytest.mark.asyncio
+async def test_live_prisons_returns_all_15_and_master_cycle_energy():
+    mock_prison_api = AsyncMock()
+    mock_prison_api.get_all_prisons = AsyncMock(return_value={
+        "prisons": [{"id": i, "name": f"Тюрьма {i}", "isUnlocked": i <= 5} for i in range(1, 16)]
+    })
+    mock_prison_api.get_masters = AsyncMock(return_value={
+        "masters": [{"id": 1, "name": "ПЕТЯ ВЕРСТАК"}, {"id": 2, "name": "ЯША В ПОЛЕДЫМ"}]
+    })
+    mock_prison_api.get_prison_state = AsyncMock(return_value={"data": {"dayRuns": 1, "nightRuns": 0}})
+    mock_prison_api.get_checkpoints = AsyncMock(return_value={"data": [{"checkpointId": 1, "clicksRequired": 5, "energyCost": 2}]})
+
+    async def _enter_master(mid):
+        if mid == 1:
+            return {
+                "success": True,
+                "data": {"masterId": 1, "progress": {"currentCheckpoint": 0, "clicksInCheckpoint": 0, "level": 1}},
+                "checkpoints": [{"checkpointId": 1, "clicksRequired": 5, "energyCost": 3}],
+            }
+        return {"success": False, "locked": True}
+
+    mock_prison_api.enter_master = AsyncMock(side_effect=_enter_master)
+    orig_api = bot_context.prison_api
+    bot_context.prison_api = mock_prison_api
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/api/v1/live/prisons?force=true", headers=AUTH_HEADERS)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert len(data["prisons"]) == 15
+            assert data["prisons"][0]["day_full_energy"] == 10
+            assert data["masters"][0]["full_cycle_energy"] == 15
+            assert data["masters"][1]["locked"] is True
+    finally:
+        bot_context.prison_api = orig_api
+
+

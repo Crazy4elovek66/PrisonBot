@@ -102,7 +102,13 @@ def parse_zaruby_state(raw_payload: Any, config: Any = None, now_unix: Optional[
     overall_pct = round(total_pct_sum / len(tasks_out)) if tasks_out else 0
     mode_int = int(active.get("mode") or 1) if active else 1
     tier_key = MODE_TO_TIER.get(mode_int, "pacan")
-    end_unix = int(active.get("endUnix") or 0) if active else 0
+    raw_end = active.get("endUnix") if active else 0
+    try:
+        end_unix = int(raw_end or 0)
+        if end_unix > 10_000_000_000:
+            end_unix //= 1000
+    except (TypeError, ValueError):
+        end_unix = 0
     seconds_left = max(0, end_unix - cur_unix) if end_unix > 0 else 0
 
     participants_raw = (active.get("participants") or []) if active else []

@@ -741,3 +741,125 @@ async def test_multi_tier_guild_scan_and_authority_bounds():
     await test_engine.dispose()
 
 
+def test_news_feed_service_parse_sanitize_and_ssrf():
+    from telegram.news_feed_service import parse_telegram_channel_html, is_allowed_telegram_media_url
+
+    assert is_allowed_telegram_media_url("https://cdn4.telesco.pe/file/abc.mp4") is True
+    assert is_allowed_telegram_media_url("https://cdn1.cdn-telegram.org/file/x.jpg") is True
+    assert is_allowed_telegram_media_url("http://127.0.0.1:8080/secret") is False
+    assert is_allowed_telegram_media_url("https://evil.example.com/file.mp4") is False
+
+    sample_html = """
+    <div class="tgme_widget_message" data-post="itheprison/42">
+      <div class="tgme_widget_message_text">
+        <b>Обновление</b>
+        <blockquote>Важная цитата</blockquote>
+        <script>alert(1)</script>
+        <a href="javascript:alert(2)" onclick="evil()">bad</a>
+        <a href="https://t.me/itheprison/42">link</a>
+      </div>
+      <div class="tgme_widget_message_video_thumb" style="background-image:url('https://cdn4.telesco.pe/file/poster.jpg')"></div>
+      <video src="https://cdn4.telesco.pe/file/anim.mp4"></video>
+      <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://evil.com/ssrf.jpg')"></a>
+      <time datetime="2026-11-27T12:00:00+00:00"></time>
+      <span class="tgme_widget_message_views">1.2K</span>
+    </div>
+    """
+    posts, media_reg = parse_telegram_channel_html(sample_html, channel="itheprison")
+    assert len(posts) == 1
+    p = posts[0]
+    assert p["post_id"] == 42
+    assert "<b>Обновление</b>" in p["html"]
+    assert "<blockquote>Важная цитата</blockquote>" in p["html"]
+    assert "<script" not in p["html"]
+    assert "javascript:" not in p["html"]
+    assert 'href="https://t.me/itheprison/42"' in p["html"]
+    assert len(p["media"]) == 1
+    assert p["media"][0]["type"] == "gif"
+    assert p["media"][0]["poster_url"] is not None
+    assert all("evil.com" not in v["url"] for v in media_reg.values())
+
+
+@pytest.mark.asyncio
+async def test_web_news_media_range_and_raids_players_endpoint(tmp_path, monkeypatch):
+    from httpx import AsyncClient, ASGITransport
+    from core.config import settings
+    from core.database import get_engine, init_db, get_session
+    from core.models import Account, BotConfig, TrackedCandidate
+    from web.app import app
+    from web.routes import bot_context
+    from telegram.news_feed_service import news_feed_service
+
+    monkeypatch.setattr(settings, "WEB_ADMIN_TOKEN", "test_admin_token")
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    # Подготовим локальный кэш медиа для проверки Range 206
+    media_id = "abcdef1234567890abcdef12"
+    media_file = tmp_path / f"{media_id}.mp4"
+    media_file.write_bytes(b"0123456789abcdef")
+    orig_media_dir = news_feed_service.media_dir
+    news_feed_service.media_dir = tmp_path
+    news_feed_service._media_registry[media_id] = {"url": "https://cdn4.telesco.pe/file/test.mp4", "kind": "gif"}
+    monkeypatch.setattr(
+        news_feed_service,
+        "get_feed",
+        AsyncMock(return_value={"posts": [{"post_id": 99, "html": "<b>News</b>", "media": []}], "has_more": False, "next_before": None, "cached": True}),
+    )
+    monkeypatch.setattr(
+        news_feed_service,
+        "get_or_fetch_media",
+        AsyncMock(return_value=(media_file, "video/mp4")),
+    )
+
+    engine = get_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    async with get_session(engine) as session:
+        acc = Account(phone="+79995554433", nickname="RaidsTester")
+        session.add(acc)
+        await session.flush()
+        session.add(BotConfig(account_id=acc.id, auto_friend_outreach=True))
+        session.add_all([
+            TrackedCandidate(account_id=acc.id, user_id=101, nickname="First", total_damage=900, authority=1000, source="channel"),
+            TrackedCandidate(account_id=acc.id, user_id=202, nickname="Second", total_damage=2000, authority=3000, source="radar"),
+        ])
+        acc_id = acc.id
+
+    orig_engine = bot_context.db_engine
+    bot_context.db_engine = engine
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            r_news = await ac.get("/api/v1/news?limit=12", headers=headers)
+            assert r_news.status_code == 200
+            assert r_news.json()["posts"][0]["post_id"] == 99
+
+            # Публичный доступ к медиа без заголовка авторизации (браузерные <img>/<video>)
+            r_media_public = await ac.get(f"/api/v1/news/media/{media_id}")
+            assert r_media_public.status_code == 200
+            assert r_media_public.content == b"0123456789abcdef"
+
+            r_media = await ac.get(f"/api/v1/news/media/{media_id}", headers={"Range": "bytes=0-3"})
+            assert r_media.status_code == 206
+            assert r_media.content == b"0123"
+            assert r_media.headers.get("content-range") == "bytes 0-3/16"
+
+            from telegram.news_feed_service import _is_valid_media_bytes
+            assert _is_valid_media_bytes(b"<html><body>403 Forbidden</body></html>", "text/html") is False
+            assert _is_valid_media_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01", "image/jpeg") is True
+
+            r_players = await ac.get(f"/api/v1/raids/players?sort=damage&account_id={acc_id}", headers=headers)
+            assert r_players.status_code == 200
+            pdata = r_players.json()
+            assert pdata["success"] is True
+            assert pdata["auto_invite"]["enabled"] is True
+            assert len(pdata["players"]) == 2
+            assert pdata["players"][0]["userId"] == 202
+            assert pdata["players"][1]["userId"] == 101
+    finally:
+        news_feed_service.media_dir = orig_media_dir
+        bot_context.db_engine = orig_engine
+        await engine.dispose()
+
+
+

@@ -52,6 +52,7 @@ class ZarubyWorker:
 
             try:
                 raw_st = await self.zaruby_api.get_state()
+                server_health_monitor.record_success()
                 parsed = parse_zaruby_state(raw_st, config=config)
 
                 claimed = False
@@ -83,8 +84,10 @@ class ZarubyWorker:
                             )
                         raw_st = await self.zaruby_api.get_state()
                         parsed = parse_zaruby_state(raw_st, config=config)
+                    except GameMaintenanceError:
+                        raise
                     except Exception as ce:
-                        logger.debug("Zaruby claim error: %s", ce)
+                        logger.warning("Zaruby claim error: %s", ce)
 
                 # 2. Старт нового заруба, если активного нет
                 if not parsed["active"]:
@@ -106,17 +109,19 @@ class ZarubyWorker:
                         if (fw_res.get("spins_done") or 0) > 0:
                             safe_actions_done += 1
 
-                # 4. Планируем точный real-time wake-up на окончание 24ч окна заруба
+                # 4. Планируем точный real-time wake-up только в будущем
                 if self.on_wakeup_schedule is not None and parsed.get("end_unix", 0) > 0:
                     wake_dt = datetime.fromtimestamp(int(parsed["end_unix"]) + 5, tz=timezone.utc)
-                    self.on_wakeup_schedule("zaruby", wake_dt)
+                    if wake_dt > datetime.now(timezone.utc):
+                        self.on_wakeup_schedule("zaruby", wake_dt)
 
-                if claimed or started or safe_actions_done > 0:
-                    try:
-                        from core.state_hub import state_hub
+                try:
+                    from core.state_hub import state_hub
+                    state_hub.set_domain_data(self.account_id, "zaruby", parsed)
+                    if claimed or started or safe_actions_done > 0:
                         state_hub.notify_mutation(self.account_id, "zarub_updated", reason="zaruby_worker")
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
                 return {
                     "status": "ok",
