@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -304,6 +304,92 @@ async def get_or_create_config(account_id: int, engine: Optional[AsyncEngine] = 
             await session.commit()
             await session.refresh(cfg)
         return cfg
+
+
+_VALID_BOSS_MODES = {"pacansky", "blotnoy", "avtoritetny"}
+_BOSS_MODE_ALIASES = {
+    "pacansky": "pacansky",
+    "pacan": "pacansky",
+    "пацанский": "pacansky",
+    "blotnoy": "blotnoy",
+    "blatnoy": "blotnoy",
+    "блатной": "blotnoy",
+    "avtoritetny": "avtoritetny",
+    "authority": "avtoritetny",
+    "авторитетный": "avtoritetny",
+}
+
+
+def normalize_boss_mode(mode: Any, default: str = "pacansky") -> str:
+    """Нормализует режим атаки босса к каноническому виду."""
+    if not mode:
+        return default
+    key = str(mode).strip().lower()
+    return _BOSS_MODE_ALIASES.get(key, default if default in _VALID_BOSS_MODES else "pacansky")
+
+
+def normalize_boss_targets(raw_targets: Any) -> List[Dict[str, Any]]:
+    """
+    Нормализует и дедуплицирует очередь целей боссов.
+    Гарантирует единый контракт элементов и синхронизированный монотонный priority (0..N-1).
+    """
+    if not isinstance(raw_targets, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    for item in raw_targets:
+        if isinstance(item, dict):
+            if item.get("enabled") is False:
+                continue
+            raw_id = (
+                item.get("bossId")
+                if item.get("bossId") is not None
+                else (item.get("boss_id") if item.get("boss_id") is not None else item.get("id"))
+            )
+            if raw_id is None:
+                continue
+            try:
+                boss_id = int(raw_id)
+            except (ValueError, TypeError):
+                continue
+            if boss_id in seen_ids:
+                continue
+            seen_ids.add(boss_id)
+
+            mode = normalize_boss_mode(item.get("mode"), default="pacansky")
+            raw_limit = item.get("limit") if item.get("limit") is not None else item.get("daily_limit")
+            try:
+                limit_val = max(1, min(50, int(raw_limit if raw_limit is not None else 7)))
+            except (ValueError, TypeError):
+                limit_val = 7
+
+            name_val = item.get("name") or item.get("bossName")
+            entry: Dict[str, Any] = {
+                "bossId": boss_id,
+                "mode": mode,
+                "limit": limit_val,
+                "enabled": True,
+                "priority": len(normalized),
+            }
+            if name_val:
+                entry["name"] = str(name_val)
+            normalized.append(entry)
+        elif isinstance(item, (int, str)) and str(item).strip().isdigit():
+            boss_id = int(str(item).strip())
+            if boss_id in seen_ids:
+                continue
+            seen_ids.add(boss_id)
+            normalized.append({
+                "bossId": boss_id,
+                "mode": "pacansky",
+                "limit": 7,
+                "enabled": True,
+                "priority": len(normalized),
+            })
+
+    return normalized
 
 
 def is_worker_active(config) -> bool:

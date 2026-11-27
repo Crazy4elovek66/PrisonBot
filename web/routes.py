@@ -579,8 +579,11 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
             "updatedAt": snapshot.created_at.isoformat() if snapshot.created_at else None,
         }
 
+    from core.database import normalize_boss_targets
+
     cfg_data = {c.name: getattr(cfg, c.name) for c in BotConfig.__table__.columns}
-    cfg_data["boss_targets"] = cfg.boss_targets or []
+    cfg_data["boss_targets"] = normalize_boss_targets(cfg.boss_targets or [])
+    cfg_data["config_updated_at"] = cfg.updated_at.isoformat() if getattr(cfg, "updated_at", None) else None
     cfg_data["auto_boss_enabled"] = bool(
         getattr(cfg, "auto_boss_enabled", False) or cfg.auto_boss_hits or cfg.auto_boss_summon
     )
@@ -633,8 +636,12 @@ async def get_bot_config(account_id: int = 1) -> Dict[str, Any]:
     engine = bot_context.db_engine
     if not engine:
         return {"success": False, "config": {}}
+    from core.database import normalize_boss_targets
+
     cfg = await get_or_create_config(account_id, engine)
     cfg_dict = {c.name: getattr(cfg, c.name) for c in BotConfig.__table__.columns}
+    cfg_dict["boss_targets"] = normalize_boss_targets(cfg.boss_targets or [])
+    cfg_dict["config_updated_at"] = cfg.updated_at.isoformat() if getattr(cfg, "updated_at", None) else None
     return {"success": True, "config": cfg_dict}
 
 
@@ -664,6 +671,12 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     updates = {k: v for k, v in payload.items() if k in allowed_fields}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    if "boss_targets" in updates:
+        if not isinstance(updates["boss_targets"], list):
+            raise HTTPException(status_code=400, detail="boss_targets must be a list")
+        from core.database import normalize_boss_targets
+        updates["boss_targets"] = normalize_boss_targets(updates["boss_targets"])
 
     if "auto_boss_enabled" in updates:
         is_enb = bool(updates["auto_boss_enabled"])
@@ -745,6 +758,8 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail=f"{auth_k} must be a non-negative integer")
 
+    from core.database import normalize_boss_targets
+
     async with get_session(engine) as session:
         stmt = select(BotConfig).where(BotConfig.account_id == account_id)
         res = await session.execute(stmt)
@@ -758,6 +773,8 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         await session.commit()
         await session.refresh(cfg)
         cfg_dict = {k: getattr(cfg, k) for k in allowed_fields}
+        cfg_dict["boss_targets"] = normalize_boss_targets(cfg_dict.get("boss_targets") or [])
+        cfg_dict["config_updated_at"] = cfg.updated_at.isoformat() if cfg.updated_at else None
 
     # Синхронизация паузы планировщика
     if "is_paused" in updates:
@@ -769,6 +786,14 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     _flight_cache.invalidate("state", "config")
 
     hub = _get_hub()
+    boss_cfg_keys = {
+        "boss_targets", "auto_boss_enabled", "auto_boss_hits",
+        "auto_boss_summon", "boss_auto_melee", "boss_allow_paid_weapons",
+    }
+    if any(k in updates for k in boss_cfg_keys):
+        hub.notify_mutation(account_id, "boss_config_updated", extra_domains=["boss"])
+    boss_dom_rev = hub.get_domain_state(account_id, "boss").revision
+    cfg_dict["boss_config_version"] = boss_dom_rev
     hub.update_slice(account_id, "config", cfg_dict, source_tag=_hub_source_tag())
     hub.emit_change(account_id, ["config"], patch={"config": cfg_dict}, reason="config_update")
 
@@ -783,7 +808,7 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             updates.get("auto_boss_enabled")
             or updates.get("auto_boss_summon")
             or updates.get("boss_auto_melee")
-            or ("boss_targets" in updates and cfg.auto_boss_enabled)
+            or ("boss_targets" in updates and (cfg.auto_boss_enabled or cfg.auto_boss_summon or cfg.boss_auto_melee))
         )
         should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
         should_wake_routine = bool(
@@ -824,6 +849,8 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
     return {
         "success": True,
         "config": cfg_dict,
+        "boss_config_version": boss_dom_rev,
+        "config_updated_at": cfg_dict.get("config_updated_at"),
     }
 
 

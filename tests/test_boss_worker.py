@@ -3047,3 +3047,190 @@ async def test_kresty_day_2_unlocks_lyutyy_for_catalog_and_boss_worker():
     bw = BossWorker(account_id=1, boss_api=AsyncMock(), prison_api=prison_api, enable_jitter=False)
     pr_for_worker = await bw._fetch_prisons_safe()
     assert pr_for_worker["prisons"][0]["dayRuns"] == 2
+
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_live_mode_change_between_battles(boss_setup):
+    """
+    Live-смена режима атаки между боями без перезапуска воркера:
+    бой 1 в pacansky -> обновление boss_targets на avtoritetny -> следующий бой в avtoritetny.
+    """
+    from core.database import get_or_create_config
+
+    engine, acc_id = boss_setup
+    async with get_session(engine) as session:
+        cfg = await get_or_create_config(acc_id, engine)
+        cfg.is_paused = False
+        cfg.sleep_mode_enabled = False
+        cfg.auto_boss_enabled = True
+        cfg.auto_boss_summon = True
+        cfg.auto_boss_hits = True
+        cfg.boss_auto_melee = True
+        cfg.boss_targets = [{"bossId": 1, "mode": "pacansky", "limit": 7, "enabled": True}]
+        session.add(cfg)
+        await session.commit()
+
+    start_calls = []
+    boot_state = {"phase": 0}
+
+    def mock_handler(request: httpx.Request):
+        path = request.url.path
+        if path == "/api/boss/bootstrap":
+            if boot_state["phase"] == 0:
+                return httpx.Response(200, json={"success": True, "state": "idle", "session": None, "playerStats": {"keys": {}, "dailyWins": {}}})
+            if boot_state["phase"] == 1:
+                return httpx.Response(200, json={
+                    "success": True,
+                    "state": "active",
+                    "session": {
+                        "sessionId": "s_live_1",
+                        "bossId": 1,
+                        "mode": "pacansky",
+                        "currentHp": 100,
+                        "maxHp": 500,
+                        "weapons": {},
+                    },
+                    "weaponStats": {"punchChestCooldownSec": 28800, "kickBallsCooldownSec": 28800, "pokeEyesCooldownSec": 28800, "kneeEarCooldownSec": 28800},
+                })
+            if boot_state["phase"] == 2:
+                return httpx.Response(200, json={"success": True, "state": "idle", "session": None, "playerStats": {"keys": {}, "dailyWins": {}}})
+            return httpx.Response(200, json={
+                "success": True,
+                "state": "active",
+                "session": {
+                    "sessionId": "s_live_2",
+                    "bossId": 1,
+                    "mode": "avtoritetny",
+                    "currentHp": 1000,
+                    "maxHp": 1000,
+                    "weapons": {},
+                },
+                "weaponStats": {"punchChestCooldownSec": 28800, "kickBallsCooldownSec": 28800, "pokeEyesCooldownSec": 28800, "kneeEarCooldownSec": 28800},
+            })
+        if path == "/api/boss/all":
+            return httpx.Response(200, json={"bosses": [{"id": 1, "name": "Кирпич", "isLocked": False, "canAttack": True}]})
+        if path == "/api/boss/start-attack":
+            import json as _json
+            body = _json.loads(request.content.decode("utf-8"))
+            start_calls.append(body)
+            boot_state["phase"] = 1 if len(start_calls) == 1 else 3
+            return httpx.Response(200, json={"success": True})
+        if path == "/api/boss/use-weapon":
+            boot_state["phase"] = 2
+            return httpx.Response(200, json={"success": True, "currentHp": 0, "bossDefeated": True, "state": "reward", "claimId": "c_live_1"})
+        if path == "/api/boss/claim-reward":
+            return httpx.Response(200, json={"success": True, "rewards": []})
+        if path == "/api/player/bootstrap":
+            return httpx.Response(200, json={"cigarettes": 100})
+        if path == "/api/boss/friend-damage":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"success": True})
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    boss_api = BossAPI(http_client=http_client)
+    worker = BossWorker(account_id=acc_id, boss_api=boss_api, db_engine=engine, enable_jitter=False)
+
+    # Перехватываем _claim_reward_with_retry / окончание боя: меняем режим в БД между 1-й и 2-й атакой
+    orig_load = worker._load_fresh_boss_config
+
+    async def _switching_load():
+        if len(start_calls) == 1 and boot_state["phase"] == 2:
+            async with get_session(engine) as s:
+                c = await get_or_create_config(acc_id, engine)
+                c.boss_targets = [{"bossId": 1, "mode": "avtoritetny", "limit": 7, "enabled": True}]
+                s.add(c)
+                await s.commit()
+        return await orig_load()
+
+    worker._load_fresh_boss_config = _switching_load  # type: ignore[method-assign]
+
+    res = await worker.run_cycle()
+    assert len(start_calls) >= 2
+    assert start_calls[0]["mode"] == "pacansky"
+    assert start_calls[1]["mode"] == "avtoritetny"
+    assert res["summoned_bosses"][0]["mode"] == "pacansky"
+    assert res["summoned_bosses"][1]["mode"] == "avtoritetny"
+
+
+@pytest.mark.asyncio
+async def test_boss_worker_live_priority_reorder_and_removal(boss_setup):
+    """
+    Live-смена приоритета ротации и удаление босса из очереди:
+    1) Кирпич -> Сизый меняем на Сизый -> Кирпич => воркер призывает Сизого.
+    2) Удаляем Сизого из очереди => следующий призыв выбирает Кирпича.
+    """
+    from core.database import get_or_create_config
+
+    engine, acc_id = boss_setup
+    async with get_session(engine) as session:
+        cfg = await get_or_create_config(acc_id, engine)
+        cfg.is_paused = False
+        cfg.sleep_mode_enabled = False
+        cfg.auto_boss_enabled = True
+        cfg.auto_boss_summon = True
+        cfg.auto_boss_hits = False
+        cfg.boss_auto_melee = False
+        cfg.boss_targets = [
+            {"bossId": 1, "mode": "pacansky", "limit": 7, "enabled": True},
+            {"bossId": 2, "mode": "pacansky", "limit": 7, "enabled": True},
+        ]
+        session.add(cfg)
+        await session.commit()
+
+    start_calls = []
+
+    def mock_handler(request: httpx.Request):
+        path = request.url.path
+        if path == "/api/boss/bootstrap":
+            return httpx.Response(200, json={"success": True, "state": "idle", "session": None, "playerStats": {"keys": {"1": 10}, "dailyWins": {}}})
+        if path == "/api/boss/all":
+            return httpx.Response(200, json={
+                "bosses": [
+                    {"id": 1, "name": "Кирпич", "isLocked": False, "canAttack": True},
+                    {"id": 2, "name": "Сизый", "isLocked": False, "canAttack": True},
+                ]
+            })
+        if path == "/api/boss/start-attack":
+            import json as _json
+            body = _json.loads(request.content.decode("utf-8"))
+            start_calls.append(body)
+            return httpx.Response(200, json={"success": True})
+        return httpx.Response(200, json={"success": True})
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url="https://test.local")
+    auth_provider = AuthProvider(account_id=acc_id, http_client=mock_client, db_engine=engine)
+    http_client = GameHttpClient(auth_provider=auth_provider, custom_client=mock_client)
+    boss_api = BossAPI(http_client=http_client)
+    worker = BossWorker(account_id=acc_id, boss_api=boss_api, db_engine=engine, enable_jitter=False)
+
+    # 1. Меняем приоритет на Сизый (2) -> Кирпич (1)
+    async with get_session(engine) as session:
+        cfg = await get_or_create_config(acc_id, engine)
+        cfg.boss_targets = [
+            {"bossId": 2, "mode": "avtoritetny", "limit": 7, "enabled": True},
+            {"bossId": 1, "mode": "pacansky", "limit": 7, "enabled": True},
+        ]
+        session.add(cfg)
+        await session.commit()
+
+    await worker.run_cycle()
+    assert len(start_calls) == 1
+    assert start_calls[0]["bossId"] == 2
+    assert start_calls[0]["mode"] == "avtoritetny"
+
+    # 2. Удаляем Сизого (2) из очереди -> остается только Кирпич (1)
+    async with get_session(engine) as session:
+        cfg = await get_or_create_config(acc_id, engine)
+        cfg.boss_targets = [
+            {"bossId": 1, "mode": "blotnoy", "limit": 7, "enabled": True},
+        ]
+        session.add(cfg)
+        await session.commit()
+
+    await worker.run_cycle()
+    assert len(start_calls) == 2
+    assert start_calls[1]["bossId"] == 1
+    assert start_calls[1]["mode"] == "blotnoy"

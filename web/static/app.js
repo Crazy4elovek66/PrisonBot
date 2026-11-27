@@ -4,7 +4,17 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261126_09";
+const ASSET_VERSION = "20261127_02";
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 // Original Game Assets Icons Map
 const GAME_ICONS = {
@@ -1344,7 +1354,11 @@ function renderBossData(data) {
   setTextIfChanged(document.getElementById("boss-knife-damage"), `⚔️ ${wepDmgs.knife || 30}`);
 
   updateMeleeTimers();
-  if (botConfig) updateBossQueueUI(botConfig.boss_targets || []);
+  try {
+    if (botConfig) updateBossQueueUI(botConfig.boss_targets || []);
+  } catch (err) {
+    console.warn("updateBossQueueUI error in renderBossData:", err);
+  }
   loadBossPresets();
 }
 
@@ -6543,11 +6557,135 @@ let bossCatalog = [];
 let bossPlayerStats = {};
 let bossCatalogMap = new Map();
 let bossTargetsWorkingCopy = [];
+let bossQueueLastConfirmed = [];
 let currentBossCategoryFilter = "all";
 let bossSearchQuery = "";
+let bossQueueSaveInFlight = false;
+let bossQueuePendingSave = false;
+let bossQueueRequestSeq = 0;
+let bossQueueLimitDebounceTimer = null;
+let bossQueueActiveSavePromise = null;
+let bossQueueLastMovedId = null;
+let bossQueueMovedTimer = null;
+
+const BOSS_MODE_SHORT_LABELS = {
+  pacansky: "Пац",
+  blotnoy: "Блат",
+  avtoritetny: "Авторитет",
+};
+
+function getBossModeShortLabel(mode) {
+  return BOSS_MODE_SHORT_LABELS[mode] || mode || "Пац";
+}
+
+function getBossDisplayName(target) {
+  if (!target) return "Босс";
+  const bId = target.bossId !== undefined ? target.bossId : (target.boss_id !== undefined ? target.boss_id : target.id);
+  return target.name || target.bossName || bossCatalogMap.get(String(bId)) || `Босс #${bId}`;
+}
+
+function getEnabledBossQueue(targets) {
+  return Array.isArray(targets) ? targets.filter(t => t && t.enabled !== false) : [];
+}
+
+function normalizeBossTargetsWorkingCopy(targets) {
+  const queue = getEnabledBossQueue(targets);
+  const modeAliases = { authority: "avtoritetny", blatnoy: "blotnoy", pacan: "pacansky" };
+  return queue.map((t, idx) => {
+    const rawId = t.bossId !== undefined ? t.bossId : (t.boss_id !== undefined ? t.boss_id : t.id);
+    const rawLimit = t.limit !== undefined ? t.limit : t.daily_limit;
+    const rawMode = String(t.mode || "pacansky").toLowerCase();
+    return {
+      bossId: Number(rawId),
+      name: getBossDisplayName(t),
+      mode: modeAliases[rawMode] || rawMode,
+      limit: Math.max(1, Math.min(50, parseInt(rawLimit, 10) || 7)),
+      enabled: true,
+      priority: idx,
+    };
+  }).filter(t => Number.isFinite(t.bossId));
+}
+
+function setBossQueueSyncStatus(state, text) {
+  const el = document.getElementById("boss-queue-sync-status");
+  if (!el) return;
+  el.className = "boss-sync-status" + (state && state !== "idle" ? ` ${state}` : "");
+  el.textContent = text || "";
+}
+
+function focusBossCardInMenu(bossId) {
+  const bIdStr = String(bossId);
+  let card = document.querySelector(`#boss-menu-list .boss-menu-item[data-boss-id="${bIdStr}"]`);
+  if (!card) {
+    bossSearchQuery = "";
+    const searchInput = document.getElementById("boss-menu-search");
+    if (searchInput) searchInput.value = "";
+    currentBossCategoryFilter = "all";
+    document.querySelectorAll("#boss-category-tabs .filter-pill").forEach(p => {
+      p.classList.toggle("active", p.getAttribute("data-bcat") === "all");
+    });
+    renderBossMenuList();
+    card = document.querySelector(`#boss-menu-list .boss-menu-item[data-boss-id="${bIdStr}"]`);
+  }
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("boss-card-focus-highlight");
+    setTimeout(() => card.classList.remove("boss-card-focus-highlight"), 1300);
+  }
+}
+
+function renderBossStrategyPanel(targets, movedBossId = null) {
+  const titleEl = document.getElementById("boss-modal-strategy-title");
+  const chainEl = document.getElementById("boss-modal-strategy-chain");
+  if (!chainEl) return;
+
+  const queue = getEnabledBossQueue(targets);
+  if (titleEl) {
+    titleEl.textContent = `Порядок ротации (${queue.length}):`;
+  }
+
+  if (queue.length === 0) {
+    chainEl.innerHTML = '<span class="boss-strategy-empty">Очередь пуста - выберите боссов для автоатаки</span>';
+    return;
+  }
+
+  const parts = [];
+  queue.forEach((t, idx) => {
+    const bName = escapeHtml(getBossDisplayName(t));
+    const modeKey = t.mode || "pacansky";
+    const mLabel = escapeHtml(getBossModeShortLabel(modeKey));
+    const isMoved = movedBossId !== null && String(t.bossId) === String(movedBossId);
+    if (idx > 0) {
+      parts.push('<span class="boss-strategy-arrow" aria-hidden="true">→</span>');
+    }
+    parts.push(
+      `<button type="button" class="boss-strategy-chip${isMoved ? " strategy-chip--moved" : ""}" data-boss-id="${t.bossId}" title="Перейти к боссу ${bName}">` +
+      `<span class="boss-strategy-num">#${idx + 1}</span>` +
+      `<span class="boss-strategy-name">${bName}</span>` +
+      `<span class="boss-strategy-mode mode-${escapeHtml(modeKey)}">[${mLabel}]</span>` +
+      `</button>`
+    );
+  });
+
+  chainEl.innerHTML = parts.join("");
+  chainEl.querySelectorAll(".boss-strategy-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const targetId = chip.getAttribute("data-boss-id");
+      if (targetId) focusBossCardInMenu(targetId);
+    });
+  });
+
+  if (movedBossId !== null) {
+    if (bossQueueMovedTimer) clearTimeout(bossQueueMovedTimer);
+    bossQueueMovedTimer = setTimeout(() => {
+      bossQueueLastMovedId = null;
+      chainEl.querySelectorAll(".strategy-chip--moved").forEach(el => el.classList.remove("strategy-chip--moved"));
+    }, 650);
+  }
+}
 
 function updateBossQueueUI(targets) {
-  const queue = Array.isArray(targets) ? targets.filter(t => t && t.enabled !== false) : [];
+  const queue = getEnabledBossQueue(targets);
   const count = queue.length;
 
   const countBadge = document.getElementById("badge-boss-queue-count");
@@ -6566,15 +6704,96 @@ function updateBossQueueUI(targets) {
       summaryEl.textContent = "Очередь автоатаки пуста. Нажмите «Меню боссов», чтобы настроить список целей.";
       summaryEl.style.color = "var(--muted-foreground)";
     } else {
-      const modeLabels = { pacansky: "Пац", blotnoy: "Блат", avtoritetny: "Авторитет" };
-      const items = queue.map(t => {
-        const bName = t.name || (bossCatalogMap.get(String(t.bossId))) || `Босс #${t.bossId}`;
-        const mLabel = modeLabels[t.mode] || t.mode || "Пац";
-        return `${bName} [${mLabel}]`;
+      const items = queue.map((t, idx) => {
+        const bName = escapeHtml(getBossDisplayName(t));
+        const mLabel = escapeHtml(getBossModeShortLabel(t.mode));
+        return `#${idx + 1} ${bName} [${mLabel}]`;
       });
       summaryEl.innerHTML = `<span style="color: #60a5fa; font-weight: 600;">В очереди (${count}):</span> <span style="color: #fff;">${items.join(" → ")}</span>`;
     }
   }
+
+  try {
+    renderBossStrategyPanel(queue, bossQueueLastMovedId);
+  } catch (err) {
+    console.warn("renderBossStrategyPanel error:", err);
+  }
+}
+
+async function flushBossQueueSave() {
+  if (bossQueueSaveInFlight) {
+    bossQueuePendingSave = true;
+    return bossQueueActiveSavePromise;
+  }
+
+  bossQueueSaveInFlight = true;
+  bossQueueActiveSavePromise = (async () => {
+    do {
+      bossQueuePendingSave = false;
+      const snapshot = normalizeBossTargetsWorkingCopy(bossTargetsWorkingCopy);
+      const seq = ++bossQueueRequestSeq;
+      setBossQueueSyncStatus("saving", "Сохранение...");
+
+      try {
+        const res = await apiFetch("/config", {
+          method: "PATCH",
+          body: JSON.stringify({ boss_targets: snapshot }),
+        });
+
+        if (seq === bossQueueRequestSeq) {
+          const savedTargets = (res && res.config && Array.isArray(res.config.boss_targets))
+            ? res.config.boss_targets
+            : snapshot;
+          bossQueueLastConfirmed = JSON.parse(JSON.stringify(savedTargets));
+          if (botConfig) {
+            botConfig.boss_targets = JSON.parse(JSON.stringify(savedTargets));
+          }
+          if (!bossQueuePendingSave) {
+            bossTargetsWorkingCopy = JSON.parse(JSON.stringify(savedTargets));
+            updateBossQueueUI(bossTargetsWorkingCopy);
+            setBossQueueSyncStatus("saved", "Сохранено ✓");
+          }
+        }
+      } catch (err) {
+        if (seq === bossQueueRequestSeq) {
+          bossQueuePendingSave = false;
+          bossTargetsWorkingCopy = JSON.parse(JSON.stringify(bossQueueLastConfirmed || []));
+          renderBossMenuList();
+          updateBossQueueUI(bossTargetsWorkingCopy);
+          setBossQueueSyncStatus("error", "Ошибка сохранения");
+          showToast(`Ошибка сохранения очереди: ${err.message}`, "error");
+        }
+      }
+    } while (bossQueuePendingSave);
+  })();
+
+  try {
+    await bossQueueActiveSavePromise;
+  } finally {
+    bossQueueSaveInFlight = false;
+  }
+}
+
+function scheduleBossQueueSave({ immediate = true, debounceMs = 280 } = {}) {
+  if (bossQueueLimitDebounceTimer) {
+    clearTimeout(bossQueueLimitDebounceTimer);
+    bossQueueLimitDebounceTimer = null;
+  }
+  bossTargetsWorkingCopy = normalizeBossTargetsWorkingCopy(bossTargetsWorkingCopy);
+  updateBossQueueUI(bossTargetsWorkingCopy);
+
+  if (immediate) {
+    return flushBossQueueSave();
+  }
+
+  setBossQueueSyncStatus("saving", "Сохранение...");
+  return new Promise((resolve) => {
+    bossQueueLimitDebounceTimer = setTimeout(async () => {
+      bossQueueLimitDebounceTimer = null;
+      await flushBossQueueSave();
+      resolve();
+    }, debounceMs);
+  });
 }
 
 async function openBossMenu() {
@@ -6582,8 +6801,13 @@ async function openBossMenu() {
   if (!modal) return;
   modal.style.display = "flex";
 
-  const currentTargets = (botConfig && botConfig.boss_targets) || [];
-  bossTargetsWorkingCopy = JSON.parse(JSON.stringify(currentTargets));
+  if (!bossQueueSaveInFlight && !bossQueuePendingSave) {
+    const currentTargets = (botConfig && botConfig.boss_targets) || [];
+    bossTargetsWorkingCopy = normalizeBossTargetsWorkingCopy(currentTargets);
+    bossQueueLastConfirmed = JSON.parse(JSON.stringify(bossTargetsWorkingCopy));
+    setBossQueueSyncStatus("idle", "");
+  }
+  updateBossQueueUI(bossTargetsWorkingCopy);
 
   try {
     const data = await apiFetch("/bosses/catalog");
@@ -6713,11 +6937,9 @@ function renderBossMenuList() {
   const container = document.getElementById("boss-menu-list");
   if (!container) return;
 
-  const headerBadge = document.getElementById("boss-menu-header-badge");
-  const enabledCount = bossTargetsWorkingCopy.filter(t => t.enabled !== false).length;
-  if (headerBadge) {
-    headerBadge.textContent = `В очереди: ${enabledCount}`;
-  }
+  const enabledQueue = getEnabledBossQueue(bossTargetsWorkingCopy);
+  const queuePosMap = new Map(enabledQueue.map((t, idx) => [String(t.bossId), idx]));
+  updateBossQueueUI(bossTargetsWorkingCopy);
 
   let filtered = bossCatalog.slice();
   if (currentBossCategoryFilter !== "all") {
@@ -6743,6 +6965,9 @@ function renderBossMenuList() {
     const targetIdx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
     const target = targetIdx !== -1 ? bossTargetsWorkingCopy[targetIdx] : null;
     const isEnabled = Boolean(target && target.enabled !== false);
+    const queuePos = isEnabled && queuePosMap.has(bIdStr) ? queuePosMap.get(bIdStr) : -1;
+    const isFirstInQueue = queuePos <= 0;
+    const isLastInQueue = queuePos === -1 || queuePos >= enabledQueue.length - 1;
 
     const hasPacansky = Boolean(b.modes && b.modes.pacansky);
     const hasBlotnoy = Boolean(b.modes && b.modes.blotnoy);
@@ -6794,8 +7019,9 @@ function renderBossMenuList() {
           </div>
         </div>
         <div style="display: flex; gap: 4px; align-items: center;">
-          <button class="btn btn-secondary btn-sm boss-priority-btn btn-boss-up" data-boss-id="${b.id}" title="Повысить приоритет" ${!isEnabled || isLocked ? 'disabled' : ''}>▲</button>
-          <button class="btn btn-secondary btn-sm boss-priority-btn btn-boss-down" data-boss-id="${b.id}" title="Понизить приоритет" ${!isEnabled || isLocked ? 'disabled' : ''}>▼</button>
+          ${queuePos !== -1 ? `<span class="boss-queue-pos-badge" title="Позиция в глобальной очереди (${queuePos + 1} из ${enabledQueue.length})">#${queuePos + 1}</span>` : ""}
+          <button class="btn btn-secondary btn-sm boss-priority-btn btn-boss-up" data-boss-id="${b.id}" title="Повысить приоритет" aria-label="Повысить приоритет" ${!isEnabled || isLocked || isFirstInQueue ? 'disabled' : ''}>▲</button>
+          <button class="btn btn-secondary btn-sm boss-priority-btn btn-boss-down" data-boss-id="${b.id}" title="Понизить приоритет" aria-label="Понизить приоритет" ${!isEnabled || isLocked || isLastInQueue ? 'disabled' : ''}>▼</button>
         </div>
       </div>
 
@@ -6842,17 +7068,15 @@ function renderBossMenuList() {
             enabled: true,
           });
         }
-        item.classList.add("in-queue");
-        item.querySelectorAll(".boss-priority-btn").forEach(btn => btn.disabled = false);
+        bossQueueLastMovedId = b.id;
       } else {
         if (idx !== -1) {
           bossTargetsWorkingCopy.splice(idx, 1);
         }
-        item.classList.remove("in-queue");
-        item.querySelectorAll(".boss-priority-btn").forEach(btn => btn.disabled = true);
+        if (String(bossQueueLastMovedId) === bIdStr) bossQueueLastMovedId = null;
       }
-      const count = bossTargetsWorkingCopy.filter(t => t.enabled !== false).length;
-      if (headerBadge) headerBadge.textContent = `В очереди: ${count}`;
+      renderBossMenuList();
+      scheduleBossQueueSave({ immediate: true });
     });
 
     item.querySelectorAll(".boss-mode-pill").forEach(pBtn => {
@@ -6875,6 +7099,7 @@ function renderBossMenuList() {
         const idx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
         if (idx !== -1) {
           bossTargetsWorkingCopy[idx].mode = newMode;
+          scheduleBossQueueSave({ immediate: true });
         } else if (chk.checked) {
           bossTargetsWorkingCopy.push({
             bossId: b.id,
@@ -6883,18 +7108,30 @@ function renderBossMenuList() {
             limit: winLimit,
             enabled: true,
           });
+          scheduleBossQueueSave({ immediate: true });
         }
       });
     });
 
     const limitInput = item.querySelector(".boss-limit-input");
     if (limitInput) {
+      limitInput.addEventListener("input", () => {
+        const parsed = parseInt(limitInput.value, 10);
+        if (!Number.isFinite(parsed) || parsed < 1) return;
+        const val = Math.max(1, Math.min(50, parsed));
+        const idx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
+        if (idx !== -1) {
+          bossTargetsWorkingCopy[idx].limit = val;
+          scheduleBossQueueSave({ immediate: false, debounceMs: 280 });
+        }
+      });
       limitInput.addEventListener("change", () => {
-        const val = Math.max(1, parseInt(limitInput.value) || 7);
+        const val = Math.max(1, Math.min(50, parseInt(limitInput.value, 10) || 7));
         limitInput.value = val;
         const idx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
         if (idx !== -1) {
           bossTargetsWorkingCopy[idx].limit = val;
+          scheduleBossQueueSave({ immediate: true });
         }
       });
     }
@@ -6903,23 +7140,31 @@ function renderBossMenuList() {
     const btnDown = item.querySelector(".btn-boss-down");
     if (btnUp) {
       btnUp.addEventListener("click", () => {
-        const idx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
+        const queue = normalizeBossTargetsWorkingCopy(bossTargetsWorkingCopy);
+        const idx = queue.findIndex(t => String(t.bossId) === bIdStr);
         if (idx > 0) {
-          const temp = bossTargetsWorkingCopy[idx];
-          bossTargetsWorkingCopy[idx] = bossTargetsWorkingCopy[idx - 1];
-          bossTargetsWorkingCopy[idx - 1] = temp;
+          const temp = queue[idx];
+          queue[idx] = queue[idx - 1];
+          queue[idx - 1] = temp;
+          bossTargetsWorkingCopy = queue;
+          bossQueueLastMovedId = b.id;
           renderBossMenuList();
+          scheduleBossQueueSave({ immediate: true });
         }
       });
     }
     if (btnDown) {
       btnDown.addEventListener("click", () => {
-        const idx = bossTargetsWorkingCopy.findIndex(t => String(t.bossId) === bIdStr);
-        if (idx !== -1 && idx < bossTargetsWorkingCopy.length - 1) {
-          const temp = bossTargetsWorkingCopy[idx];
-          bossTargetsWorkingCopy[idx] = bossTargetsWorkingCopy[idx + 1];
-          bossTargetsWorkingCopy[idx + 1] = temp;
+        const queue = normalizeBossTargetsWorkingCopy(bossTargetsWorkingCopy);
+        const idx = queue.findIndex(t => String(t.bossId) === bIdStr);
+        if (idx !== -1 && idx < queue.length - 1) {
+          const temp = queue[idx];
+          queue[idx] = queue[idx + 1];
+          queue[idx + 1] = temp;
+          bossTargetsWorkingCopy = queue;
+          bossQueueLastMovedId = b.id;
           renderBossMenuList();
+          scheduleBossQueueSave({ immediate: true });
         }
       });
     }
@@ -6937,23 +7182,20 @@ document.getElementById("modal-boss-menu")?.addEventListener("click", (e) => {
 
 document.getElementById("btn-clear-boss-queue")?.addEventListener("click", () => {
   bossTargetsWorkingCopy = [];
+  bossQueueLastMovedId = null;
   renderBossMenuList();
+  scheduleBossQueueSave({ immediate: true });
 });
 
 document.getElementById("btn-save-boss-queue")?.addEventListener("click", async () => {
-  try {
-    await apiFetch("/config", {
-      method: "PATCH",
-      body: JSON.stringify({ boss_targets: bossTargetsWorkingCopy }),
-    });
-    if (botConfig) botConfig.boss_targets = bossTargetsWorkingCopy;
-    updateBossQueueUI(bossTargetsWorkingCopy);
-    closeBossMenu();
-    showToast("Очередь боссов сохранена", "success");
-    refreshState();
-  } catch (err) {
-    showToast(`Ошибка сохранения очереди: ${err.message}`, "error");
+  if (bossQueueLimitDebounceTimer) {
+    clearTimeout(bossQueueLimitDebounceTimer);
+    bossQueueLimitDebounceTimer = null;
+    await flushBossQueueSave();
+  } else if (bossQueueSaveInFlight || bossQueuePendingSave) {
+    await bossQueueActiveSavePromise;
   }
+  closeBossMenu();
 });
 
 document.querySelectorAll("#boss-category-tabs .filter-pill").forEach(pill => {
@@ -7219,13 +7461,22 @@ let editingPresetId = null;
 let presetWorkingSteps = [];
 
 async function loadBossPresets() {
+  const container = document.getElementById("boss-presets-list");
   try {
     const res = await apiFetch("/boss/presets");
-    if (!res.success) return;
+    if (!res || !res.success) {
+      if (container) {
+        container.innerHTML = '<div class="empty-state" style="padding:10px;font-size:12px;">Не удалось загрузить пресеты <button type="button" class="btn btn-secondary btn-sm" onclick="loadBossPresets()" style="margin-left:8px;">Повторить</button></div>';
+      }
+      return;
+    }
     bossPresets = Array.isArray(res.presets) ? res.presets : [];
     renderBossPresets();
   } catch (err) {
     console.warn("loadBossPresets error:", err);
+    if (container) {
+      container.innerHTML = '<div class="empty-state" style="padding:10px;font-size:12px;">Ошибка загрузки пресетов <button type="button" class="btn btn-secondary btn-sm" onclick="loadBossPresets()" style="margin-left:8px;">Повторить</button></div>';
+    }
   }
 }
 

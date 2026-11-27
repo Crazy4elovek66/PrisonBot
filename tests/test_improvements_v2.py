@@ -205,9 +205,9 @@ def test_wardrobe_headwear_zones_and_cache_busting():
     root = Path(__file__).resolve().parent.parent
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
     app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
-    assert "styles.css?v=20261126_09" in index_html
-    assert "app.js?v=20261126_09" in index_html
-    assert "spine_room_player.js?v=20261126_09" in index_html
+    assert "styles.css?v=20261127_02" in index_html
+    assert "app.js?v=20261127_02" in index_html
+    assert "spine_room_player.js?v=20261127_02" in index_html
     assert 'overEyes: (z === "1" || z === "2")' in app_js
     assert 'for (const z of ["7", "5"])' in app_js
     assert "scale: 1.192" in app_js

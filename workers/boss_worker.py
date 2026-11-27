@@ -368,6 +368,8 @@ class BossWorker:
 
     @staticmethod
     def _normalize_boss_target(item: Any) -> Optional[Dict[str, Any]]:
+        from core.database import normalize_boss_mode
+
         if isinstance(item, dict):
             if not item.get("enabled", True):
                 return None
@@ -378,12 +380,18 @@ class BossWorker:
                 b_id = int(raw_id)
             except (ValueError, TypeError):
                 return None
+            raw_limit = item.get("limit") if item.get("limit") is not None else item.get("daily_limit")
+            try:
+                limit_val = max(1, min(50, int(raw_limit if raw_limit is not None else 7)))
+            except (ValueError, TypeError):
+                limit_val = 7
             return {
                 "bossId": b_id,
-                "mode": str(item.get("mode") or "pacansky"),
-                "limit": int(item.get("limit") or 7),
+                "mode": normalize_boss_mode(item.get("mode"), default="pacansky"),
+                "limit": limit_val,
                 "name": item.get("name") or item.get("bossName"),
                 "enabled": True,
+                "priority": item.get("priority"),
             }
         if isinstance(item, (int, str)) and str(item).strip().isdigit():
             return {
@@ -392,8 +400,15 @@ class BossWorker:
                 "limit": 7,
                 "name": None,
                 "enabled": True,
+                "priority": None,
             }
         return None
+
+    async def _load_fresh_boss_config(self) -> Optional[Any]:
+        """Считывает актуальную конфигурацию боссов из БД без кэширования."""
+        if not self.db_engine:
+            return None
+        return await get_or_create_config(self.account_id, self.db_engine)
 
     async def _fetch_bootstrap_ready(self) -> Dict[str, Any]:
         """Получает bootstrap; при промежуточном статусе 'reward_processing' ждёт и повторяет запрос."""
@@ -1813,50 +1828,113 @@ class BossWorker:
             return False, bootstrap, active_preset
 
         # Приоритет B: Очередь config.boss_targets при включенном авто-призыве
-        is_summon_enabled = bool(getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_summon", False))
-        raw_targets = getattr(config, "boss_targets", None) or []
-        if is_summon_enabled and raw_targets:
+        # Всегда перечитываем актуальный конфиг из БД перед выбором и стартом новой атаки
+        for _recheck in range(3):
+            fresh_cfg = await self._load_fresh_boss_config()
+            if fresh_cfg is not None:
+                config = fresh_cfg
+
+            is_summon_enabled = bool(getattr(config, "auto_boss_enabled", False) or getattr(config, "auto_boss_summon", False))
+            raw_targets = getattr(config, "boss_targets", None) or []
+            if not is_summon_enabled or not raw_targets:
+                break
+
+            normalized_targets: List[Dict[str, Any]] = []
             for raw_item in raw_targets:
-                target = self._normalize_boss_target(raw_item)
-                if not target:
-                    continue
+                t = self._normalize_boss_target(raw_item)
+                if t:
+                    normalized_targets.append(t)
+
+            restart_selection = False
+            for q_idx, target in enumerate(normalized_targets):
                 b_id_int = target["bossId"]
                 b_mode = target["mode"]
+                b_limit = int(target.get("limit") or 7)
                 b_meta = eval_by_id.get(b_id_int, {})
+                b_name = target.get("name") or b_meta.get("title") or b_meta.get("name") or f"Босс #{b_id_int}"
+                daily_wins = int(b_meta.get("dailyWins") or 0)
 
                 if b_meta.get("isLocked"):
                     logger.info(
-                        f"Пропуск заблокированного босса ID={b_id_int} ({b_meta.get('title') or b_meta.get('name', 'Босс')}): "
+                        f"Пропуск заблокированного босса ID={b_id_int} ({b_name}): "
                         f"{b_meta.get('unlockReason', 'Босс заблокирован')}."
+                    )
+                    continue
+
+                if b_meta.get("dailyWins") is not None and daily_wins >= b_limit:
+                    logger.info(
+                        f"Пропуск босса ID={b_id_int} ({b_name}): достигнут пользовательский лимит побед "
+                        f"({daily_wins}/{b_limit})."
                     )
                     continue
 
                 mode_access = (b_meta.get("modesAccess") or {}).get(b_mode, {})
                 if not b_meta.get("canAttack", True) or (mode_access and not mode_access.get("canAttack", True)):
                     reason = mode_access.get("reason") or b_meta.get("attackBlockReason") or "Недоступен для атаки"
-                    logger.info(f"Пропуск босса ID={b_id_int} ({b_meta.get('title') or b_meta.get('name', 'Босс')}): {reason}.")
+                    logger.info(f"Пропуск босса ID={b_id_int} ({b_name}): {reason}.")
                     continue
 
                 if is_conveyor_transition:
                     await self._transition_pause()
 
+                # Контрольная сверка перед отправкой запроса старта боя
+                latest_cfg = await self._load_fresh_boss_config()
+                if latest_cfg is not None:
+                    latest_summon = bool(
+                        getattr(latest_cfg, "auto_boss_enabled", False)
+                        or getattr(latest_cfg, "auto_boss_summon", False)
+                    )
+                    if not latest_summon:
+                        logger.info("Авто-призыв боссов был отключен до старта боя — отмена призыва.")
+                        return False, bootstrap, active_preset
+                    latest_targets = [
+                        t for t in (self._normalize_boss_target(x) for x in (getattr(latest_cfg, "boss_targets", None) or [])) if t
+                    ]
+                    if latest_targets != normalized_targets:
+                        logger.info("Конфигурация очереди боссов обновилась перед стартом боя — пересчет цели.")
+                        config = latest_cfg
+                        restart_selection = True
+                        break
+
                 try:
-                    logger.info(f"Авто-призыв босса ID={b_id_int} (режим {b_mode})...")
+                    logger.info(
+                        f"Авто-призыв босса: boss_id={b_id_int}, boss_name={b_name}, "
+                        f"mode={b_mode}, queue_position={q_idx + 1}/{len(normalized_targets)}, "
+                        f"daily_wins={daily_wins}/{b_limit}"
+                    )
                     summon_res = await self.api.start_battle(boss_id=b_id_int, mode=b_mode)
                     if summon_res.get("success") is not False:
-                        results["summoned_bosses"].append({"bossId": b_id_int, "mode": b_mode, "source": "auto_queue"})
+                        results["summoned_bosses"].append({
+                            "bossId": b_id_int,
+                            "bossName": b_name,
+                            "mode": b_mode,
+                            "queuePosition": q_idx + 1,
+                            "dailyWins": daily_wins,
+                            "dailyLimit": b_limit,
+                            "source": "auto_queue",
+                        })
                         await self._log_action(
                             "boss_auto_summon",
                             "/api/boss/start-attack",
                             200,
                             True,
-                            {"boss_id": b_id_int, "mode": b_mode},
+                            {
+                                "boss_id": b_id_int,
+                                "boss_name": b_name,
+                                "mode": b_mode,
+                                "queue_position": q_idx + 1,
+                                "daily_wins": daily_wins,
+                                "daily_limit": b_limit,
+                            },
                         )
                         refreshed = await self._fetch_bootstrap_ready()
                         return True, refreshed, active_preset
                 except Exception as err:
                     logger.warning(f"Не удалось призвать босса {b_id_int}, пробуем следующего: {err}")
                     continue
+
+            if not restart_selection:
+                break
 
         return False, bootstrap, active_preset
 
@@ -1873,7 +1951,7 @@ class BossWorker:
 
             logger.info(f"=== [Аккаунт {self.account_id}] Запуск цикла проверки боссов (force_manual={force_manual}) ===")
 
-            config = await get_or_create_config(self.account_id, self.db_engine)
+            config = await self._load_fresh_boss_config() or await get_or_create_config(self.account_id, self.db_engine)
             if not force_manual and not is_worker_active(config):
                 logger.info("Планировщик на паузе. Пропуск боссов.")
                 return {"status": "skipped", "reason": "paused"}
@@ -1900,6 +1978,15 @@ class BossWorker:
             boss_active = False
 
             while chain_idx < max_chain:
+                if chain_idx > 0:
+                    fresh_cfg = await self._load_fresh_boss_config()
+                    if fresh_cfg is not None:
+                        config = fresh_cfg
+                        if not force_manual and not is_worker_active(config):
+                            logger.info("Планировщик поставлен на паузу во время конвейера. Выход.")
+                            break
+                        night_paused = (not force_manual) and is_night_mode_active(config)
+
                 # 1. Получение состояния боя
                 try:
                     bootstrap = await self._fetch_bootstrap_ready()
@@ -2047,6 +2134,7 @@ class BossWorker:
                     results["night_mode_paused"] = True
                     break
 
+                config = await self._load_fresh_boss_config() or config
                 is_hits_enabled = bool(
                     getattr(config, "boss_auto_melee", False)
                     or getattr(config, "auto_boss_enabled", False)

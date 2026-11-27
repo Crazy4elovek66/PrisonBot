@@ -3201,3 +3201,53 @@ async def test_state_and_workers_status_include_domain_revisions(web_setup):
     assert "state_revision" in d_ws
     assert "domains" in d_ws
     assert "prisons" in d_ws["domains"]
+
+
+
+@pytest.mark.asyncio
+async def test_patch_config_boss_targets_normalizes_reorders_and_wakes_scheduler(web_setup):
+    """
+    PATCH /api/v1/config нормализует boss_targets, сохраняет порядок priority,
+    обновляет ревизию домена boss в StateHub и немедленно будит планировщик боссов.
+    """
+    from unittest.mock import MagicMock
+    from core.state_hub import state_hub
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    fake_ctrl = MagicMock()
+    orig_ctrl = getattr(bot_context, "scheduler_controller", None)
+    bot_context.scheduler_controller = fake_ctrl
+    try:
+        rev_before = state_hub.get_domain_state(1, "boss").revision
+        payload = {
+            "auto_boss_enabled": True,
+            "boss_targets": [
+                {"bossId": 4, "name": "Лютый", "mode": "authority", "daily_limit": 5},
+                {"bossId": 1, "name": "Кирпич", "mode": "pacansky", "limit": 7},
+            ],
+        }
+        r1 = await client.patch("/api/v1/config", json=payload, headers=headers)
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["success"] is True
+        assert d1["boss_config_version"] > rev_before
+        assert d1["config_updated_at"] is not None
+
+        targets = d1["config"]["boss_targets"]
+        assert [t["bossId"] for t in targets] == [4, 1]
+        assert [t["priority"] for t in targets] == [0, 1]
+        assert targets[0]["mode"] == "avtoritetny"
+        assert targets[0]["limit"] == 5
+        assert fake_ctrl.trigger_boss_now.called
+
+        # Повторный GET /api/v1/config возвращает тот же порядок приоритета
+        r_get = await client.get("/api/v1/config", headers=headers)
+        assert r_get.status_code == 200
+        got_targets = r_get.json()["config"]["boss_targets"]
+        assert [t["bossId"] for t in got_targets] == [4, 1]
+        assert [t["priority"] for t in got_targets] == [0, 1]
+    finally:
+        bot_context.scheduler_controller = orig_ctrl

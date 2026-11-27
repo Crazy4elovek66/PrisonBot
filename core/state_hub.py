@@ -32,6 +32,7 @@ MUTATION_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
     "boss_finished": ("player", "boss", "zaruby"),
     "boss_claimed": ("player", "boss", "zaruby"),
     "boss_summoned": ("player", "boss", "zaruby"),
+    "boss_config_updated": ("boss",),
     "katala_played": ("player", "katala"),
     "poker_played": ("player", "poker"),
     "fartovy_spun": ("player", "fartovy", "zaruby"),

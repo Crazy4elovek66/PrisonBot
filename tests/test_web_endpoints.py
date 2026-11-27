@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v21" in sw
+    assert "prisonbot-assets-v23" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261126_09";' in js
+    assert 'const ASSET_VERSION = "20261127_02";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261126_09" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_02" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261126_09"',
-        'src="assets/icons/room_reward.webp?v=20261126_09"',
-        'src="assets/icons/complect.webp?v=20261126_09"',
-        'src="assets/icons/podogrev.webp?v=20261126_09"',
-        'src="assets/icons/authority.webp?v=20261126_09"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261126_09"',
+        'src="assets/icons/boss.webp?v=20261127_02"',
+        'src="assets/icons/room_reward.webp?v=20261127_02"',
+        'src="assets/icons/complect.webp?v=20261127_02"',
+        'src="assets/icons/podogrev.webp?v=20261127_02"',
+        'src="assets/icons/authority.webp?v=20261127_02"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_02"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1044,3 +1044,229 @@ console.log("OK_DOMAIN_REVS_SYNC_NODE");
     proc = subprocess.run(["node"], input=test_runner, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Node runtime failed: {proc.stderr or proc.stdout}"
     assert "OK_DOMAIN_REVS_SYNC_NODE" in proc.stdout
+
+
+
+def test_boss_menu_live_sync_and_strategy_panel_ui_contract():
+    """Контракт UI для live-синхронизации очереди боссов, панели стратегии и бейджей #N."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "web" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    for snippet in (
+        'id="boss-queue-sync-status"',
+        'id="boss-modal-strategy-panel"',
+        'id="boss-modal-strategy-title"',
+        'id="boss-modal-strategy-chain"',
+    ):
+        assert snippet in html
+
+    for snippet in (
+        "function renderBossStrategyPanel(",
+        "function flushBossQueueSave(",
+        "function scheduleBossQueueSave(",
+        "function focusBossCardInMenu(",
+        "boss-queue-pos-badge",
+        "strategy-chip--moved",
+        'aria-label="Повысить приоритет"',
+        'aria-label="Понизить приоритет"',
+    ):
+        assert snippet in js
+
+    for snippet in (
+        ".boss-strategy-panel",
+        ".boss-strategy-chip.strategy-chip--moved",
+        ".boss-queue-pos-badge",
+        ".boss-sync-status",
+    ):
+        assert snippet in css
+
+
+
+def test_boss_menu_js_runtime_smoke_6_bosses():
+    """
+    Реальный runtime smoke-тест JS-логики в Node.js:
+    проверяет отсутствие ReferenceError/TypeError при вызове updateBossQueueUI,
+    renderBossMenuList, renderBossStrategyPanel, перестановке ▲/▼ и renderBossPresets.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js_path = (root / "web" / "static" / "app.js").as_posix()
+
+    node_script = f"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeEl(tag, id) {{
+  const attrs = {{}};
+  const classes = new Set();
+  const listeners = {{}};
+  const children = [];
+  let _innerHTML = '';
+  let _textContent = '';
+  const el = {{
+    tagName: (tag || 'div').toUpperCase(),
+    id: id || '',
+    style: {{}},
+    dataset: {{}},
+    value: '',
+    checked: false,
+    disabled: false,
+    classList: {{
+      add: (...c) => c.forEach(x => classes.add(x)),
+      remove: (...c) => c.forEach(x => classes.delete(x)),
+      toggle: (c, force) => (force === undefined ? (classes.has(c) ? classes.delete(c) : classes.add(c)) : (force ? classes.add(c) : classes.delete(c))),
+      contains: (c) => classes.has(c),
+    }},
+    get className() {{ return Array.from(classes).join(' '); }},
+    set className(v) {{ classes.clear(); String(v || '').split(/\\s+/).filter(Boolean).forEach(x => classes.add(x)); }},
+    setAttribute: (k, v) => {{ attrs[k] = String(v); }},
+    getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    addEventListener: (ev, fn) => {{ (listeners[ev] = listeners[ev] || []).push(fn); }},
+    dispatchEvent: (ev) => {{ (listeners[ev.type] || []).forEach(fn => fn(ev)); }},
+    click: () => {{ (listeners['click'] || []).forEach(fn => fn({{ target: el, preventDefault() {{}} }})); }},
+    appendChild: (ch) => {{ children.push(ch); return ch; }},
+    insertBefore: (ch, ref) => {{
+      const idx = ref ? children.indexOf(ref) : -1;
+      if (idx === -1) children.push(ch);
+      else children.splice(idx, 0, ch);
+      return ch;
+    }},
+    remove: () => {{}},
+    scrollIntoView: () => {{}},
+    querySelector: (sel) => el.querySelectorAll(sel)[0] || null,
+    querySelectorAll: (sel) => {{
+      if (sel === '.boss-strategy-chip') {{
+        const matches = _innerHTML.match(/data-boss-id="(\\d+)"/g) || [];
+        return matches.map(m => {{
+          const ch = makeEl('button');
+          ch.setAttribute('data-boss-id', m.match(/\\d+/)[0]);
+          return ch;
+        }});
+      }}
+      if (sel === '.btn-boss-up') return el._btnUp ? [el._btnUp] : [];
+      if (sel === '.btn-boss-down') return el._btnDown ? [el._btnDown] : [];
+      if (sel === '.boss-queue-toggle') return el._chk ? [el._chk] : [];
+      if (sel === '.boss-mode-pill') return [];
+      if (sel === '.boss-limit-input') return [];
+      if (sel === '.boss-loot-item-chip') return [];
+      return [];
+    }},
+    get children() {{ return children; }},
+    get innerHTML() {{ return _innerHTML; }},
+    set innerHTML(v) {{
+      _innerHTML = String(v || '');
+      if (!_innerHTML) children.length = 0;
+      if (_innerHTML.includes('btn-boss-up')) {{
+        el._btnUp = makeEl('button');
+        el._btnDown = makeEl('button');
+        el._chk = makeEl('input');
+        el._chk.checked = _innerHTML.includes('checked');
+      }}
+    }},
+    get textContent() {{ return _textContent; }},
+    set textContent(v) {{ _textContent = String(v ?? ''); }},
+  }};
+  return el;
+}}
+
+const elements = {{}};
+[
+  'badge-boss-queue-count', 'boss-menu-header-badge', 'boss-active-queue-summary',
+  'boss-modal-strategy-title', 'boss-modal-strategy-chain', 'boss-menu-list',
+  'boss-queue-sync-status', 'boss-presets-list', 'modal-boss-menu', 'boss-menu-search'
+].forEach(id => {{ elements[id] = makeEl('div', id); }});
+
+const sandbox = {{
+  console,
+  setTimeout: () => 0,
+  clearTimeout: () => {{}},
+  setInterval: () => 0,
+  clearInterval: () => {{}},
+  Map, Set, Array, Object, Number, String, Boolean, JSON, Math, Promise, Date, RegExp, Error,
+  localStorage: {{ getItem: () => null, setItem: () => {{}} }},
+  navigator: {{}},
+  location: {{ search: '', hostname: 'localhost' }},
+  Telegram: {{ WebApp: {{ ready: () => {{}}, expand: () => {{}} }} }},
+  addEventListener: () => {{}},
+  removeEventListener: () => {{}},
+  document: {{
+    getElementById: (id) => elements[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: (tag) => makeEl(tag),
+    addEventListener: () => {{}},
+  }},
+  fetch: async () => ({{ ok: true, status: 200, json: async () => ({{ success: true, config: {{ boss_targets: sandbox.bossTargetsWorkingCopy }} }}) }}),
+}};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+const code = fs.readFileSync({json.dumps(js_path)}, 'utf8');
+vm.runInContext(code, sandbox);
+
+const sampleCatalog = [
+  {{ id: 1, name: 'Кирпич', categoryId: 1, sortOrder: 0, modes: {{ pacansky: {{ hp: 500 }}, blotnoy: {{ hp: 1000 }}, avtoritetny: {{ hp: 2000 }} }} }},
+  {{ id: 2, name: 'Сизый', categoryId: 1, sortOrder: 1, modes: {{ pacansky: {{ hp: 1000 }}, blotnoy: {{ hp: 2000 }}, avtoritetny: {{ hp: 5000 }} }} }},
+  {{ id: 3, name: 'Махно', categoryId: 1, sortOrder: 2, modes: {{ pacansky: {{ hp: 2000 }}, blotnoy: {{ hp: 4000 }}, avtoritetny: {{ hp: 10000 }} }} }},
+  {{ id: 4, name: 'Лютый', categoryId: 1, sortOrder: 3, modes: {{ pacansky: {{ hp: 5000 }}, blotnoy: {{ hp: 10000 }}, avtoritetny: {{ hp: 25000 }} }} }},
+  {{ id: 5, name: 'Палыч', categoryId: 2, sortOrder: 4, modes: {{ pacansky: {{ hp: 10000 }} }} }},
+  {{ id: 6, name: 'Воркута', categoryId: 3, sortOrder: 5, modes: {{ pacansky: {{ hp: 20000 }} }} }},
+];
+const sampleTargets = [
+  {{ bossId: 1, mode: 'pacansky', limit: 7, enabled: true, priority: 0 }},
+  {{ bossId: 2, mode: 'avtoritetny', limit: 7, enabled: true, priority: 1 }},
+  {{ bossId: 3, mode: 'avtoritetny', limit: 7, enabled: true, priority: 2 }},
+  {{ bossId: 4, mode: 'avtoritetny', limit: 7, enabled: true, priority: 3 }},
+  {{ bossId: 5, mode: 'pacansky', limit: 7, enabled: true, priority: 4 }},
+  {{ bossId: 6, mode: 'pacansky', limit: 7, enabled: true, priority: 5 }},
+];
+
+vm.runInContext(`
+  bossCatalog = ${{JSON.stringify(sampleCatalog)}};
+  bossCatalogMap = new Map(bossCatalog.map(b => [String(b.id), b.name]));
+  botConfig = {{ boss_targets: ${{JSON.stringify(sampleTargets)}} }};
+  bossTargetsWorkingCopy = normalizeBossTargetsWorkingCopy(botConfig.boss_targets);
+  bossPresets = [{{ id: 10, name: 'Фарм', items: [{{ bossId: 1, mode: 'pacansky', count: 1 }}], is_running: false }}];
+  updateBossQueueUI(botConfig.boss_targets);
+  renderBossMenuList();
+  renderBossPresets();
+`, sandbox);
+
+const summaryHtml = elements['boss-active-queue-summary'].innerHTML;
+const strategyTitle = elements['boss-modal-strategy-title'].textContent;
+const strategyHtml = elements['boss-modal-strategy-chain'].innerHTML;
+const cardsAllCount = elements['boss-menu-list'].children.length;
+const presetsHtml = elements['boss-presets-list'].innerHTML + elements['boss-presets-list'].children.map(c => c.innerHTML).join('');
+
+if (elements['badge-boss-queue-count'].textContent !== 'выбрано: 6') throw new Error('bad badge count');
+if (!summaryHtml.includes('Кирпич') || !summaryHtml.includes('Лютый') || summaryHtml.includes('Очередь автоатаки пуста')) {{
+  throw new Error('bad summary: ' + summaryHtml);
+}}
+if (strategyTitle !== 'Порядок ротации (6):') throw new Error('bad strategy title: ' + strategyTitle);
+if (elements['boss-modal-strategy-chain'].querySelectorAll('.boss-strategy-chip').length !== 6) throw new Error('expected 6 chips');
+if (cardsAllCount !== 6) throw new Error('expected 6 cards, got ' + cardsAllCount);
+if (!presetsHtml.includes('Фарм')) throw new Error('presets not rendered');
+
+// Search filter 'лю' + move up ▲
+vm.runInContext(`
+  bossSearchQuery = 'лю';
+  renderBossMenuList();
+`, sandbox);
+if (elements['boss-menu-list'].children.length !== 1) throw new Error('expected 1 filtered card for лю');
+const lyutyyCard = elements['boss-menu-list'].children[0];
+lyutyyCard.querySelector('.btn-boss-up').click();
+const reorderedIds = vm.runInContext('bossTargetsWorkingCopy.map(t => t.bossId)', sandbox);
+if (JSON.stringify(Array.from(reorderedIds)) !== '[1,2,4,3,5,6]') {{
+  throw new Error('unexpected reorder: ' + JSON.stringify(reorderedIds));
+}}
+console.log('JS_RUNTIME_SMOKE_OK');
+"""
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert proc.returncode == 0, f"Node smoke failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+    assert "JS_RUNTIME_SMOKE_OK" in proc.stdout
