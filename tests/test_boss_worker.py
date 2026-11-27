@@ -3234,3 +3234,57 @@ async def test_boss_worker_live_priority_reorder_and_removal(boss_setup):
     assert len(start_calls) == 2
     assert start_calls[1]["bossId"] == 1
     assert start_calls[1]["mode"] == "blotnoy"
+
+
+
+@pytest.mark.asyncio
+async def test_boss_availability_all_categories_and_no_false_lock_when_defeated():
+    """
+    1) Лютый с победами (dailyWins=3) никогда не помечается Закрыт даже при пустом prisons_data.
+    2) Надзиратели (Циклоп, Раиса) и Рецидивисты (Отбой) имеют единую live-проверку доступности
+       и структурированный объект availability.
+    """
+    from client.api.boss import BossAPI, _load_bosses_catalog
+
+    catalog = [dict(b) for b in _load_bosses_catalog() if b["id"] in (4, 10, 11, 33)]
+    # Кейс 1: prisons_data пуст, но у Лютого есть 3 дневные победы (и 0 в wins -> totalWins >= dailyWins)
+    boot = {
+        "playerStats": {
+            "wins": {"4": 0},
+            "dailyWins": {"4": 3},
+            "keys": {"9": 3, "10": 0, "32": 0},
+            "dailyBossBattleLimit": 7,
+        }
+    }
+    res1 = BossAPI.evaluate_bosses_availability([dict(b) for b in catalog], bootstrap=boot, prisons_data=[])
+    by_id1 = {b["id"]: b for b in res1}
+    assert by_id1[4]["isLocked"] is False
+    assert by_id1[4]["totalWins"] == 3
+    assert by_id1[4]["dailyWins"] == 3
+    assert by_id1[4]["availability"]["is_unlocked"] is True
+
+    # Кейс 2: prisons_data с 0 ночных бунтов в Красной Пресне -> Циклоп (10) и Раиса (11) закрыты с требованиями
+    prisons_0 = [
+        {"id": 2, "name": "Красная Пресня", "dayRuns": 2, "nightRuns": 0},
+        {"id": 3, "name": "Софийка", "dayRuns": 0, "nightRuns": 2},
+    ]
+    res2 = BossAPI.evaluate_bosses_availability([dict(b) for b in catalog], bootstrap=boot, prisons_data=prisons_0)
+    by_id2 = {b["id"]: b for b in res2}
+    assert by_id2[10]["isLocked"] is True
+    assert "0 из 2" in (by_id2[10].get("unlockReason") or "")
+    assert by_id2[10]["availability"]["requirements"][0]["type"] == "prison_runs"
+    assert by_id2[11]["isLocked"] is True
+    assert "0 из 2" in (by_id2[11].get("unlockReason") or "")
+    # Отбой (Рецидивисты) имеет структурированное требование ключей
+    assert any(r["type"] == "keys" for r in by_id2[33]["availability"]["requirements"])
+
+    # Кейс 3: 2 ночных бунта в Красной Пресне -> Циклоп (10) открывается динамически
+    prisons_ok = [
+        {"id": 2, "name": "Красная Пресня", "dayRuns": 2, "nightRuns": 2},
+        {"id": 3, "name": "Софийка", "dayRuns": 2, "nightRuns": 2},
+    ]
+    res3 = BossAPI.evaluate_bosses_availability([dict(b) for b in catalog], bootstrap=boot, prisons_data=prisons_ok)
+    by_id3 = {b["id"]: b for b in res3}
+    assert by_id3[10]["isLocked"] is False
+    assert by_id3[10]["canAttack"] is True
+    assert by_id3[11]["isLocked"] is False

@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v23" in sw
+    assert "prisonbot-assets-v24" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_02";' in js
+    assert 'const ASSET_VERSION = "20261127_03";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_02" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_03" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_02"',
-        'src="assets/icons/room_reward.webp?v=20261127_02"',
-        'src="assets/icons/complect.webp?v=20261127_02"',
-        'src="assets/icons/podogrev.webp?v=20261127_02"',
-        'src="assets/icons/authority.webp?v=20261127_02"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_02"',
+        'src="assets/icons/boss.webp?v=20261127_03"',
+        'src="assets/icons/room_reward.webp?v=20261127_03"',
+        'src="assets/icons/complect.webp?v=20261127_03"',
+        'src="assets/icons/podogrev.webp?v=20261127_03"',
+        'src="assets/icons/authority.webp?v=20261127_03"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_03"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1245,7 +1245,7 @@ const cardsAllCount = elements['boss-menu-list'].children.length;
 const presetsHtml = elements['boss-presets-list'].innerHTML + elements['boss-presets-list'].children.map(c => c.innerHTML).join('');
 
 if (elements['badge-boss-queue-count'].textContent !== 'выбрано: 6') throw new Error('bad badge count');
-if (!summaryHtml.includes('Кирпич') || !summaryHtml.includes('Лютый') || summaryHtml.includes('Очередь автоатаки пуста')) {{
+if (!summaryHtml.includes('Кирпич [Пац]') || !summaryHtml.includes('Лютый [Авторитет]') || summaryHtml.includes('#1 ') || summaryHtml.includes('Очередь автоатаки пуста')) {{
   throw new Error('bad summary: ' + summaryHtml);
 }}
 if (strategyTitle !== 'Порядок ротации (6):') throw new Error('bad strategy title: ' + strategyTitle);

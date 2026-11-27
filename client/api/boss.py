@@ -279,9 +279,15 @@ class BossAPI:
 
         for boss in bosses:
             b_id = int(boss.get("id") or 0)
+            daily_wins = int(daily_wins_map.get(str(b_id), 0))
+            total_wins = max(int(wins_map.get(str(b_id), 0)), daily_wins)
+            already_defeated = (total_wins > 0 or daily_wins > 0)
+
             is_locked = False
             unlock_reason = None
             progress_text = None
+            unlock_progress = None
+            requirements: List[Dict[str, Any]] = []
 
             # А. Проверка серверного объекта access
             acc = boss.get("access")
@@ -297,8 +303,17 @@ class BossAPI:
                         s_need = decline_ru(req_runs, NEED_DAY if shift == "day" else NEED_NIGHT)
                         s_runs = decline_ru(req_runs, RUNS_DAY if shift == "day" else RUNS_NIGHT)
                         progress_text = f"{cur_runs} из {req_runs}"
+                        unlock_progress = {"current": cur_runs, "required": req_runs}
                         unlock_reason = f"{s_need} {req_runs} {s_runs} в {p_name}, пройдено {cur_runs} ({progress_text})"
-                        is_locked = True
+                        requirements.append({
+                            "type": "prison_runs",
+                            "label": f"{'Дневные ходки' if shift == 'day' else 'Ночные бунты'} в {p_name}",
+                            "current": cur_runs,
+                            "required": req_runs,
+                            "completed": cur_runs >= req_runs,
+                        })
+                        if not already_defeated:
+                            is_locked = True
                     elif reason_code == "guild_level_too_low":
                         req_lvl = acc.get("requiredGuildLevel", 50)
                         unlock_reason = f"Нужен уровень бригады {req_lvl}"
@@ -315,29 +330,44 @@ class BossAPI:
                 elif acc.get("available") is True:
                     is_locked = False
 
-            # Б. Проверка требований по тюрьмам из каталога
+            # Б. Проверка требований по тюрьмам из каталога (только при наличии live-данных тюрем)
             req_p_id = boss.get("requiredPrisonId")
-            if req_p_id and not is_locked:
+            if req_p_id:
                 shift = boss.get("requiredShift", "day")
                 req_runs = int(boss.get("requiredRuns") or 0)
                 p_name = boss.get("requiredPrisonName") or f"тюрьме {req_p_id}"
+                has_prison_data = int(req_p_id) in prisons_map
                 p_stat = prisons_map.get(int(req_p_id), {})
-                cur_runs = int(p_stat.get("dayRuns" if shift == "day" else "nightRuns", 0))
-                if cur_runs < req_runs:
+                cur_runs = int(p_stat.get("dayRuns" if shift == "day" else "nightRuns", 0)) if has_prison_data else (req_runs if already_defeated else 0)
+                if has_prison_data or already_defeated:
+                    progress_text = f"{cur_runs} из {req_runs}"
+                    unlock_progress = {"current": cur_runs, "required": req_runs}
+                    requirements.append({
+                        "type": "prison_runs",
+                        "label": f"{'Дневные ходки' if shift == 'day' else 'Ночные бунты'} в {p_name}",
+                        "current": cur_runs,
+                        "required": req_runs,
+                        "completed": cur_runs >= req_runs or already_defeated,
+                    })
+                if has_prison_data and not is_locked and not already_defeated and cur_runs < req_runs:
                     s_need = decline_ru(req_runs, NEED_DAY if shift == "day" else NEED_NIGHT)
                     s_runs = decline_ru(req_runs, RUNS_DAY if shift == "day" else RUNS_NIGHT)
-                    progress_text = f"{cur_runs} из {req_runs}"
                     unlock_reason = f"{s_need} {req_runs} {s_runs} в {p_name}, пройдено {cur_runs} ({progress_text})"
                     is_locked = True
-                else:
-                    progress_text = f"{cur_runs} из {req_runs}"
 
             # В. Проверка требования победы над предыдущим боссом
             req_boss_id = boss.get("requiredBossId")
-            if req_boss_id and not is_locked:
+            if req_boss_id:
                 prev_wins = int(wins_map.get(str(req_boss_id), 0))
-                if prev_wins < 1:
-                    req_name = boss.get("requiredBossName") or f"Босс #{req_boss_id}"
+                req_name = boss.get("requiredBossName") or f"Босс #{req_boss_id}"
+                requirements.append({
+                    "type": "prev_boss",
+                    "label": f"Победа над «{req_name}»",
+                    "current": prev_wins,
+                    "required": 1,
+                    "completed": prev_wins >= 1 or already_defeated,
+                })
+                if not is_locked and not already_defeated and prev_wins < 1:
                     unlock_reason = f"Победите босса «{req_name}»"
                     is_locked = True
 
@@ -347,6 +377,13 @@ class BossAPI:
                 if arr and arr.get("isOpen") is False:
                     is_locked = True
                     unlock_reason = "Босс сейчас недоступен (вне окна прихода)"
+                    requirements.append({
+                        "type": "arrival",
+                        "label": "Окно прихода босса",
+                        "current": 0,
+                        "required": 1,
+                        "completed": False,
+                    })
 
             # Д. Проверка ключей
             req_key_boss_id = boss.get("requiredKeyBossId")
@@ -354,10 +391,17 @@ class BossAPI:
             owned_keys = int(keys_map.get(str(req_key_boss_id), 0)) if req_key_boss_id else 0
             missing_keys = max(0, req_keys_count - owned_keys) if (req_key_boss_id and req_keys_count > 0) else 0
             key_boss_name = boss.get("requiredKeyBossName") or (f"#{req_key_boss_id}" if req_key_boss_id else "")
+            if req_key_boss_id and req_keys_count > 0:
+                requirements.append({
+                    "type": "keys",
+                    "label": f"Ключи от {key_boss_name}",
+                    "current": owned_keys,
+                    "required": req_keys_count,
+                    "completed": owned_keys >= req_keys_count,
+                })
 
             # Е. Проверка кулдауна и дневного лимита
             cooldown_seconds = int(boss.get("cooldownSeconds") or 0)
-            daily_wins = int(daily_wins_map.get(str(b_id), 0))
             daily_limit = int(boss.get("dailyLimit") or 7)
 
             if is_locked:
@@ -434,6 +478,15 @@ class BossAPI:
             boss["progressText"] = progress_text
             boss["missingKeysCount"] = missing_keys
             boss["modesAccess"] = modes_access
+            boss["totalWins"] = total_wins
+            boss["dailyWins"] = daily_wins
+            boss["availability"] = {
+                "is_unlocked": not is_locked,
+                "unlock_progress": unlock_progress,
+                "unlock_requirements_text": unlock_reason,
+                "requirements": requirements,
+                "available_modes": [m for m, ma in modes_access.items() if ma.get("available")],
+            }
 
         return bosses
 

@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_02";
+const ASSET_VERSION = "20261127_03";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -6704,10 +6704,10 @@ function updateBossQueueUI(targets) {
       summaryEl.textContent = "Очередь автоатаки пуста. Нажмите «Меню боссов», чтобы настроить список целей.";
       summaryEl.style.color = "var(--muted-foreground)";
     } else {
-      const items = queue.map((t, idx) => {
+      const items = queue.map(t => {
         const bName = escapeHtml(getBossDisplayName(t));
         const mLabel = escapeHtml(getBossModeShortLabel(t.mode));
-        return `#${idx + 1} ${bName} [${mLabel}]`;
+        return `${bName} [${mLabel}]`;
       });
       summaryEl.innerHTML = `<span style="color: #60a5fa; font-weight: 600;">В очереди (${count}):</span> <span style="color: #fff;">${items.join(" → ")}</span>`;
     }
@@ -6878,7 +6878,8 @@ function renderBossDropHtml(b, mode) {
       );
       const thumb = it.previewUrl ? proxyAssetUrl(it.previewUrl) : fallbackIcon;
       const isOwned = Boolean(it.owned);
-      const hasCount = it.totalCount && it.totalCount > 1;
+      const isSetKind = it.kind === "tattoo_set" || it.kind === "clothing_set";
+      const hasCount = it.totalCount && (it.totalCount > 1 || isSetKind);
       const countBadge = hasCount ? `<span class="boss-loot-parts-badge">${it.ownedCount || 0}/${it.totalCount}</span>` : "";
       const checkBadge = isOwned ? '<span class="boss-loot-owned-badge">✓</span>' : '';
       return `

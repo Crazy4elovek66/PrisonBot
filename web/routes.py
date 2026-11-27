@@ -986,6 +986,8 @@ async def get_catalogs() -> Dict[str, Any]:
                 prisons_data = await fetch_enriched_prisons_list(bot_context.prison_api)
                 if prisons_data:
                     hub.set_domain_data(1, "prisons", {"success": True, "prisons": prisons_data})
+                elif p_entry is not None and isinstance(p_entry.data, dict):
+                    prisons_data = p_entry.data.get("prisons") or []
         except Exception as e:
             logger.warning("Ошибка получения каталога тюрем: %s", e)
 
@@ -1056,11 +1058,13 @@ async def get_catalogs() -> Dict[str, Any]:
         else:
             b["availableKeys"] = None
         b["droppedKeysOwned"] = int(keys_map.get(b_id_str, 0))
-        b["totalWins"] = int(wins_map.get(b_id_str, 0))
-        b["dailyWins"] = int(daily_wins_map.get(b_id_str, 0))
+        d_wins = int(daily_wins_map.get(b_id_str, 0))
+        t_wins = max(int(wins_map.get(b_id_str, 0)), d_wins)
+        b["totalWins"] = t_wins
+        b["dailyWins"] = d_wins
         b["dailyLimit"] = daily_limit
 
-        # Динамический расчет владения предметами (хаты, шмот, тату) без опоры на статические флаги
+        # Динамический расчет владения предметами (хаты, шмот, тату) с учетом всех ID комплекта
         for mode_key, mode_data in b.get("modes", {}).items():
             if not isinstance(mode_data, dict):
                 continue
@@ -1071,14 +1075,20 @@ async def get_catalogs() -> Dict[str, Any]:
                     is_owned = (int(item_id) in owned_cameras_set) if item_id is not None and str(item_id).isdigit() else False
                     item["owned"] = is_owned
                     item["ownedCount"] = 1 if is_owned else 0
-                elif kind in ("clothing_set", "clothing"):
-                    is_owned = (int(item_id) in owned_clothing_set) if item_id is not None and str(item_id).isdigit() else False
-                    item["owned"] = is_owned
-                    item["ownedCount"] = item.get("totalCount", 1) if is_owned else 0
-                elif kind in ("tattoo_set", "tattoo"):
-                    is_owned = (int(item_id) in owned_tattoos_set) if item_id is not None and str(item_id).isdigit() else False
-                    item["owned"] = is_owned
-                    item["ownedCount"] = item.get("totalCount", 1) if is_owned else 0
+                elif kind in ("clothing_set", "clothing", "tattoo_set", "tattoo"):
+                    owned_pool = owned_clothing_set if kind in ("clothing_set", "clothing") else owned_tattoos_set
+                    raw_ids = item.get("itemIds")
+                    if isinstance(raw_ids, list) and raw_ids:
+                        set_ids = {int(x) for x in raw_ids if str(x).isdigit()}
+                        owned_cnt = len(set_ids & owned_pool)
+                        total_cnt = len(set_ids)
+                        item["ownedCount"] = owned_cnt
+                        item["totalCount"] = total_cnt
+                        item["owned"] = bool(total_cnt > 0 and owned_cnt >= total_cnt)
+                    else:
+                        is_owned = (int(item_id) in owned_pool) if item_id is not None and str(item_id).isdigit() else False
+                        item["owned"] = is_owned
+                        item["ownedCount"] = item.get("totalCount", 1) if is_owned else 0
 
     # 3. Мастера
     if bot_context.prison_api:

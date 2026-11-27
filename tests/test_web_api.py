@@ -3251,3 +3251,52 @@ async def test_patch_config_boss_targets_normalizes_reorders_and_wakes_scheduler
         assert [t["priority"] for t in got_targets] == [0, 1]
     finally:
         bot_context.scheduler_controller = orig_ctrl
+
+
+
+@pytest.mark.asyncio
+async def test_catalogs_gladiator_full_bonus_and_owned_count(web_setup):
+    """
+    Проверка полного бонуса комплекта (+90 Самопал для Гладиатора) и точного
+    подсчёта прогресса ownedCount/totalCount по всем ID комплекта (3/34 при [167, 173, 181]).
+    """
+    from unittest.mock import AsyncMock
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    orig_player = bot_context.player_api
+    orig_boss = bot_context.boss_api
+    orig_prison = bot_context.prison_api
+    try:
+        mock_player = AsyncMock()
+        mock_player.get_wardrobe_inventory.return_value = {
+            "ownedTattoos": [167, 173, 181],
+            "ownedClothing": [],
+            "ownedCameras": [],
+        }
+        bot_context.player_api = mock_player
+        bot_context.boss_api = None
+        bot_context.prison_api = None
+
+        r = await client.get("/api/v1/catalogs", headers=headers)
+        assert r.status_code == 200
+        data = r.json()
+        by_id = {b["id"]: b for b in data["bosses"]}
+
+        lyutyy_items = by_id[4]["modes"]["avtoritetny"]["items"]
+        gladiator = next(it for it in lyutyy_items if it["id"] == 166)
+        assert gladiator["bonusText"] == "+90 Самопал"
+        assert gladiator["ownedCount"] == 3
+        assert gladiator["totalCount"] == 34
+        assert gladiator["owned"] is False
+
+        cyclop_items = by_id[10]["modes"]["pacansky"]["items"]
+        tapki = next(it for it in cyclop_items if it["id"] == 73)
+        assert tapki["totalCount"] == 1
+        assert tapki["ownedCount"] == 0
+    finally:
+        bot_context.player_api = orig_player
+        bot_context.boss_api = orig_boss
+        bot_context.prison_api = orig_prison
