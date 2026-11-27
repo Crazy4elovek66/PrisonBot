@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_09";
+const ASSET_VERSION = "20261127_10";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -2613,24 +2613,49 @@ function getFriendRequestKey(r) {
   return raw !== undefined && raw !== null ? String(raw) : "";
 }
 
+let _frFilterMode = "all"; // "all" | "obshak"
+let _frSortMode = "default"; // "default" | "obshak_desc"
+
+function renderObshakBadgeHtml(r) {
+  if (r && r.has_obshak && r.obshak_tier && r.obshak_tier !== "none") {
+    const tier = String(r.obshak_tier);
+    const label = String(r.obshak_label || tier);
+    const iconRel = String(r.obshak_icon || `assets/icons/obshak_${tier}.webp`).replace(/^\/+/, "");
+    const iconSrc = typeof resolveAppAssetUrl === "function" ? resolveAppAssetUrl(`/static/${iconRel}`) : iconRel;
+    return `<span class="obshak-badge obshak-tier-${escapeHtml(tier)}" title="Общак: ${escapeHtml(label)}"><img src="${escapeHtml(iconSrc)}" class="obshak-badge-icon" alt="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+  }
+  return `<span class="obshak-badge obshak-tier-none">Без общака</span>`;
+}
+
 function renderFriendRequestsData(data) {
   const container = document.getElementById("friend-requests-list");
   if (!container || !data) return;
   liveSlices.data.friend_requests = data;
-  const reqs = data.requests || data.items || [];
+  const rawReqs = Array.isArray(data.requests || data.items) ? (data.requests || data.items) : [];
+  const obshakCount = rawReqs.filter(r => Boolean(r && r.has_obshak)).length;
+  const obshakCntEl = document.getElementById("friend-requests-obshak-count");
+  if (obshakCntEl) setTextIfChanged(obshakCntEl, obshakCount);
+
   const countEl = document.getElementById("friend-requests-count");
   const badgeEl = document.getElementById("drawer-friends-badge");
-  setTextIfChanged(countEl, reqs.length);
+  setTextIfChanged(countEl, rawReqs.length);
   if (badgeEl) {
-    setTextIfChanged(badgeEl, reqs.length);
-    badgeEl.style.display = reqs.length > 0 ? "inline-block" : "none";
+    setTextIfChanged(badgeEl, rawReqs.length);
+    badgeEl.style.display = rawReqs.length > 0 ? "inline-block" : "none";
+  }
+
+  const frFilter = typeof _frFilterMode !== "undefined" ? _frFilterMode : "all";
+  const frSort = typeof _frSortMode !== "undefined" ? _frSortMode : "default";
+  let reqs = frFilter === "obshak" ? rawReqs.filter(r => Boolean(r && r.has_obshak)) : rawReqs.slice();
+  if (frSort === "obshak_desc") {
+    reqs.sort((a, b) => Number(b?.obshak_rank || 0) - Number(a?.obshak_rank || 0));
   }
 
   reconcileKeyedList(
     container,
     reqs,
     r => getFriendRequestKey(r),
-    r => `${getFriendRequestKey(r)}|${r.authority}|${r.level || r.lvl}|${r.talentsCount || r.talents}`,
+    r => `${getFriendRequestKey(r)}|${r.authority}|${r.level || r.lvl}|${r.talentsCount || r.talents}|${r.obshak_tier || "none"}|${r.obshak_rank || 0}`,
     r => {
       const uId = r.userId ?? r.fromUserId ?? r.senderId ?? r.id;
       const reqKey = getFriendRequestKey(r);
@@ -2649,6 +2674,12 @@ function renderFriendRequestsData(data) {
         <div class="stat-chip"><div class="stat-chip-lbl">${gameIcon('biceps', '', 'game-icon-sm')} Бицуха</div><div class="stat-chip-val" style="color: #f97316;">${formatNum(biceps)}</div></div>
       ` : '';
 
+      const obshakBadgeHtml = typeof renderObshakBadgeHtml === "function"
+        ? renderObshakBadgeHtml(r)
+        : (r && r.has_obshak && r.obshak_tier && r.obshak_tier !== "none"
+          ? `<span class="obshak-badge obshak-tier-${escapeHtml(String(r.obshak_tier))}">${escapeHtml(String(r.obshak_label || r.obshak_tier))}</span>`
+          : `<span class="obshak-badge obshak-tier-none">Без общака</span>`);
+
       const card = document.createElement("div");
       card.className = "friend-card";
       card.setAttribute("data-user-id", String(uId));
@@ -2658,6 +2689,7 @@ function renderFriendRequestsData(data) {
             <span style="background: var(--primary); color: #000; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800;">${nick[0].toUpperCase()}</span>
             <span>${nick}</span>
             <span style="font-size: 10px; background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 4px;">Ур. ${lvlText}</span>
+            ${obshakBadgeHtml}
           </div>
           <span style="font-size: 10px; color: var(--muted-foreground);">ID: ${uId}</span>
         </div>
@@ -3608,6 +3640,25 @@ document.getElementById("btn-refresh-friends")?.addEventListener("click", () => 
   loadFriendRequests();
   loadFriendsAudit();
   showToast("Заявки и статистика корешей обновляются...", "info");
+});
+
+document.getElementById("fr-filter-all")?.addEventListener("click", () => {
+  _frFilterMode = "all";
+  document.getElementById("fr-filter-all")?.classList.replace("btn-secondary", "btn-primary");
+  document.getElementById("fr-filter-obshak")?.classList.replace("btn-primary", "btn-secondary");
+  if (liveSlices.data.friend_requests) renderFriendRequestsData(liveSlices.data.friend_requests);
+});
+
+document.getElementById("fr-filter-obshak")?.addEventListener("click", () => {
+  _frFilterMode = "obshak";
+  document.getElementById("fr-filter-obshak")?.classList.replace("btn-secondary", "btn-primary");
+  document.getElementById("fr-filter-all")?.classList.replace("btn-primary", "btn-secondary");
+  if (liveSlices.data.friend_requests) renderFriendRequestsData(liveSlices.data.friend_requests);
+});
+
+document.getElementById("fr-sort-mode")?.addEventListener("change", (ev) => {
+  _frSortMode = ev.target?.value || "default";
+  if (liveSlices.data.friend_requests) renderFriendRequestsData(liveSlices.data.friend_requests);
 });
 
 document.getElementById("btn-refresh-friends-summary")?.addEventListener("click", () => {

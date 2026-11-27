@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v30" in sw
+    assert "prisonbot-assets-v31" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_09";' in js
+    assert 'const ASSET_VERSION = "20261127_10";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_09" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_10" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_09"',
-        'src="assets/icons/room_reward.webp?v=20261127_09"',
-        'src="assets/icons/complect.webp?v=20261127_09"',
-        'src="assets/icons/podogrev.webp?v=20261127_09"',
-        'src="assets/icons/authority.webp?v=20261127_09"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_09"',
+        'src="assets/icons/boss.webp?v=20261127_10"',
+        'src="assets/icons/room_reward.webp?v=20261127_10"',
+        'src="assets/icons/complect.webp?v=20261127_10"',
+        'src="assets/icons/podogrev.webp?v=20261127_10"',
+        'src="assets/icons/authority.webp?v=20261127_10"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_10"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1458,7 +1458,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_09',
+  ASSET_VERSION: '20261127_10',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -1706,3 +1706,122 @@ console.log('TIMERS_CLOCK_SYNC_OK');
 """
     res = subprocess.run(["node"], input=script, capture_output=True, text=True, check=True)
     assert "TIMERS_CLOCK_SYNC_OK" in res.stdout
+
+
+def test_obshak_icons_exist_and_js_runtime_friend_requests():
+    import subprocess
+    from pathlib import Path
+
+    icons_dir = Path("web/static/assets/icons")
+    for tier in ("pacan", "blat", "avtoritet", "vor"):
+        p = icons_dir / f"obshak_{tier}.webp"
+        assert p.exists() and p.stat().st_size > 200, f"Missing or invalid icon: {p}"
+
+    app_txt = Path("web/static/app.js").read_text(encoding="utf-8")
+
+    def _extract_fn(src: str, sig: str) -> str:
+        idx = src.index(sig)
+        brace_start = src.index("{", idx)
+        depth = 0
+        for pos in range(brace_start, len(src)):
+            if src[pos] == "{":
+                depth += 1
+            elif src[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[idx : pos + 1]
+        raise AssertionError(f"Unclosed: {sig}")
+
+    reconcile_block = _extract_fn(app_txt, "function reconcileKeyedList(")
+    key_block = _extract_fn(app_txt, "function getFriendRequestKey(")
+    fr_block = "\n".join([
+        'let _frFilterMode = "all";',
+        'let _frSortMode = "default";',
+        _extract_fn(app_txt, "function renderObshakBadgeHtml("),
+        _extract_fn(app_txt, "function renderFriendRequestsData("),
+    ])
+
+    script = f"""
+const elements = {{}};
+const makeEl = (id) => {{
+  if (!elements[id]) {{
+    const children = [];
+    elements[id] = {{
+      id, textContent: '', innerHTML: '', value: 'default', style: {{}}, dataset: {{}},
+      children,
+      classList: {{ add(){{}}, remove(){{}}, replace(){{}}, contains(){{ return false; }} }},
+      appendChild(c) {{ c.parentNode = elements[id]; children.push(c); return c; }},
+      insertBefore(c, ref) {{
+        c.parentNode = elements[id];
+        const i = children.indexOf(ref);
+        if (i >= 0) children.splice(i, 0, c);
+        else children.push(c);
+        return c;
+      }},
+      querySelectorAll() {{ return children.slice(); }},
+      addEventListener() {{}},
+    }};
+  }}
+  return elements[id];
+}};
+['friend-requests-list','friend-requests-obshak-count','friend-requests-count','drawer-friends-badge'].forEach(makeEl);
+global.document = {{
+  getElementById: (id) => elements[id] || null,
+  querySelectorAll: () => [],
+  querySelector: () => null,
+  createElement: () => {{
+    const attrs = {{}};
+    const ch = {{
+      className: '', innerHTML: '', style: {{}}, dataset: {{}}, parentNode: null,
+      setAttribute(k, v) {{ attrs[k] = v; }},
+      getAttribute(k) {{ return attrs[k]; }},
+      querySelector() {{ return {{ addEventListener(){{}}, style: {{}}, disabled: false, textContent: '' }}; }},
+      querySelectorAll() {{ return []; }},
+      remove() {{
+        if (ch.parentNode && ch.parentNode.children) {{
+          const idx = ch.parentNode.children.indexOf(ch);
+          if (idx >= 0) ch.parentNode.children.splice(idx, 1);
+        }}
+      }},
+    }};
+    return ch;
+  }},
+}};
+function setTextIfChanged(el, t) {{ if (el) el.textContent = String(t ?? ''); }}
+function escapeHtml(s) {{ return String(s ?? ''); }}
+function resolveAppAssetUrl(u) {{ return u; }}
+function formatNum(n) {{ return String(n ?? 0); }}
+function gameIcon(k) {{ return k; }}
+function bindFriendshipButtons() {{}}
+const liveSlices = {{ data: {{}} }};
+
+{reconcile_block}
+{key_block}
+{fr_block}
+
+const sample = {{
+  requests: [
+    {{ userId: 1, nickname: 'NoObshak', level: 10, authority: 100, has_obshak: false, obshak_tier: 'none', obshak_rank: 0, obshak_label: '', obshak_icon: '' }},
+    {{ userId: 2, nickname: 'PacanUser', level: 20, authority: 200, has_obshak: true, obshak_tier: 'pacan', obshak_rank: 1, obshak_label: 'Пацанский', obshak_icon: 'assets/icons/obshak_pacan.webp' }},
+    {{ userId: 3, nickname: 'VorUser', level: 30, authority: 300, has_obshak: true, obshak_tier: 'vor', obshak_rank: 4, obshak_label: 'Воровской', obshak_icon: 'assets/icons/obshak_vor.webp' }},
+  ]
+}};
+
+_frSortMode = 'obshak_desc';
+_frFilterMode = 'all';
+renderFriendRequestsData(sample);
+const listEl = elements['friend-requests-list'];
+if (listEl.children.length !== 3) throw new Error('Expected 3 cards, got ' + listEl.children.length);
+if (listEl.children[0].getAttribute('data-user-id') !== '3') throw new Error('Expected VorUser first when sorted');
+if (!listEl.children[0].innerHTML.includes('obshak_vor.webp')) throw new Error('Missing obshak_vor.webp');
+if (!listEl.children[2].innerHTML.includes('Без общака')) throw new Error('Missing Без общака badge');
+if (elements['friend-requests-obshak-count'].textContent !== '2') throw new Error('Expected obshak count 2');
+
+_frFilterMode = 'obshak';
+renderFriendRequestsData(sample);
+if (listEl.children.length !== 2) throw new Error('Expected 2 cards after filter, got ' + listEl.children.length);
+console.log('OBSHAK_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "OBSHAK_JS_OK" in res.stdout

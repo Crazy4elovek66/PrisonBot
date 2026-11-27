@@ -995,3 +995,64 @@ async def test_social_worker_stops_on_friends_limit_and_filters_real_stats():
 
 
 
+
+
+def test_parse_obshak_info_all_tiers_expired_and_none():
+    from client.api.social import parse_obshak_info
+
+    for raw_tier, exp_tier, exp_rank, exp_label in [
+        ("pacansky", "pacan", 1, "Пацанский"),
+        ("blatnoy", "blat", 2, "Блатной"),
+        ("avtoritetny", "avtoritet", 3, "Авторитетный"),
+        ("vorovskoy", "vor", 4, "Воровской"),
+    ]:
+        res = parse_obshak_info({"vpiTier": raw_tier})
+        assert res["has_obshak"] is True
+        assert res["obshak_tier"] == exp_tier
+        assert res["obshak_rank"] == exp_rank
+        assert res["obshak_label"] == exp_label
+        assert res["obshak_icon"] == f"assets/icons/obshak_{exp_tier}.webp"
+
+    none_res = parse_obshak_info({"userId": 123, "vpiTier": None})
+    assert none_res["has_obshak"] is False
+    assert none_res["obshak_tier"] == "none"
+    assert none_res["obshak_rank"] == 0
+    assert none_res["obshak_icon"] == ""
+
+    expired_res = parse_obshak_info({"vpiTier": "vorovskoy", "vpiExpiresAt": 1700000000}, now_ts=1700000100.0)
+    assert expired_res["has_obshak"] is False
+    assert expired_res["obshak_tier"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_enrich_friend_requests_with_obshak_cache_and_resilience():
+    from client.api.social import _OBSHAK_PROFILE_CACHE, enrich_friend_requests_with_obshak
+
+    _OBSHAK_PROFILE_CACHE.clear()
+    calls = []
+
+    async def fake_fetch(uid):
+        calls.append(uid)
+        if int(uid) == 101:
+            return {"userId": 101, "vpiTier": "vorovskoy"}
+        if int(uid) == 102:
+            raise RuntimeError("transient_error")
+        return {"userId": uid, "vpiTier": None}
+
+    reqs = [
+        {"userId": 101, "nickname": "VorUser"},
+        {"userId": 102, "nickname": "ErrUser"},
+        {"userId": 103, "nickname": "InlineUser", "vpiTier": "blatnoy"},
+    ]
+    res1 = await enrich_friend_requests_with_obshak(reqs, fetch_profile_fn=fake_fetch)
+    assert len(res1) == 3
+    assert res1[0]["has_obshak"] is True and res1[0]["obshak_tier"] == "vor"
+    assert res1[1]["has_obshak"] is False and res1[1]["obshak_tier"] == "none"
+    assert res1[2]["has_obshak"] is True and res1[2]["obshak_tier"] == "blat"
+    assert calls == [101, 102]  # 103 parsed inline without HTTP fetch
+
+    # Second call uses TTL cache for 101 (no extra HTTP call)
+    res2 = await enrich_friend_requests_with_obshak([{"userId": 101, "nickname": "VorUser"}], fetch_profile_fn=fake_fetch)
+    assert res2[0]["obshak_tier"] == "vor"
+    assert calls == [101, 102]
+    _OBSHAK_PROFILE_CACHE.clear()

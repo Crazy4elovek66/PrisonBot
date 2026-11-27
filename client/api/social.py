@@ -424,6 +424,231 @@ def extract_player_combat_stats(
     }
 
 
+_OBSHAK_PROFILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_OBSHAK_CACHE_TTL_SEC = 1800.0
+_OBSHAK_CACHE_MAX_SIZE = 1000
+
+_OBSHAK_TIERS: Dict[str, Tuple[int, str, str]] = {
+    "pacan": (1, "Пацанский", "assets/icons/obshak_pacan.webp"),
+    "blat": (2, "Блатной", "assets/icons/obshak_blat.webp"),
+    "avtoritet": (3, "Авторитетный", "assets/icons/obshak_avtoritet.webp"),
+    "vor": (4, "Воровской", "assets/icons/obshak_vor.webp"),
+}
+
+_OBSHAK_ALIASES: Dict[str, str] = {
+    "1": "pacan",
+    "pacan": "pacan",
+    "pacansky": "pacan",
+    "пацанский": "pacan",
+    "2": "blat",
+    "blat": "blat",
+    "blatnoy": "blat",
+    "блатной": "blat",
+    "3": "avtoritet",
+    "avtoritet": "avtoritet",
+    "avtoritetny": "avtoritet",
+    "avtoritetnyy": "avtoritet",
+    "авторитетный": "avtoritet",
+    "4": "vor",
+    "vor": "vor",
+    "vorovskoy": "vor",
+    "воровской": "vor",
+}
+
+
+def _empty_obshak_info() -> Dict[str, Any]:
+    return {
+        "has_obshak": False,
+        "obshak_tier": "none",
+        "obshak_rank": 0,
+        "obshak_label": "",
+        "obshak_icon": "",
+        "obshak_expires_ts": None,
+    }
+
+
+def _parse_obshak_expires_ts(raw_val: Any) -> Optional[int]:
+    if raw_val is None or raw_val == "" or isinstance(raw_val, bool):
+        return None
+    try:
+        from client.api.menyala import _parse_iso_ts
+        return _parse_iso_ts(raw_val)
+    except Exception:
+        return None
+
+
+def parse_obshak_info(payload: Any, now_ts: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Унифицированный парсер наличия и типа активного Общака (Пацанский, Блатной, Авторитетный, Воровской)
+    из ответа /api/player/view/{uid} (vpiTier) или объекта заявки/профиля.
+    """
+    if not isinstance(payload, dict):
+        return _empty_obshak_info()
+
+    src = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(src, dict):
+        src = payload
+
+    # Если сервер уже вернул нормализованные поля
+    if src.get("obshak_tier") in _OBSHAK_TIERS and src.get("has_obshak") is True:
+        tier_key = str(src["obshak_tier"])
+        rank, label, icon = _OBSHAK_TIERS[tier_key]
+        exp_ts = _parse_obshak_expires_ts(src.get("obshak_expires_ts"))
+        ref_now = float(now_ts) if now_ts is not None else __import__("time").time()
+        if exp_ts is not None and exp_ts <= ref_now:
+            return _empty_obshak_info()
+        return {
+            "has_obshak": True,
+            "obshak_tier": tier_key,
+            "obshak_rank": rank,
+            "obshak_label": label,
+            "obshak_icon": icon,
+            "obshak_expires_ts": exp_ts,
+        }
+
+    vpi_obj = None
+    for nested_key in ("vpi", "obshak", "obshchak", "subscription", "vip", "commonFund"):
+        if isinstance(src.get(nested_key), dict):
+            vpi_obj = src[nested_key]
+            break
+
+    raw_tier = None
+    for k in ("vpiTier", "vpi_tier", "obshakTier", "obshak_tier", "subType", "subLevel", "fundTier", "tier", "vpi"):
+        val = src.get(k)
+        if val is not None and not isinstance(val, (dict, list, bool)):
+            raw_tier = val
+            break
+    if raw_tier is None and isinstance(vpi_obj, dict):
+        if vpi_obj.get("active") is False or vpi_obj.get("isActive") is False:
+            return _empty_obshak_info()
+        for k in ("tier", "vpiTier", "name", "level", "type"):
+            val = vpi_obj.get(k)
+            if val is not None and not isinstance(val, (dict, list, bool)):
+                raw_tier = val
+                break
+
+    if raw_tier is None:
+        return _empty_obshak_info()
+
+    norm = _OBSHAK_ALIASES.get(str(raw_tier).strip().lower())
+    if not norm or norm not in _OBSHAK_TIERS:
+        return _empty_obshak_info()
+
+    exp_raw = None
+    for ek in ("vpiExpiresAt", "vpiEndUnix", "obshakExpiresAt", "expiresAt", "expires_at", "endUnix"):
+        if src.get(ek) is not None:
+            exp_raw = src.get(ek)
+            break
+    if exp_raw is None and isinstance(vpi_obj, dict):
+        for ek in ("expiresAt", "expires_at", "endUnix", "endsAtUtc"):
+            if vpi_obj.get(ek) is not None:
+                exp_raw = vpi_obj.get(ek)
+                break
+
+    exp_ts = _parse_obshak_expires_ts(exp_raw)
+    if exp_ts is not None:
+        if now_ts is not None:
+            ref_now = float(now_ts)
+        else:
+            try:
+                from client.http_client import get_game_now_ts
+                ref_now = get_game_now_ts()
+            except Exception:
+                ref_now = __import__("time").time()
+        if exp_ts <= ref_now:
+            return _empty_obshak_info()
+
+    rank, label, icon = _OBSHAK_TIERS[norm]
+    return {
+        "has_obshak": True,
+        "obshak_tier": norm,
+        "obshak_rank": rank,
+        "obshak_label": label,
+        "obshak_icon": icon,
+        "obshak_expires_ts": exp_ts,
+    }
+
+
+def _has_explicit_obshak_field(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    src = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    return any(k in src for k in ("vpiTier", "vpi_tier", "obshakTier", "obshak_tier", "vpi", "obshak", "obshchak"))
+
+
+async def enrich_friend_requests_with_obshak(
+    requests_list: List[Dict[str, Any]],
+    fetch_profile_fn: Optional[Any] = None,
+    max_concurrency: int = 3,
+    limit_fetch: int = 25,
+    cache_ttl_sec: float = _OBSHAK_CACHE_TTL_SEC,
+) -> List[Dict[str, Any]]:
+    """
+    Дообогащает список входящих заявок информацией об Общаке с TTL-кэшем по userId,
+    ограничением параллелизма (Semaphore) и защитой от сбоев/rate-limit.
+    """
+    import time as _time
+    from core.server_health import server_health_monitor
+
+    if not isinstance(requests_list, list):
+        return []
+
+    sem = asyncio.Semaphore(max(1, int(max_concurrency)))
+    fetch_budget = [max(0, int(limit_fetch))]
+
+    async def _enrich_one(req_item: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(req_item, dict):
+            return req_item
+        item = dict(req_item)
+        if _has_explicit_obshak_field(item):
+            item.update(parse_obshak_info(item))
+            return item
+
+        uid = item.get("userId") or item.get("fromUserId") or item.get("id")
+        if uid is None:
+            item.update(_empty_obshak_info())
+            return item
+
+        uid_key = str(uid)
+        now_mono = _time.monotonic()
+        cached = _OBSHAK_PROFILE_CACHE.get(uid_key)
+        if cached and (now_mono - cached[0]) < cache_ttl_sec:
+            item.update(dict(cached[1]))
+            return item
+
+        if fetch_profile_fn is None or server_health_monitor.is_maintenance or fetch_budget[0] <= 0:
+            item.update(_empty_obshak_info())
+            return item
+
+        fetch_budget[0] -= 1
+        try:
+            async with sem:
+                prof = await fetch_profile_fn(uid)
+            info = parse_obshak_info(prof)
+            if isinstance(prof, dict) and prof:
+                if len(_OBSHAK_PROFILE_CACHE) >= _OBSHAK_CACHE_MAX_SIZE:
+                    oldest_k = next(iter(_OBSHAK_PROFILE_CACHE))
+                    _OBSHAK_PROFILE_CACHE.pop(oldest_k, None)
+                _OBSHAK_PROFILE_CACHE[uid_key] = (_time.monotonic(), dict(info))
+            item.update(info)
+            return item
+        except Exception as exc:
+            logger.debug("Obshak profile enrich failed for %s: %s", uid, exc)
+            item.update(_empty_obshak_info())
+            return item
+
+    enriched = await asyncio.gather(*(_enrich_one(r) for r in requests_list), return_exceptions=True)
+    out: List[Dict[str, Any]] = []
+    for orig, res in zip(requests_list, enriched):
+        if isinstance(res, dict):
+            out.append(res)
+        elif isinstance(orig, dict):
+            fallback = dict(orig)
+            fallback.update(_empty_obshak_info())
+            out.append(fallback)
+    return out
+
+
 class SocialAPI:
     """
     Методы взаимодействия с социальными функциями и регулярными событиями:
@@ -556,9 +781,15 @@ class SocialAPI:
 
             # Если базовые характеристики (уровень, авторитет, бицуха, таланты или урон) не заданы в заявке,
             # дозагружаем через /api/player/view/{userId} с семафором и ретраем при 429
+            obshak_info = parse_obshak_info(c) if _has_explicit_obshak_field(c) else None
             if uid and (level == 0 or authority == 0 or biceps is None or talents == 0 or tot_dmg == 0):
                 p_view = await _fetch_player_view_safe(uid)
                 if isinstance(p_view, dict) and p_view:
+                    if obshak_info is None:
+                        obshak_info = parse_obshak_info(p_view)
+                        if _OBSHAK_PROFILE_CACHE is not None and len(_OBSHAK_PROFILE_CACHE) < _OBSHAK_CACHE_MAX_SIZE:
+                            import time as _time
+                            _OBSHAK_PROFILE_CACHE[str(uid)] = (_time.monotonic(), dict(obshak_info))
                     ext_stats = extract_player_combat_stats(p_view)
                     p_data = p_view.get("data") if isinstance(p_view.get("data"), dict) else p_view
                     if isinstance(p_data, dict):
@@ -588,7 +819,7 @@ class SocialAPI:
             if level == 0 and authority > 0:
                 level = calculate_level_from_authority(authority)
 
-            return {
+            out_item = {
                 "userId": uid,
                 "nickname": nick,
                 "photoUrl": photo,
@@ -601,6 +832,9 @@ class SocialAPI:
                 "gunshotDamage": gun_dmg,
                 "totalDamage": tot_dmg if tot_dmg > 0 else (kni_dmg + poi_dmg + gun_dmg),
             }
+            if obshak_info is not None:
+                out_item.update(obshak_info)
+            return out_item
 
         tasks = [_enrich_candidate(c) for c in raw_list]
         enriched = await asyncio.gather(*tasks, return_exceptions=True)
@@ -608,6 +842,25 @@ class SocialAPI:
         for item in enriched:
             if isinstance(item, dict) and item.get("userId") is not None:
                 results.append(item)
+
+        # Дообогащаем оставшиеся заявки (у которых не было vpiTier в заявке и не загружался p_view) через TTL-кэш
+        need_obshak = [r for r in results if "obshak_tier" not in r]
+        if need_obshak:
+            enriched_obshak = await enrich_friend_requests_with_obshak(
+                need_obshak,
+                fetch_profile_fn=_fetch_player_view_safe,
+                max_concurrency=3,
+                limit_fetch=25,
+            )
+            by_uid = {str(x.get("userId")): x for x in enriched_obshak if isinstance(x, dict)}
+            for r in results:
+                if "obshak_tier" not in r:
+                    upd = by_uid.get(str(r.get("userId")))
+                    if upd:
+                        for k in ("has_obshak", "obshak_tier", "obshak_rank", "obshak_label", "obshak_icon", "obshak_expires_ts"):
+                            r[k] = upd.get(k)
+                    else:
+                        r.update(_empty_obshak_info())
         return results
 
     @staticmethod
