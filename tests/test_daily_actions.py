@@ -117,3 +117,73 @@ async def test_radar_unique_constraint_prevention():
         assert cand.poison_damage == 0
         assert cand.gunshot_damage == 0
         assert cand.knife_damage == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_deltas_matches_tickets_and_weapons_migration_and_reset(tmp_path):
+    from datetime import datetime, timedelta
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.config import MSK_TZ
+    from core.database import compute_daily_resource_deltas, get_session, init_db
+
+    db_path = tmp_path / "deltas_ext.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    await init_db(engine)
+
+    day1 = datetime(2026, 11, 27, 15, 0, tzinfo=MSK_TZ)
+    # Имитируем старую строку без новых колонок (NULL) — не должно быть ложной дельты
+    async with get_session(engine) as session:
+        await session.execute(
+            text(
+                "INSERT INTO daily_resource_snapshots "
+                "(day_msk, cigarettes, sugar, rubles, paper, soap, stew, captured_at) "
+                "VALUES ('2026-11-27', 1000, 500, 100, 20, 5, 1, '2026-11-27T10:00:00+03:00')"
+            )
+        )
+        await session.commit()
+
+    first = await compute_daily_resource_deltas(
+        {
+            "cigarettes": 1000, "sugar": 500, "rubles": 100, "paper": 20, "soap": 5, "stew": 1,
+            "match_red": 10, "match_green": 15, "match_blue": 3, "wheel_tickets": 2,
+            "weapon_poison": 25, "weapon_gunshot": 12, "weapon_knife": 7,
+        },
+        now_msk=day1,
+        engine=engine,
+    )
+    assert first["deltas"]["match_red"] == 0
+    assert first["deltas"]["wheel_tickets"] == 0
+    assert first["deltas"]["weapon_poison"] == 0
+
+    second = await compute_daily_resource_deltas(
+        {
+            "cigarettes": 1050, "sugar": 500, "rubles": 100, "paper": 20, "soap": 5, "stew": 1,
+            "match_red": 14, "match_green": 12, "match_blue": 5, "wheel_tickets": 4,
+            "weapon_poison": 30, "weapon_gunshot": 10, "weapon_knife": 9,
+        },
+        now_msk=day1,
+        engine=engine,
+    )
+    assert second["deltas"]["match_red"] == 4
+    assert second["deltas"]["match_green"] == -3
+    assert second["deltas"]["match_blue"] == 2
+    assert second["deltas"]["wheel_tickets"] == 2
+    assert second["deltas"]["weapon_poison"] == 5
+    assert second["deltas"]["weapon_gunshot"] == -2
+    assert second["deltas"]["weapon_knife"] == 2
+
+    # Сброс на новые сутки (00:00+ МСК следующего дня)
+    day2 = day1 + timedelta(days=1)
+    reset_res = await compute_daily_resource_deltas(
+        {
+            "cigarettes": 1050, "sugar": 500, "rubles": 100, "paper": 20, "soap": 5, "stew": 1,
+            "match_red": 14, "match_green": 12, "match_blue": 5, "wheel_tickets": 4,
+            "weapon_poison": 30, "weapon_gunshot": 10, "weapon_knife": 9,
+        },
+        now_msk=day2,
+        engine=engine,
+    )
+    assert reset_res["deltas"]["match_red"] == 0
+    assert reset_res["deltas"]["weapon_poison"] == 0
+    await engine.dispose()

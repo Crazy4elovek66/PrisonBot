@@ -97,3 +97,82 @@ async def test_zaruby_worker_run_cycle_publishes_state_and_records_health(monkey
 
     await engine.dispose()
 
+
+
+def test_parse_live_zaruby_payload_8_tasks_and_js_render():
+    import json
+    import subprocess
+    from pathlib import Path
+    from client.api.zaruby import parse_zaruby_state
+
+    raw = {
+        "active": {
+            "mode": 1,
+            "startUnix": 1795807066,
+            "endUnix": 1795893466,
+            "tasks": [
+                {"taskId": "t1", "type": 4, "requiredAmount": 70, "currentAmount": 35, "status": 0, "title": "Набери 70 уважения зеков 'КРЕСТЫ'"},
+                {"taskId": "t2", "type": 4, "requiredAmount": 90, "currentAmount": 60, "status": 0, "title": "Набери 90 уважения зеков 'БУТЫРКА'"},
+                {"taskId": "t3", "type": 11, "requiredAmount": 30, "currentAmount": 0, "status": 0, "title": "Получи 30 очков знаний у мастеров"},
+                {"taskId": "t4", "type": 6, "bossId": 12, "requiredAmount": 1000, "currentAmount": 0, "status": 0, "title": "Нанеси 1000 урона боссу: Бес"},
+                {"taskId": "t5", "type": 6, "bossId": 5, "requiredAmount": 1100, "currentAmount": 0, "status": 0, "title": "Нанеси 1100 урона боссу: Шайба"},
+                {"taskId": "t6", "type": 10, "requiredAmount": 1300, "currentAmount": 533, "status": 0, "title": "Заработай 1300 папирос"},
+                {"taskId": "t7", "type": 3, "requiredAmount": 2, "currentAmount": 2, "status": 1, "title": "Используй подогрев 2 раза"},
+                {"taskId": "t8", "type": 12, "requiredAmount": 1, "currentAmount": 0, "status": 0, "title": "Разведи каталу 1 раз"},
+            ],
+            "participants": [
+                {"userId": 9001, "nickname": "Кодер", "authority": 42594},
+                {"userId": 9002, "nickname": "zabavachelovek", "authority": 37196},
+                {"userId": 9003, "nickname": "Nadimul", "authority": 0},
+                {"userId": 9004, "nickname": "fatherDemon2", "authority": 0},
+                {"userId": 9005, "nickname": "Hoang", "authority": 0},
+            ],
+            "completedCount": 1,
+        },
+        "progress": {"level": 4, "xp": 50, "need": 80},
+        "balances": {"ore_signet": 16, "signet": 8},
+        "skipSoapCost": 4,
+        "modes": [{"mode": 1, "unlocked": True, "rewardSignet": 10}],
+    }
+    parsed = parse_zaruby_state(raw, now_unix=1795820000, current_user_id=9001)
+    assert parsed["active"] is True
+    assert parsed["level"] == 4
+    assert parsed["signets"] == 8
+    assert parsed["ore_signet"] == 16
+    assert parsed["reward_signet"] == 10
+    assert parsed["tier_title"] == "Пацанская"
+    assert len(parsed["tasks"]) == 8
+    assert parsed["completed_count"] == 1
+    assert len(parsed["leaderboard"]) == 5
+    assert any(p["is_self"] and p["progress_pct"] == parsed["overall_pct_exact"] for p in parsed["leaderboard"])
+
+    app_txt = Path("web/static/app.js").read_text(encoding="utf-8")
+    block = app_txt[app_txt.index("let _zarubySelectedTaskId = null;"):app_txt.index("async function loadZarubyState()")]
+    script = f"""
+const elements = {{}};
+const makeEl = (id) => {{
+  const el = {{
+    id, textContent: '', innerHTML: '', disabled: false, style: {{}},
+    classList: {{ add(){{}}, remove(){{}}, contains(){{ return false; }} }},
+    querySelectorAll(){{ return []; }},
+  }};
+  elements[id] = el;
+  return el;
+}};
+['zaruby-level','zaruby-signets','zaruby-ore','zaruby-reward-signets','zaruby-active-banner','btn-zaruby-claim','btn-zaruby-start','zaruby-tasks-progress','zaruby-selected-detail','zaruby-tasks-list','zaruby-leaderboard-list','zaruby-timer'].forEach(makeEl);
+global.document = {{ getElementById: (id) => elements[id] || null }};
+function setTextIfChanged(el, t) {{ if (el) el.textContent = String(t ?? ''); }}
+function escapeHtml(s) {{ return String(s ?? ''); }}
+function resolveAppAssetUrl(u) {{ return u; }}
+function formatNum(n) {{ return String(n ?? 0); }}
+function renderRoutineGameBadges() {{}}
+global.setInterval = () => 1;
+{block}
+renderZarubyState({{ success: true, state: {json.dumps(parsed)} }});
+if (elements['zaruby-level'].textContent !== '4') throw new Error('level mismatch');
+if (!elements['zaruby-selected-detail'].innerHTML.includes('КРЕСТЫ')) throw new Error('detail missing');
+if (!elements['zaruby-leaderboard-list'].innerHTML.includes('%')) throw new Error('leaderboard pct missing');
+console.log('ZARUBY_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True, check=True)
+    assert "ZARUBY_JS_OK" in res.stdout

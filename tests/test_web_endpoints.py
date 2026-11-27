@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v28" in sw
+    assert "prisonbot-assets-v30" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_07";' in js
+    assert 'const ASSET_VERSION = "20261127_09";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_07" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_09" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_07"',
-        'src="assets/icons/room_reward.webp?v=20261127_07"',
-        'src="assets/icons/complect.webp?v=20261127_07"',
-        'src="assets/icons/podogrev.webp?v=20261127_07"',
-        'src="assets/icons/authority.webp?v=20261127_07"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_07"',
+        'src="assets/icons/boss.webp?v=20261127_09"',
+        'src="assets/icons/room_reward.webp?v=20261127_09"',
+        'src="assets/icons/complect.webp?v=20261127_09"',
+        'src="assets/icons/podogrev.webp?v=20261127_09"',
+        'src="assets/icons/authority.webp?v=20261127_09"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_09"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -437,8 +437,8 @@ def test_render_boss_defeat_notification_runtime_node():
     root = Path(__file__).resolve().parent.parent
     js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
 
-    start = js.index("      let defeatBarHtml = \"\";")
-    end = js.index("      if (meta.outcome === \"victory\")", start)
+    start = js.index("  let defeatBarHtml = \"\";")
+    end = js.index("  if (meta.outcome === \"victory\")", start)
     defeat_snippet = js[start:end]
 
     fn_start = js.index("function formatNum(")
@@ -1458,7 +1458,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_07',
+  ASSET_VERSION: '20261127_09',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -1609,3 +1609,100 @@ async def test_live_prisons_returns_all_15_and_master_cycle_energy():
         bot_context.prison_api = orig_api
 
 
+
+
+def test_js_runtime_timers_clock_skew_and_no_interval_leak():
+    import subprocess
+    from pathlib import Path
+
+    app_txt = Path("web/static/app.js").read_text(encoding="utf-8")
+    clock_block = app_txt[app_txt.index("let serverClockOffsetMs = 0;"):app_txt.index("async function apiFetch")]
+    fmt_block = app_txt[app_txt.index("function formatCountdown(totalSeconds"):app_txt.index("// ============================================================================\n// 4. DATA LOADERS")]
+    menyala_block = app_txt[app_txt.index("let _menyalaLastState = null;"):app_txt.index("async function loadMenyalaState()")]
+    zaruby_block = app_txt[app_txt.index("let _zarubySelectedTaskId = null;"):app_txt.index("async function loadZarubyState()")]
+
+    script = f"""
+const elements = {{}};
+const makeEl = (id) => {{
+  if (!elements[id]) {{
+    elements[id] = {{
+      id, textContent: '', innerHTML: '', value: '1', disabled: false, title: '', style: {{}},
+      classList: {{ add(){{}}, remove(){{}}, contains(){{ return false; }} }},
+      selectedOptions: [], addEventListener(){{}}, querySelector(){{ return null; }}, querySelectorAll(){{ return []; }},
+    }};
+  }}
+  return elements[id];
+}};
+global.document = {{ getElementById: (id) => makeEl(id) }};
+function setTextIfChanged(el, t) {{ if (el) el.textContent = String(t ?? ''); }}
+function escapeHtml(s) {{ return String(s ?? ''); }}
+function resolveAppAssetUrl(u) {{ return u; }}
+function formatNum(n) {{ return String(n ?? 0); }}
+function apiFetch() {{ return Promise.resolve({{}}); }}
+function showToast() {{}}
+function refreshState() {{}}
+function renderRoutineGameBadges() {{}}
+
+let intervalCount = 0;
+global.setInterval = () => {{ intervalCount += 1; return intervalCount; }};
+
+// Эмулируем браузер, у которого локальные часы спешат на +3 часа (+10800 сек)
+const REAL_SERVER_NOW = 1795820000;
+Date.now = () => (REAL_SERVER_NOW + 10800) * 1000;
+
+{clock_block}
+{fmt_block}
+{zaruby_block}
+{menyala_block}
+
+syncServerClock(REAL_SERVER_NOW);
+if (Math.abs(getSyncedNowSec() - REAL_SERVER_NOW) > 1) {{
+  throw new Error('Clock sync failed for +3h skew: ' + getSyncedNowSec());
+}}
+
+// Меняла: до отъезда ровно 3600 сек (01:00:00), при повторных рендерах setInterval не создается
+renderMenyalaState({{
+  is_active: true,
+  server_now_ts: REAL_SERVER_NOW,
+  departure_ts: REAL_SERVER_NOW + 3600,
+  departure_msk: '30.11 00:00 МСК',
+  promos: [],
+  exchanges: []
+}});
+renderMenyalaState({{
+  is_active: true,
+  server_now_ts: REAL_SERVER_NOW,
+  departure_ts: REAL_SERVER_NOW + 3600,
+  promos: [],
+  exchanges: []
+}});
+if (elements['menyala-timer'].textContent !== 'До отъезда: 01:00:00') {{
+  throw new Error('Unexpected menyala timer: ' + elements['menyala-timer'].textContent);
+}}
+
+// Зарубы: ровно 900 сек (00:15:00)
+renderZarubyState({{
+  success: true,
+  state: {{
+    active: true,
+    end_unix: REAL_SERVER_NOW + 900,
+    tasks: [],
+    leaderboard: [],
+    level: 4, signets: 8, ore_signet: 16
+  }}
+}});
+if (elements['zaruby-timer'].textContent !== '00:15:00') {{
+  throw new Error('Unexpected zaruby timer: ' + elements['zaruby-timer'].textContent);
+}}
+
+// Просроченный target_ts не должен давать NaN или отрицательные числа
+if (formatCountdown(-50) !== '00:00:00' || formatCountdown(NaN) !== '00:00:00') {{
+  throw new Error('formatCountdown negative/NaN guard failed');
+}}
+if (intervalCount !== 0) {{
+  throw new Error('Unexpected extra setInterval created: ' + intervalCount);
+}}
+console.log('TIMERS_CLOCK_SYNC_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True, check=True)
+    assert "TIMERS_CLOCK_SYNC_OK" in res.stdout

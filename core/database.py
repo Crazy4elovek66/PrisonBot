@@ -109,6 +109,7 @@ def _migrate_bot_configs(connection) -> None:
         ("friend_min_talents", "INTEGER DEFAULT 0 NOT NULL"),
         ("friend_min_poison_damage", "INTEGER DEFAULT 0 NOT NULL"),
         ("friend_min_total_damage", "INTEGER DEFAULT 0 NOT NULL"),
+        ("last_notified_menyala_cycle", "VARCHAR(64) DEFAULT '' NOT NULL"),
         ("friend_auto_decline_below", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_kolsik", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("kolsik_currency", "VARCHAR(20) DEFAULT 'paper' NOT NULL"),
@@ -269,6 +270,13 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
                     paper INTEGER NOT NULL,
                     soap INTEGER NOT NULL,
                     stew INTEGER NOT NULL DEFAULT 0,
+                    match_red INTEGER DEFAULT NULL,
+                    match_green INTEGER DEFAULT NULL,
+                    match_blue INTEGER DEFAULT NULL,
+                    wheel_tickets INTEGER DEFAULT NULL,
+                    weapon_poison INTEGER DEFAULT NULL,
+                    weapon_gunshot INTEGER DEFAULT NULL,
+                    weapon_knife INTEGER DEFAULT NULL,
                     captured_at TEXT NOT NULL
                 );
                 """
@@ -278,6 +286,17 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
         existing_snapshot_cols = {row[1] for row in res_cols.fetchall()}
         if "stew" not in existing_snapshot_cols:
             await conn.execute(text("ALTER TABLE daily_resource_snapshots ADD COLUMN stew INTEGER NOT NULL DEFAULT 0"))
+        for extra_col in (
+            "match_red",
+            "match_green",
+            "match_blue",
+            "wheel_tickets",
+            "weapon_poison",
+            "weapon_gunshot",
+            "weapon_knife",
+        ):
+            if extra_col not in existing_snapshot_cols:
+                await conn.execute(text(f"ALTER TABLE daily_resource_snapshots ADD COLUMN {extra_col} INTEGER DEFAULT NULL"))
 
 
 @asynccontextmanager
@@ -446,11 +465,48 @@ async def prune_old_notifications(engine: Optional[AsyncEngine] = None, days: in
 
 _DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap", "stew")
 _REQUIRED_DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap")
+_OPTIONAL_DAILY_EXTRA_KEYS = (
+    "match_red",
+    "match_green",
+    "match_blue",
+    "wheel_tickets",
+    "weapon_poison",
+    "weapon_gunshot",
+    "weapon_knife",
+)
 _last_known_resources: Optional[dict] = None
 
 
+def _extract_optional_daily_extras(resources: object) -> Dict[str, int]:
+    if not isinstance(resources, dict):
+        return {}
+    aliases = {
+        "match_red": ("match_red", "fartovy_red", "red_matches", "pink_matches"),
+        "match_green": ("match_green", "fartovy_green", "green_matches", "black_matches"),
+        "match_blue": ("match_blue", "wheel_blue_matches", "blue_matches"),
+        "wheel_tickets": ("wheel_tickets", "fortune_tickets"),
+        "weapon_poison": ("weapon_poison", "poison_count", "poison"),
+        "weapon_gunshot": ("weapon_gunshot", "gunshot_count", "gunshot"),
+        "weapon_knife": ("weapon_knife", "knife_count", "knife"),
+    }
+    extras: Dict[str, int] = {}
+    for canonical, cand_keys in aliases.items():
+        for ck in cand_keys:
+            raw = resources.get(ck)
+            if raw is None or isinstance(raw, bool):
+                continue
+            try:
+                val = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if val >= 0:
+                extras[canonical] = val
+                break
+    return extras
+
+
 def _validate_daily_resources(resources: object) -> Optional[dict]:
-    """Проверяет, что словарь ресурсов содержит базовые ключи с целыми значениями >= 0 (stew опционален)."""
+    """Проверяет, что словарь ресурсов содержит базовые ключи с целыми значениями >= 0 (stew и доп. ключи опциональны)."""
     if not isinstance(resources, dict):
         return None
     out = {}
@@ -469,6 +525,7 @@ def _validate_daily_resources(resources: object) -> Optional[dict]:
         if val < 0:
             return None
         out[k] = val
+    out.update(_extract_optional_daily_extras(resources))
     return out
 
 
@@ -480,7 +537,9 @@ async def get_daily_resource_baseline(
     async with get_session(engine) as session:
         res = await session.execute(
             text(
-                "SELECT day_msk, cigarettes, sugar, rubles, paper, soap, stew, captured_at "
+                "SELECT day_msk, cigarettes, sugar, rubles, paper, soap, stew, "
+                "match_red, match_green, match_blue, wheel_tickets, "
+                "weapon_poison, weapon_gunshot, weapon_knife, captured_at "
                 "FROM daily_resource_snapshots WHERE day_msk = :day_msk"
             ),
             {"day_msk": day_msk},
@@ -496,7 +555,14 @@ async def get_daily_resource_baseline(
             "paper": int(row[4]),
             "soap": int(row[5]),
             "stew": int(row[6] or 0),
-            "captured_at": str(row[7]),
+            "match_red": int(row[7]) if row[7] is not None else None,
+            "match_green": int(row[8]) if row[8] is not None else None,
+            "match_blue": int(row[9]) if row[9] is not None else None,
+            "wheel_tickets": int(row[10]) if row[10] is not None else None,
+            "weapon_poison": int(row[11]) if row[11] is not None else None,
+            "weapon_gunshot": int(row[12]) if row[12] is not None else None,
+            "weapon_knife": int(row[13]) if row[13] is not None else None,
+            "captured_at": str(row[14]),
         }
 
 
@@ -508,7 +574,7 @@ async def ensure_daily_resource_baseline(
 ) -> Optional[dict]:
     """
     Атомарно (INSERT OR IGNORE) фиксирует базовый снимок ресурсов за day_msk, если его ещё нет,
-    и возвращает актуальную базовую запись за day_msk. Защищена от невалидных/пустых данных.
+    и лениво инициализирует ранее отсутствовавшие (NULL) колонки текущим значением без ложной дельты.
     """
     global _last_known_resources
     from datetime import datetime, timedelta
@@ -518,7 +584,7 @@ async def ensure_daily_resource_baseline(
     if valid is None:
         return None
 
-    _last_known_resources = dict(valid)
+    _last_known_resources = {k: valid[k] for k in _DAILY_RESOURCE_KEYS}
     cap_ts = captured_at or datetime.now(MSK_TZ).isoformat()
     cutoff_day = (datetime.now(MSK_TZ) - timedelta(days=90)).strftime("%Y-%m-%d")
 
@@ -526,8 +592,12 @@ async def ensure_daily_resource_baseline(
         await session.execute(
             text(
                 "INSERT OR IGNORE INTO daily_resource_snapshots "
-                "(day_msk, cigarettes, sugar, rubles, paper, soap, stew, captured_at) "
-                "VALUES (:day_msk, :cigarettes, :sugar, :rubles, :paper, :soap, :stew, :captured_at)"
+                "(day_msk, cigarettes, sugar, rubles, paper, soap, stew, "
+                "match_red, match_green, match_blue, wheel_tickets, "
+                "weapon_poison, weapon_gunshot, weapon_knife, captured_at) "
+                "VALUES (:day_msk, :cigarettes, :sugar, :rubles, :paper, :soap, :stew, "
+                ":match_red, :match_green, :match_blue, :wheel_tickets, "
+                ":weapon_poison, :weapon_gunshot, :weapon_knife, :captured_at)"
             ),
             {
                 "day_msk": day_msk,
@@ -537,9 +607,26 @@ async def ensure_daily_resource_baseline(
                 "paper": valid["paper"],
                 "soap": valid["soap"],
                 "stew": valid["stew"],
+                "match_red": valid.get("match_red"),
+                "match_green": valid.get("match_green"),
+                "match_blue": valid.get("match_blue"),
+                "wheel_tickets": valid.get("wheel_tickets"),
+                "weapon_poison": valid.get("weapon_poison"),
+                "weapon_gunshot": valid.get("weapon_gunshot"),
+                "weapon_knife": valid.get("weapon_knife"),
                 "captured_at": cap_ts,
             },
         )
+        # Если строка уже существовала до миграции и новые колонки были NULL — инициализируем их текущим значением
+        for extra_col in _OPTIONAL_DAILY_EXTRA_KEYS:
+            if extra_col in valid:
+                await session.execute(
+                    text(
+                        f"UPDATE daily_resource_snapshots SET {extra_col} = :val "
+                        f"WHERE day_msk = :day_msk AND {extra_col} IS NULL"
+                    ),
+                    {"val": valid[extra_col], "day_msk": day_msk},
+                )
         await session.execute(
             text("DELETE FROM daily_resource_snapshots WHERE day_msk < :cutoff_day"),
             {"cutoff_day": cutoff_day},
@@ -582,7 +669,11 @@ async def compute_daily_resource_deltas(
     if not baseline_row:
         return None
 
-    out_keys = _DAILY_RESOURCE_KEYS if (isinstance(current_resources, dict) and "stew" in current_resources) else _REQUIRED_DAILY_RESOURCE_KEYS
+    out_keys = list(_DAILY_RESOURCE_KEYS if (isinstance(current_resources, dict) and "stew" in current_resources) else _REQUIRED_DAILY_RESOURCE_KEYS)
+    for extra_col in _OPTIONAL_DAILY_EXTRA_KEYS:
+        if extra_col in valid and baseline_row.get(extra_col) is not None:
+            out_keys.append(extra_col)
+
     baseline = {k: int(baseline_row[k]) for k in out_keys}
     deltas = {k: int(valid[k]) - baseline[k] for k in out_keys}
     return {

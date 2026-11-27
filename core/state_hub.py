@@ -24,6 +24,10 @@ DOMAIN_TTL_SEC: Dict[str, float] = {
     "wheel": 120.0,
     "zaruby": 90.0,
     "social": 120.0,
+    "menyala": 60.0,
+    "notifications": 30.0,
+    "raids": 120.0,
+    "wardrobe": 120.0,
 }
 
 MUTATION_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
@@ -41,6 +45,7 @@ MUTATION_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
     "zarub_started": ("player", "zaruby"),
     "zarub_claimed": ("player", "zaruby"),
     "social_changed": ("social", "player", "zaruby"),
+    "menyala_changed": ("player", "menyala"),
     "routine_action": ("player", "zaruby"),
     "maintenance_recovered": tuple(DOMAIN_TTL_SEC.keys()),
 }
@@ -133,6 +138,8 @@ class LiveStateHub:
         "collections",
         "notifications",
         "config",
+        "zaruby",
+        "menyala",
     )
 
     def __init__(self) -> None:
@@ -244,11 +251,20 @@ class LiveStateHub:
         acc_slices = self._slices.get(account_id, {})
         return {name: entry.version for name, entry in acc_slices.items()}
 
+    @staticmethod
+    def _server_now_ts() -> float:
+        try:
+            from client.http_client import get_game_now_ts
+            return round(get_game_now_ts(), 3)
+        except Exception:
+            return round(time.time(), 3)
+
     def get_snapshot(self, account_id: int) -> Dict[str, Any]:
         acc_slices = self._slices.get(account_id, {})
         return {
             "type": "snapshot",
             "accountId": account_id,
+            "server_now_ts": self._server_now_ts(),
             "versions": {k: e.version for k, e in acc_slices.items()},
             "revisions": self.get_domain_revisions(account_id),
             "updatedAt": {k: e.updated_at for k, e in acc_slices.items()},
@@ -266,6 +282,7 @@ class LiveStateHub:
                 updated_at[name] = entry.updated_at
         return {
             "accountId": account_id,
+            "server_now_ts": self._server_now_ts(),
             "versions": {k: e.version for k, e in acc_slices.items()},
             "updatedAt": updated_at,
             "changed": changed,
@@ -509,6 +526,7 @@ class LiveStateHub:
         event = {
             "type": "domain_sync",
             "accountId": account_id,
+            "server_now_ts": self._server_now_ts(),
             "domains": list(domains),
             "revisions": domain_revs,
             "ts": ts,
@@ -521,6 +539,7 @@ class LiveStateHub:
             social_evt = {
                 "type": "social_updated",
                 "accountId": account_id,
+                "server_now_ts": self._server_now_ts(),
                 "revision": domain_revs.get("social", 1),
                 "ts": ts,
                 **safe_patch["social"],
@@ -686,6 +705,32 @@ class LiveStateHub:
                     cb(target, datetime.now(timezone.utc))
                 except Exception:
                     pass
+        return evt
+
+    def push_notification(
+        self,
+        account_id: int,
+        notification: Dict[str, Any],
+        unread_count: Optional[int] = None,
+        counts: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Мгновенно публикует новое уведомление в SSE-поток (event: notification)."""
+        revs = self._domain_revisions.setdefault(account_id, {})
+        rev = int(revs.get("notifications", 0)) + 1
+        revs["notifications"] = rev
+        evt: Dict[str, Any] = {
+            "type": "notification",
+            "account_id": account_id,
+            "server_now_ts": self._server_now_ts(),
+            "notification": dict(notification or {}),
+            "revision": rev,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if unread_count is not None:
+            evt["unread_count"] = int(unread_count)
+        if counts is not None:
+            evt["counts"] = dict(counts)
+        self._broadcast(account_id, evt)
         return evt
 
     def get_domains_telemetry(self, account_id: int) -> Dict[str, Any]:

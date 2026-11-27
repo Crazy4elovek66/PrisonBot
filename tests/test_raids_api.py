@@ -863,3 +863,25 @@ async def test_web_news_media_range_and_raids_players_endpoint(tmp_path, monkeyp
 
 
 
+
+
+def test_news_filter_dedup_and_media_css():
+    from telegram.news_feed_service import deduplicate_news_posts, is_game_news_post
+
+    assert is_game_news_post({"text": "Дорожная карта на декабрь: новый босс и таланты!"}) is True
+    assert is_game_news_post({"text": "Технические работы на сервере завершены, фикс урона"}) is True
+    assert is_game_news_post({"text": "Новый босс и акция на урон уже в игре"}) is True
+    assert is_game_news_post({"text": "Итоги активности сообщества за неделю!\n1. @user1\n2. @user2"}) is False
+    assert is_game_news_post({"text": "Розыгрыш призов! Победители: @winner1 @winner2"}) is False
+
+    deduped = deduplicate_news_posts([
+        {"post_id": 10, "text": "Обновление игры", "media": [{"id": "a"}]},
+        {"post_id": 10, "text": "Обновление игры", "media": [{"id": "a"}]},
+        {"post_id": 11, "text": "  обновление игры ", "media": [{"id": "a"}]},
+        {"post_id": 12, "text": "Фикс багов в рейдах", "media": []},
+    ])
+    assert [p["post_id"] for p in deduped] == [10, 12]
+
+    css = Path("web/static/styles.css").read_text(encoding="utf-8")
+    assert "object-fit: contain;" in css
+    assert ".news-media-wrap.is-gif {\n  aspect-ratio: 16 / 9;" not in css

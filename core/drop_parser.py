@@ -1077,6 +1077,36 @@ class DropParser:
             await session.commit()
             await session.refresh(notif)
 
+            unread_cnt = None
+            try:
+                from sqlalchemy import func, select as sa_select
+                unread_cnt = await session.scalar(
+                    sa_select(func.count(Notification.id)).where(
+                        Notification.account_id == account_id,
+                        Notification.is_read == False,  # noqa: E712
+                    )
+                )
+            except Exception:
+                unread_cnt = None
+
+        try:
+            from core.state_hub import state_hub
+            notif_payload = {
+                "id": notif.id,
+                "category": notif.category,
+                "title": notif.title,
+                "subtitle": notif.subtitle,
+                "rewards": notif.rewards or [],
+                "drops": notif.drops or [],
+                "meta_json": notif.meta_json or {},
+                "event_key": notif.event_key,
+                "is_read": bool(notif.is_read),
+                "created_at": notif.created_at.isoformat() if notif.created_at else None,
+            }
+            state_hub.push_notification(account_id, notif_payload, unread_count=unread_cnt)
+        except Exception as hub_err:
+            logger.debug("StateHub push_notification skipped: %s", hub_err)
+
         import time
         now_ts = time.monotonic()
         if db_engine is not None and (now_ts - cls._last_prune_ts) >= 600.0:

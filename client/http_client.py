@@ -1,5 +1,7 @@
 import asyncio
+import email.utils
 import logging
+import time
 from typing import Optional, Dict, Any
 import httpx
 from core.config import settings
@@ -7,6 +9,47 @@ from core.server_health import ServerHealthMonitor, GameMaintenanceError, classi
 from client.auth_provider import AuthProvider
 
 logger = logging.getLogger(__name__)
+
+_game_server_offset_sec: float = 0.0
+_has_game_server_clock: bool = False
+
+
+def update_game_server_clock(date_header: Optional[str], local_now_ts: Optional[float] = None) -> Optional[float]:
+    """Вычисляет и сглаженно обновляет смещение часов игрового сервера по HTTP-заголовку Date."""
+    global _game_server_offset_sec, _has_game_server_clock
+    if not date_header or not isinstance(date_header, str):
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(date_header.strip())
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        server_ts = dt.timestamp()
+    except Exception:
+        return None
+
+    ref_local = float(local_now_ts) if local_now_ts is not None else time.time()
+    delta = server_ts - ref_local
+    if abs(delta) >= 86400.0:
+        return None
+
+    if not _has_game_server_clock or abs(delta - _game_server_offset_sec) > 2.0:
+        _game_server_offset_sec = delta
+        _has_game_server_clock = True
+    else:
+        _game_server_offset_sec = _game_server_offset_sec * 0.7 + delta * 0.3
+    return _game_server_offset_sec
+
+
+def get_game_server_offset_sec() -> float:
+    return _game_server_offset_sec
+
+
+def get_game_now_ts() -> float:
+    """Возвращает текущее UTC epoch время в секундах с учетом смещения игрового сервера."""
+    return time.time() + _game_server_offset_sec
 
 
 class GameHttpClient:
@@ -95,6 +138,7 @@ class GameHttpClient:
                     headers=req_headers,
                     **kwargs,
                 )
+                update_game_server_clock(response.headers.get("Date"))
 
                 # Обработка 401 Unauthorized (истек токен во время запроса)
                 if response.status_code == 401:

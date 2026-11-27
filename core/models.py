@@ -144,6 +144,7 @@ class BotConfig(Base):
     auto_fartovy_enabled = Column(Boolean, default=False, nullable=False)
     auto_zaruby_enabled = Column(Boolean, default=False, nullable=False)
     auto_zaruby_tier = Column(String(32), default="pacan", nullable=False)
+    last_notified_menyala_cycle = Column(String(64), default="", nullable=False)
 
     # Friend Filters
     friend_accept_all = Column(Boolean, default=False, nullable=False)

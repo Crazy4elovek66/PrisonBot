@@ -127,6 +127,118 @@ def _media_id_for_url(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
 
 
+_NEWS_DENY_PATTERNS = (
+    r"итог[иа]\s+активност",
+    r"самыми\s+активными",
+    r"самыми\s+уважаемыми",
+    r"\bрозыгрыш\w*",
+    r"\bконкурс\w*",
+    r"\bпобедител\w*",
+    r"\bпризер\w*",
+    r"\bпризёр\w*",
+    r"список\s+победителей",
+    r"раздача\s+приз",
+)
+
+_NEWS_ALLOW_PATTERNS = (
+    r"дорожн\w+\s+карт",
+    r"тех(?:ническ\w+)?\s+работ",
+    r"профилактик\w*",
+    r"серверн\w+\s+работ",
+    r"\bобновлен\w*",
+    r"\bпатч\w*",
+    r"\bфикс\w*",
+    r"исправлен\w*",
+    r"\bбаланс\w*",
+    r"нов\w+\s+(?:босс|талант|событ|рейд|тюрьм|акци|механик)",
+    r"\bменял\w*",
+    r"\bзаруб\w*",
+    r"\bрейд\w*",
+    r"\bбосс\w*",
+    r"\bакци\w*",
+    r"\bсобыт\w*",
+    r"\bталант\w*",
+    r"\bтюрьм\w*",
+    r"\bпосылк\w*",
+    r"\bурон\w*",
+    r"\bделюг\w*",
+    r"\bконтрабанд\w*",
+    r"\bсходняк\w*",
+    r"\bкореш\w*",
+)
+
+
+def is_game_news_post(post: Dict[str, Any]) -> bool:
+    """
+    Умный фильтр ленты @itheprison:
+    пропускает только игровые новости (обновления, дорожные карты, техработы, фиксы,
+    боссы, события, акции, меняла, зарубы, баланс) и отсеивает итоги активности
+    сообщества, розыгрыши, конкурсы и списки призеров с @username.
+    """
+    if not isinstance(post, dict):
+        return False
+    text = str(post.get("text") or "").strip()
+    if not text and post.get("html"):
+        text = html_lib.unescape(re.sub(r"<[^>]+>", " ", str(post.get("html") or ""))).strip()
+    low = re.sub(r"\s+", " ", text).lower()
+
+    # 1. Явные deny-правила (итоги активности, розыгрыши, списки призеров)
+    for pat in _NEWS_DENY_PATTERNS:
+        if re.search(pat, low, re.IGNORECASE):
+            return False
+
+    # 2. Массовые упоминания @username / нумерованный рейтинг призеров
+    mentions = re.findall(r"@[a-z0-9_]{3,}", low)
+    if len(mentions) >= 2:
+        return False
+    if re.search(r"(?:^|\s)(?:1[\.\)]|🥇|🥈|🥉)\s*@", low):
+        return False
+
+    # 3. Allow-правила: игровая тематика
+    for pat in _NEWS_ALLOW_PATTERNS:
+        if re.search(pat, low, re.IGNORECASE):
+            return True
+
+    # Если есть медиа (например картинка дорожной карты с коротким текстом),
+    # но без deny-признаков и без спама — разрешаем только при наличии минимального игрового контекста
+    # либо если текста нет совсем (чистый анонс-баннер), но не оффтоп-реклама.
+    if not low and post.get("media"):
+        return True
+    return False
+
+
+def _news_content_hash(post: Dict[str, Any]) -> str:
+    norm_text = re.sub(r"\s+", " ", str(post.get("text") or "").strip().lower())
+    media_ids = ",".join(
+        str(m.get("id") or m.get("url") or "")
+        for m in (post.get("media") or [])
+        if isinstance(m, dict)
+    )
+    payload = f"{norm_text}|{media_ids}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def deduplicate_news_posts(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Дедуплицирует посты по post_id и по нормализованному контент-хэшу текста + медиа."""
+    seen_ids: set[str] = set()
+    seen_hashes: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for p in posts or []:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("post_id") or "")
+        if pid and pid in seen_ids:
+            continue
+        chash = _news_content_hash(p)
+        if chash in seen_hashes:
+            continue
+        if pid:
+            seen_ids.add(pid)
+        seen_hashes.add(chash)
+        out.append(p)
+    return out
+
+
 def parse_telegram_channel_html(html_text: str, channel: str = "itheprison") -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, str]]]:
     """
     Парсит публичную HTML-страницу `https://t.me/s/<channel>`.
@@ -283,6 +395,32 @@ class NewsFeedService:
             self.register_media(reg)
             return posts
 
+    async def _fetch_filtered_batch(
+        self,
+        channel: str,
+        *,
+        limit: int,
+        before: Optional[int] = None,
+        max_pages: int = 3,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Загружает посты с t.me/s/<channel>, применяет фильтр и дедупликацию, дозагружая более ранние страницы при необходимости."""
+        collected: List[Dict[str, Any]] = []
+        cur_before = before
+        has_more = False
+        for _ in range(max_pages):
+            raw_posts = await self._fetch_from_telegram(channel, before=cur_before)
+            if not raw_posts:
+                has_more = False
+                break
+            filtered = [p for p in raw_posts if is_game_news_post(p)]
+            collected = deduplicate_news_posts(collected + filtered)
+            min_id = min((int(p["post_id"]) for p in raw_posts if p.get("post_id") is not None), default=0)
+            has_more = len(raw_posts) >= 5 and min_id > 1
+            if len(collected) >= limit or not has_more:
+                break
+            cur_before = min_id
+        return collected, has_more
+
     async def get_feed(
         self,
         *,
@@ -297,12 +435,12 @@ class NewsFeedService:
 
         if before:
             try:
-                older = await self._fetch_from_telegram(channel, before=int(before))
+                older, has_more = await self._fetch_filtered_batch(channel, limit=eff_limit, before=int(before))
                 return {
                     "success": True,
                     "channel": channel,
                     "posts": older[:eff_limit],
-                    "has_more": len(older) >= 5,
+                    "has_more": has_more or len(older) > eff_limit,
                     "cached_at": int(time.time()),
                 }
             except Exception as e:
@@ -311,42 +449,45 @@ class NewsFeedService:
 
         is_fresh = bool(self._posts_cache and (now - self._cache_ts) < ttl and not force_refresh)
         if is_fresh:
+            deduped = deduplicate_news_posts([p for p in self._posts_cache if is_game_news_post(p)])
             return {
                 "success": True,
                 "channel": channel,
-                "posts": self._posts_cache[:eff_limit],
-                "has_more": len(self._posts_cache) > eff_limit or len(self._posts_cache) >= 10,
+                "posts": deduped[:eff_limit],
+                "has_more": len(deduped) > eff_limit or len(deduped) >= 5,
                 "cached_at": int(time.time()),
             }
 
         # Stale-while-revalidate: отдаем кэш мгновенно, обновляем в фоне
         if self._posts_cache and not force_refresh:
             if self._bg_task is None or self._bg_task.done():
-                self._bg_task = asyncio.create_task(self._refresh_cache(channel))
+                self._bg_task = asyncio.create_task(self._refresh_cache(channel, eff_limit))
+            deduped = deduplicate_news_posts([p for p in self._posts_cache if is_game_news_post(p)])
             return {
                 "success": True,
                 "channel": channel,
-                "posts": self._posts_cache[:eff_limit],
-                "has_more": len(self._posts_cache) > eff_limit or len(self._posts_cache) >= 10,
+                "posts": deduped[:eff_limit],
+                "has_more": len(deduped) > eff_limit or len(deduped) >= 5,
                 "cached_at": int(time.time()),
                 "stale": True,
             }
 
-        await self._refresh_cache(channel)
+        await self._refresh_cache(channel, eff_limit)
+        deduped = deduplicate_news_posts([p for p in self._posts_cache if is_game_news_post(p)])
         return {
             "success": True,
             "channel": channel,
-            "posts": self._posts_cache[:eff_limit],
-            "has_more": len(self._posts_cache) > eff_limit or len(self._posts_cache) >= 10,
+            "posts": deduped[:eff_limit],
+            "has_more": len(deduped) > eff_limit or len(deduped) >= 5,
             "cached_at": int(time.time()),
         }
 
-    async def _refresh_cache(self, channel: str) -> None:
+    async def _refresh_cache(self, channel: str, limit: int = 12) -> None:
         async with self._fetch_lock:
             try:
-                posts = await self._fetch_from_telegram(channel)
+                posts, _ = await self._fetch_filtered_batch(channel, limit=max(limit, 12))
                 if posts:
-                    self._posts_cache = posts
+                    self._posts_cache = deduplicate_news_posts(posts)
                     self._cache_ts = time.monotonic()
             except Exception as e:
                 logger.warning("NewsFeedService refresh failed for @%s: %s", channel, e)

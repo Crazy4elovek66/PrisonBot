@@ -106,6 +106,7 @@ class RoutineWorker:
         self._daily_interaction_done: Dict[str, Dict[str, set]] = {}
         self._daily_interaction_limit_hit: Dict[str, set] = {}
         self._interaction_pool_cache: tuple = (0.0, [])
+        self._last_menyala_check_ts: float = 0.0
 
     async def _jitter(self) -> None:
         if self.enable_jitter:
@@ -790,6 +791,22 @@ class RoutineWorker:
             results["monthly_actions_done"] += int(mq_res.get("actions_performed", 0))
             results["monthly_tiers_claimed"] += int(mq_res.get("tiers_claimed", 0))
             results["errors"].extend(mq_res.get("errors") or [])
+
+        # 5.5. Проверка приезда Менялы (не чаще раза в 5 минут, уведомление Web+TG 1 раз за цикл)
+        now_mono = asyncio.get_event_loop().time()
+        if (now_mono - self._last_menyala_check_ts) >= 300.0 and getattr(self.api, "http", None) is not None:
+            self._last_menyala_check_ts = now_mono
+            try:
+                from client.api.menyala import MenyalaAPI, check_and_notify_menyala_arrival
+                m_api = MenyalaAPI(self.api.http)
+                results["menyala"] = await check_and_notify_menyala_arrival(
+                    account_id=self.account_id,
+                    menyala_api=m_api,
+                    db_engine=self.db_engine,
+                    notifier=self.notifier,
+                )
+            except Exception as me:
+                logger.debug("Menyala check skipped: %s", me)
 
         await self._jitter()
 

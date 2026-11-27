@@ -314,3 +314,66 @@ async def test_state_hub_domain_freshness_single_flight_and_cross_invalidation()
     assert telemetry["state_revision"] > 0
     assert telemetry["domain_revisions"]["boss"] >= 1
     assert "prisons" in telemetry["domains"]
+
+
+@pytest.mark.asyncio
+async def test_state_hub_push_notification_and_js_realtime_prepend():
+    import json
+    import subprocess
+    from pathlib import Path
+    from core.state_hub import LiveStateHub
+
+    hub = LiveStateHub()
+    q = hub.subscribe(account_id=1)
+    evt = hub.push_notification(
+        1,
+        {"id": 777, "category": "business", "title": "Меняла приехал!", "subtitle": "4 набора", "is_read": False},
+        unread_count=3,
+    )
+    assert evt["type"] == "notification"
+    queued = await asyncio.wait_for(q.get(), timeout=1.0)
+    assert queued["type"] == "notification"
+    assert queued["unread_count"] == 3
+    assert queued["notification"]["id"] == 777
+    hub.unsubscribe(1, q)
+
+    app_txt = Path("web/static/app.js").read_text(encoding="utf-8")
+    block = app_txt[app_txt.index("function buildNotificationCard(n)"):app_txt.index("// Notification Filter Pills")]
+    script = f"""
+const children = [];
+const elements = {{}};
+const makeEl = (id) => ({{
+  id, textContent: '0', innerHTML: '', style: {{}},
+  classList: {{ add(){{}}, remove(){{}}, contains(){{ return false; }} }},
+  querySelector(sel) {{
+    const m = sel.match(/data-notif-id=\"([^\"]+)\"/);
+    if (m) return children.find(c => c.dataset && c.dataset.notifId === m[1]) || null;
+    if (sel === '.notif-card') return children[0] || null;
+    return null;
+  }},
+  querySelectorAll() {{ return []; }},
+  prepend(el) {{ children.unshift(el); }},
+}});
+['bell-badge','cnt-unread','cnt-all','cnt-business','notifications-list'].forEach(id => elements[id] = makeEl(id));
+global.document = {{
+  getElementById: (id) => elements[id] || null,
+  createElement: () => ({{ dataset: {{}}, className: '', innerHTML: '', classList: {{ add(){{}} }}, querySelector: () => null }}),
+}};
+let currentCatFilter = 'all';
+function formatMoscowTime() {{ return '12:00'; }}
+function escapeHtml(s) {{ return String(s ?? ''); }}
+function renderResourceBadge() {{ return ''; }}
+function getDropIconHtml() {{ return ''; }}
+function formatNum(n) {{ return String(n ?? 0); }}
+{block}
+
+const p = {{ notification: {{ id: 777, category: 'business', title: 'Меняла приехал!', subtitle: 'Тест', is_read: false }}, unread_count: 5 }};
+const added1 = prependRealtimeNotification(p);
+const added2 = prependRealtimeNotification(p); // дубль по id должен быть проигнорирован
+if (!added1 || added2 !== false) throw new Error('dedup failed');
+if (children.length !== 1 || children[0].dataset.notifId !== '777') throw new Error('card not prepended');
+if (elements['bell-badge'].textContent !== '5') throw new Error('bell badge not updated');
+console.log('SSE_NOTIF_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True, check=True)
+    assert "SSE_NOTIF_JS_OK" in res.stdout

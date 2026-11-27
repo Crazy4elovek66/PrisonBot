@@ -610,6 +610,9 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
         except Exception as st_err:
             logger.debug("get_stew_status in get_state failed: %s", st_err)
 
+    game_res_entry = hub.get_slice(account_id, "game_resources", max_age_seconds=300.0, source_tag=tag)
+    game_res_data = game_res_entry.data if (game_res_entry and isinstance(game_res_entry.data, dict)) else {}
+
     resource_deltas = None
     if snap_data and int(snap_data.get("level") or 0) > 0:
         try:
@@ -618,15 +621,33 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
             if isinstance(parcels_progress, dict) and "stew_count" in parcels_progress:
                 delta_input["stew"] = parcels_progress["stew_count"]
                 snap_data["stew"] = parcels_progress["stew_count"]
+            prof_entry = hub.get_slice(account_id, "profile", max_age_seconds=300.0, source_tag=tag)
+            prof_weapons = (prof_entry.data or {}).get("weapons") if (prof_entry and isinstance(prof_entry.data, dict)) else {}
+            if isinstance(prof_weapons, dict):
+                if prof_weapons.get("poisonCount") is not None:
+                    delta_input["weapon_poison"] = prof_weapons["poisonCount"]
+                if prof_weapons.get("gunshotCount") is not None:
+                    delta_input["weapon_gunshot"] = prof_weapons["gunshotCount"]
+                if prof_weapons.get("knifeCount") is not None:
+                    delta_input["weapon_knife"] = prof_weapons["knifeCount"]
+            for gr_k, dst_k in (
+                ("fartovy_red", "match_red"),
+                ("fartovy_green", "match_green"),
+                ("wheel_blue_matches", "match_blue"),
+                ("wheel_tickets", "wheel_tickets"),
+            ):
+                if game_res_data.get(gr_k) is not None:
+                    delta_input[dst_k] = game_res_data[gr_k]
             resource_deltas = await compute_daily_resource_deltas(delta_input, engine=engine)
         except Exception as rd_err:
             logger.debug("compute_daily_resource_deltas in get_state failed: %s", rd_err)
 
     from core.server_health import server_health_monitor
-    game_res_entry = hub.get_slice(account_id, "game_resources", max_age_seconds=300.0, source_tag=tag)
+    from client.http_client import get_game_now_ts
     sync_meta = hub.get_domains_telemetry(account_id)
     payload = {
         "success": True,
+        "server_now_ts": round(get_game_now_ts(), 3),
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
         "parcels_progress": parcels_progress,
@@ -1449,6 +1470,9 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
         if isinstance(parcels_progress, dict) and "stew_count" in parcels_progress
         else int(currencies.get("stew", 0) or 0)
     )
+    game_res_entry = hub.get_slice(account_id, "game_resources", max_age_seconds=300.0, source_tag=tag)
+    game_res_data = game_res_entry.data if (game_res_entry and isinstance(game_res_entry.data, dict)) else {}
+
     currencies_payload = {
         "cigarettes": currencies.get("cigarettes", 0),
         "sugar": currencies.get("sugar", 0),
@@ -1457,7 +1481,22 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
         "soap": currencies.get("soap", 0),
         "stew": stew_val,
         "keys": currencies.get("keys", 0),
+        "weapon_poison": poison_cnt,
+        "weapon_gunshot": gunshot_cnt,
+        "weapon_knife": knife_cnt,
     }
+    if currencies.get("fortune_tickets") is not None:
+        currencies_payload["wheel_tickets"] = currencies.get("fortune_tickets")
+    elif game_res_data.get("wheel_tickets") is not None:
+        currencies_payload["wheel_tickets"] = game_res_data.get("wheel_tickets")
+    if currencies.get("blue_matches") is not None:
+        currencies_payload["match_blue"] = currencies.get("blue_matches")
+    elif game_res_data.get("wheel_blue_matches") is not None:
+        currencies_payload["match_blue"] = game_res_data.get("wheel_blue_matches")
+    if game_res_data.get("fartovy_red") is not None:
+        currencies_payload["match_red"] = game_res_data.get("fartovy_red")
+    if game_res_data.get("fartovy_green") is not None:
+        currencies_payload["match_green"] = game_res_data.get("fartovy_green")
     resource_deltas = None
     is_valid_player = bool(player_data.get("id") or int(player_data.get("level") or 0) > 0)
     if is_valid_player:
@@ -1467,21 +1506,40 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
         except Exception as rd_err:
             logger.debug("compute_daily_resource_deltas in get_live_profile failed: %s", rd_err)
 
+    from client.http_client import get_game_now_ts
+    from client.api.menyala import _parse_iso_ts
+    srv_now_ts = round(get_game_now_ts(), 3)
+    energy_cur = int(player_data.get("energy", 0) or 0)
+    energy_max = int(player_data.get("maxEnergy", 50) or 50)
+    energy_interval = int(player_data.get("energyRestoreIntervalSeconds") or 300)
+    last_energy_ts = _parse_iso_ts(last_energy_restore)
+    next_energy_at_ts = None
+    full_energy_at_ts = None
+    if last_energy_ts and energy_cur < energy_max and energy_interval > 0:
+        elapsed = max(0.0, srv_now_ts - float(last_energy_ts))
+        rem_to_next = energy_interval - (elapsed % energy_interval)
+        next_energy_at_ts = round(srv_now_ts + rem_to_next, 3)
+        ticks_needed = max(0, energy_max - energy_cur - 1)
+        full_energy_at_ts = round(next_energy_at_ts + ticks_needed * energy_interval, 3)
+
     payload = {
         "success": True,
+        "server_now_ts": srv_now_ts,
         "profile": {
             "id": player_data.get("id"),
             "nickname": player_data.get("nickname") or player_data.get("name") or "Арестант",
             "level": player_data.get("level", 0),
             "authority": player_data.get("authority", 0),
             "biceps": player_data.get("biceps", 0),
-            "energy": player_data.get("energy", 0),
-            "maxEnergy": player_data.get("maxEnergy", 50),
+            "energy": energy_cur,
+            "maxEnergy": energy_max,
             "guild": player_data.get("guild") or player_data.get("clan") or {},
             "talents": t_pts,
             "talentPointsTotal": t_pts,
             "lastEnergyRestoreTime": last_energy_restore,
-            "energyRestoreIntervalSeconds": int(player_data.get("energyRestoreIntervalSeconds") or 300),
+            "energyRestoreIntervalSeconds": energy_interval,
+            "next_energy_at_ts": next_energy_at_ts,
+            "full_energy_at_ts": full_energy_at_ts,
             "beardDays": player_data.get("beardDays", 0),
             "canClaimToiletPaper": can_claim_paper,
             "toiletPaper": tp_info,
@@ -1630,8 +1688,10 @@ async def get_live_boss(account_id: int = 1, force: bool = Query(False)) -> Dict
         except Exception:
             pass
 
+    from client.http_client import get_game_now_ts
     payload = {
         "success": True,
+        "server_now_ts": round(get_game_now_ts(), 3),
         "state": state,
         "hasReward": has_reward,
         "session": session_data,
@@ -2163,8 +2223,10 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
                     max(0.0, ((completed_cps + (current_clicks / max(req_clicks, 1))) / max(total_cps, 1)) * 100.0),
                 )
 
+        from client.http_client import get_game_now_ts
         return {
             "success": True,
+            "server_now_ts": round(get_game_now_ts(), 3),
             "prisons": enriched_prisons,
             "targetId": target_id,
             "isDay": is_day,
@@ -4776,8 +4838,10 @@ async def get_fartovy_state(account_id: int = 1) -> Dict[str, Any]:
             "fartovy_seconds_to_next": parsed["seconds_to_next_green_match"],
             "fartovy_red": parsed["red_matches"],
         })
+        from client.http_client import get_game_now_ts
         return {
             "success": True,
+            "server_now_ts": round(get_game_now_ts(), 3),
             "state": parsed,
             "guard": guard,
             "guard_tripped": guard["guard_tripped"],
@@ -4871,17 +4935,22 @@ async def get_zaruby_state(account_id: int = 1) -> Dict[str, Any]:
     try:
         cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
         raw = await z_api.get_state()
-        parsed = parse_zaruby_state(raw, config=cfg)
+        hub = _get_hub()
+        p_snap = (hub.get_domain_state(account_id, "player").data or {}) if hasattr(hub, "get_domain_state") else {}
+        cur_uid = p_snap.get("userId") or p_snap.get("id")
+        parsed = parse_zaruby_state(raw, config=cfg, current_user_id=cur_uid)
         try:
             well = await z_api.get_well_state()
         except Exception:
             well = {}
+        hub.set_domain_data(account_id, "zaruby", parsed)
         _update_game_resources_hub(account_id, {
             "zaruby_summary_label": parsed["summary_label"],
             "zaruby_active": parsed["active"],
             "zaruby_seconds_left": parsed["seconds_left"],
         })
-        return {"success": True, "state": parsed, "well": well}
+        from client.http_client import get_game_now_ts
+        return {"success": True, "server_now_ts": round(get_game_now_ts(), 3), "state": parsed, "well": well}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4893,8 +4962,11 @@ async def post_zaruby_start(payload: Dict[str, Any] = Body(default_factory=dict)
     z_api = getattr(bot_context, "zaruby_api", None) or ZarubyAPI(_get_game_http_client())
     res = await z_api.start_zarub(tier=tier)
     cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
-    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
-    _get_hub().notify_mutation(account_id, "zarub_started", reason="manual_zaruby_start")
+    hub = _get_hub()
+    p_snap = (hub.get_domain_state(account_id, "player").data or {}) if hasattr(hub, "get_domain_state") else {}
+    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg, current_user_id=p_snap.get("userId") or p_snap.get("id"))
+    hub.set_domain_data(account_id, "zaruby", parsed)
+    hub.notify_mutation(account_id, "zarub_started", reason="manual_zaruby_start")
     return {"success": True, "result": res, "state": parsed}
 
 
@@ -4904,9 +4976,129 @@ async def post_zaruby_claim(account_id: int = 1) -> Dict[str, Any]:
     z_api = getattr(bot_context, "zaruby_api", None) or ZarubyAPI(_get_game_http_client())
     res = await z_api.claim_reward()
     cfg = await get_or_create_config(account_id, bot_context.db_engine) if bot_context.db_engine else None
-    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg)
-    _get_hub().notify_mutation(account_id, "zarub_claimed", reason="manual_zaruby_claim")
+    hub = _get_hub()
+    p_snap = (hub.get_domain_state(account_id, "player").data or {}) if hasattr(hub, "get_domain_state") else {}
+    parsed = parse_zaruby_state(await z_api.get_state(), config=cfg, current_user_id=p_snap.get("userId") or p_snap.get("id"))
+    hub.set_domain_data(account_id, "zaruby", parsed)
+    hub.notify_mutation(account_id, "zarub_claimed", reason="manual_zaruby_claim")
     return {"success": True, "result": res, "state": parsed}
+
+
+@api_router.get("/menyala/state")
+async def get_menyala_state(account_id: int = 1) -> Dict[str, Any]:
+    """Возвращает состояние Менялы и Акций (приехал/таймер, 4 набора, обмены)."""
+    from client.api.menyala import MenyalaAPI, parse_menyala_state
+    m_api = getattr(bot_context, "menyala_api", None)
+    if m_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="MenyalaAPI not available")
+        m_api = MenyalaAPI(hc)
+    try:
+        raw = await m_api.get_state()
+        parsed = parse_menyala_state(raw)
+        hub = _get_hub()
+        hub.set_domain_data(account_id, "menyala", parsed)
+        hub.update_slice(account_id, "menyala", parsed)
+        from client.http_client import get_game_now_ts
+        return {"success": True, "server_now_ts": round(get_game_now_ts(), 3), **parsed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/menyala/promo/claim")
+async def post_menyala_promo_claim(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Получение бесплатного набора или покупка платного акционного набора у Менялы."""
+    from client.api.menyala import MenyalaAPI, parse_menyala_state
+    promo_id = str(payload.get("promo_id") or payload.get("code") or "free").strip()
+    m_api = getattr(bot_context, "menyala_api", None)
+    if m_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="MenyalaAPI not available")
+        m_api = MenyalaAPI(hc)
+
+    try:
+        cur_state = parse_menyala_state(await m_api.get_state())
+        if not cur_state.get("is_active"):
+            raise HTTPException(status_code=400, detail="Меняла сейчас неактивен")
+        target = next(
+            (p for p in cur_state.get("promos", []) if p["id"] == promo_id or p["code"].lower() == promo_id.lower()),
+            None,
+        )
+        if not target:
+            raise HTTPException(status_code=400, detail=f"Неизвестный набор: {promo_id}")
+        if target.get("claimed"):
+            raise HTTPException(status_code=400, detail="Набор уже получен")
+        price_rub = int(target.get("price_rubles") or 0)
+        bal_rub = int((cur_state.get("balances") or {}).get("rubles") or 0)
+        if price_rub > 0 and bal_rub < price_rub:
+            raise HTTPException(status_code=400, detail=f"Недостаточно рублей: нужно {price_rub}, доступно {bal_rub}")
+
+        res = await m_api.claim_or_buy_promo(promo_id)
+        updated = parse_menyala_state(await m_api.get_state())
+        hub = _get_hub()
+        hub.set_domain_data(account_id, "menyala", updated)
+        hub.update_slice(account_id, "menyala", updated)
+        hub.notify_mutation(account_id, "menyala_changed", reason="manual_menyala_promo")
+        return {"success": True, "result": res, "state": updated, **updated}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/menyala/exchange")
+async def post_menyala_exchange(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Выполнение обмена ресурсов у Менялы."""
+    from client.api.menyala import MenyalaAPI, parse_menyala_state
+    exchange_id = str(payload.get("exchange_id") or payload.get("to") or "").strip()
+    try:
+        amount = int(payload.get("amount") or 1)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректное количество")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Количество должно быть больше 0")
+
+    m_api = getattr(bot_context, "menyala_api", None)
+    if m_api is None:
+        hc = _get_game_http_client()
+        if not hc:
+            raise HTTPException(status_code=503, detail="MenyalaAPI not available")
+        m_api = MenyalaAPI(hc)
+
+    try:
+        cur_state = parse_menyala_state(await m_api.get_state())
+        if not cur_state.get("is_active"):
+            raise HTTPException(status_code=400, detail="Меняла сейчас неактивен")
+        matched = next(
+            (e for e in cur_state.get("exchanges", []) if e["id"] == exchange_id or e["to_resource"] == exchange_id),
+            None,
+        )
+        if not matched:
+            raise HTTPException(status_code=400, detail=f"Недоступное направление обмена: {exchange_id}")
+        need_from = amount * int(matched["rate_from"])
+        bal_from = int(matched.get("from_balance") or 0)
+        if bal_from < need_from:
+            raise HTTPException(status_code=400, detail=f"Недостаточно ресурсов: нужно {need_from}, доступно {bal_from}")
+
+        res = await m_api.exchange_resource(matched["id"], amount, rate_from=matched["rate_from"])
+        updated = parse_menyala_state(await m_api.get_state())
+        hub = _get_hub()
+        hub.set_domain_data(account_id, "menyala", updated)
+        hub.update_slice(account_id, "menyala", updated)
+        hub.notify_mutation(account_id, "menyala_changed", reason="manual_menyala_exchange")
+        return {"success": True, "result": res, "state": updated, **updated}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.get("/workers/status")

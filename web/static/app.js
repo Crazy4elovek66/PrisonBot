@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_07";
+const ASSET_VERSION = "20261127_09";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -236,6 +236,30 @@ function getAuthHeaders() {
   return headers;
 }
 
+let serverClockOffsetMs = 0;
+let hasServerClockSync = false;
+
+function syncServerClock(serverNowTs) {
+  const ts = Number(serverNowTs);
+  if (!Number.isFinite(ts) || ts <= 0) return;
+  const serverMs = ts > 1e12 ? ts : ts * 1000;
+  const measuredOffset = serverMs - Date.now();
+  if (!hasServerClockSync || Math.abs(measuredOffset - serverClockOffsetMs) > 2000) {
+    serverClockOffsetMs = measuredOffset;
+    hasServerClockSync = true;
+  } else {
+    serverClockOffsetMs = serverClockOffsetMs * 0.7 + measuredOffset * 0.3;
+  }
+}
+
+function getSyncedNowMs() {
+  return Date.now() + serverClockOffsetMs;
+}
+
+function getSyncedNowSec() {
+  return Math.floor(getSyncedNowMs() / 1000);
+}
+
 async function apiFetch(endpoint, options = {}) {
   const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
   try {
@@ -247,6 +271,9 @@ async function apiFetch(endpoint, options = {}) {
     }
 
     const data = await res.json();
+    if (data && typeof data === "object" && data.server_now_ts) {
+      syncServerClock(data.server_now_ts);
+    }
     return data;
   } catch (err) {
     console.error(`API Error [${endpoint}]:`, err);
@@ -667,12 +694,24 @@ function formatMoscowDateTime(raw) {
   });
 }
 
-function formatCountdown(sec) {
-  if (sec <= 0) return "00:00:00";
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+function formatCountdown(totalSeconds, opts = {}) {
+  const sec = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  if (sec <= 0) return opts.compact ? "00:00" : "00:00:00";
+  const d = Math.floor(sec / 86400);
+  const rem = sec % 86400;
+  const h = Math.floor(rem / 3600);
+  const m = Math.floor((rem % 3600) / 60);
+  const s = rem % 60;
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  if (d > 0) {
+    return `${d}д ${hh}:${mm}:${ss}`;
+  }
+  if (opts.compact && h === 0) {
+    return `${mm}:${ss}`;
+  }
+  return `${hh}:${mm}:${ss}`;
 }
 
 // ============================================================================
@@ -1150,7 +1189,21 @@ function renderParcelsProgress(parcels) {
 }
 
 function renderResourceDeltas(resourceDeltas, currentCurrencies = null) {
-  const keys = ["cigarettes", "sugar", "rubles", "paper", "soap", "stew"];
+  const keys = [
+    "cigarettes",
+    "sugar",
+    "rubles",
+    "paper",
+    "soap",
+    "stew",
+    "match_red",
+    "match_green",
+    "match_blue",
+    "wheel_tickets",
+    "weapon_poison",
+    "weapon_gunshot",
+    "weapon_knife",
+  ];
   const deltas = (resourceDeltas && resourceDeltas.deltas) || {};
   const baseline = (resourceDeltas && resourceDeltas.baseline) || {};
   const capturedAt = resourceDeltas && resourceDeltas.captured_at ? formatMoscowTime(resourceDeltas.captured_at) : "";
@@ -1191,7 +1244,7 @@ function updateToiletPaperState(tpObj) {
   if (!tpObj) return;
   const targetMs = tpObj.nextResetAt
     ? Date.parse(tpObj.nextResetAt)
-    : (tpObj.secondsUntilReset ? Date.now() + Number(tpObj.secondsUntilReset) * 1000 : null);
+    : (tpObj.secondsUntilReset ? getSyncedNowMs() + Number(tpObj.secondsUntilReset) * 1000 : null);
   toiletPaperResetState = {
     canClaim: Boolean(tpObj.canClaim),
     resetMode: tpObj.resetMode || "midnight_msk",
@@ -1219,7 +1272,7 @@ function updateToiletPaperTimer() {
     return;
   }
 
-  const nowMs = Date.now();
+  const nowMs = getSyncedNowMs();
   let remSec = 0;
   if (toiletPaperResetState.nextResetMs) {
     remSec = Math.max(0, Math.floor((toiletPaperResetState.nextResetMs - nowMs) / 1000));
@@ -1241,11 +1294,8 @@ function updateToiletPaperTimer() {
     return;
   }
 
-  const hh = String(Math.floor(remSec / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((remSec % 3600) / 60)).padStart(2, "0");
-  const ss = String(remSec % 60).padStart(2, "0");
   badge.className = "tp-timer-badge tp-timer-wait";
-  badge.textContent = `⏱️ Сброс через ${hh}:${mm}:${ss}`;
+  badge.textContent = `⏱️ Сброс через ${formatCountdown(remSec)}`;
 }
 
 function updateEnergyTimer() {
@@ -1259,13 +1309,22 @@ function updateEnergyTimer() {
   const maxEnergy = Number(prof.maxEnergy || 50);
 
   const lastTimeStr = prof.lastEnergyRestoreTime;
-  const interval = Number(prof.energyRestoreIntervalSeconds || 300);
+  const interval = Math.max(1, Number(prof.energyRestoreIntervalSeconds || 300));
+  const nowSec = (typeof getSyncedNowMs === "function" ? getSyncedNowMs() : Date.now()) / 1000;
 
   let effectiveEnergy = rawEnergy;
   let remaining = interval;
-  if (lastTimeStr && rawEnergy < maxEnergy) {
+  const absNextTs = Number(prof.next_energy_at_ts || 0);
+  if (rawEnergy < maxEnergy && absNextTs > 0) {
+    if (nowSec >= absNextTs) {
+      const extraTicks = 1 + Math.floor((nowSec - absNextTs) / interval);
+      effectiveEnergy = Math.min(maxEnergy, rawEnergy + extraTicks);
+      remaining = Math.max(0, Math.floor(interval - ((nowSec - absNextTs) % interval)));
+    } else {
+      remaining = Math.max(0, Math.floor(absNextTs - nowSec));
+    }
+  } else if (lastTimeStr && rawEnergy < maxEnergy) {
     const lastSec = new Date(lastTimeStr).getTime() / 1000;
-    const nowSec = Date.now() / 1000;
     if (!isNaN(lastSec) && lastSec > 0 && nowSec >= lastSec) {
       const diff = nowSec - lastSec;
       const regenTicks = Math.floor(diff / interval);
@@ -1409,7 +1468,7 @@ async function loadBoss() {
 
 function updateMeleeTimers() {
   if (!bossData || !bossData.meleeTimestamps) return;
-  const nowSec = Date.now() / 1000;
+  const nowSec = getSyncedNowMs() / 1000;
 
   const attacks = [
     { key: "punchChest", timeKey: "lastPunchChestTime", cdKey: "punchChestCooldownSec" },
@@ -1889,10 +1948,10 @@ function updateBusinessCountdown() {
   const lastCollectStr = playerProfile.lastBusinessCollectTime || playerProfile.lastCollectTime;
 
   if (nextAtStr && !isNaN(Date.parse(nextAtStr))) {
-    diff = (Date.parse(nextAtStr) - Date.now()) / 1000;
+    diff = (Date.parse(nextAtStr) - getSyncedNowMs()) / 1000;
   } else if (lastCollectStr && !isNaN(Date.parse(lastCollectStr))) {
     const lastSec = Date.parse(lastCollectStr) / 1000;
-    const nowSec = Date.now() / 1000;
+    const nowSec = getSyncedNowMs() / 1000;
     const cdSec = Number(playerProfile.businessCooldownTotalSec || 8 * 3600);
     diff = (lastSec + cdSec) - nowSec;
   }
@@ -1977,38 +2036,49 @@ async function loadNotifications(category = "all") {
     }
 
     notifs.forEach(n => {
-      const card = document.createElement("div");
-      const meta = n.meta_json || {};
-      const isDefeat = meta.type === "boss_defeat" || meta.outcome === "defeat";
-      card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}${n.is_read ? ' is-read' : ''}`;
+      container.appendChild(buildNotificationCard(n));
+    });
+  } catch (err) {
+    console.warn("loadNotifications error:", err);
+  }
+}
 
-      const effectiveRewards = (Array.isArray(n.rewards) && n.rewards.length > 0)
-        ? n.rewards
-        : (Array.isArray(meta.rewards) ? meta.rewards.filter(r => !r.type || r.type === "currency") : []);
-      let rewardsHtml = "";
-      if (effectiveRewards.length > 0) {
-        rewardsHtml = `
+function buildNotificationCard(n) {
+  const card = document.createElement("div");
+  if (n.id !== undefined && n.id !== null) {
+    card.dataset.notifId = String(n.id);
+  }
+  const meta = n.meta_json || {};
+  const isDefeat = meta.type === "boss_defeat" || meta.outcome === "defeat";
+  card.className = `notif-card notif-${n.category || 'other'}${isDefeat ? ' notif-defeat' : ''}${n.is_read ? ' is-read' : ''}`;
+
+  const effectiveRewards = (Array.isArray(n.rewards) && n.rewards.length > 0)
+    ? n.rewards
+    : (Array.isArray(meta.rewards) ? meta.rewards.filter(r => !r.type || r.type === "currency") : []);
+  let rewardsHtml = "";
+  if (effectiveRewards.length > 0) {
+    rewardsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
             ${effectiveRewards.map(r => renderResourceBadge(r)).join("")}
           </div>
         `;
-      }
-      const durationBadgeHtml = (!isDefeat && meta.duration_formatted)
-        ? `<div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">⏱️ Бой продлился: ${meta.duration_formatted}</div>`
-        : "";
+  }
+  const durationBadgeHtml = (!isDefeat && meta.duration_formatted)
+    ? `<div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">⏱️ Бой продлился: ${meta.duration_formatted}</div>`
+    : "";
 
-      let defeatBarHtml = "";
-      if (isDefeat) {
-        const remHp = Number(meta.remaining_hp);
-        const maxHp = Number(meta.max_hp);
-        const hpKnown = meta.hp_known !== false && Number.isFinite(remHp) && remHp > 0 && Number.isFinite(maxHp) && maxHp > 1;
-        if (hpKnown) {
-          const rawPct = (meta.hp_percent !== undefined && meta.hp_percent !== null && Number.isFinite(Number(meta.hp_percent)))
-            ? Number(meta.hp_percent)
-            : Math.round((remHp / maxHp) * 1000) / 10;
-          const pctText = rawPct < 0.1 ? "<0.1%" : `${rawPct}%`;
-          const barWidth = Math.max(1, Math.min(100, rawPct));
-          defeatBarHtml = `
+  let defeatBarHtml = "";
+  if (isDefeat) {
+    const remHp = Number(meta.remaining_hp);
+    const maxHp = Number(meta.max_hp);
+    const hpKnown = meta.hp_known !== false && Number.isFinite(remHp) && remHp > 0 && Number.isFinite(maxHp) && maxHp > 1;
+    if (hpKnown) {
+      const rawPct = (meta.hp_percent !== undefined && meta.hp_percent !== null && Number.isFinite(Number(meta.hp_percent)))
+        ? Number(meta.hp_percent)
+        : Math.round((remHp / maxHp) * 1000) / 10;
+      const pctText = rawPct < 0.1 ? "<0.1%" : `${rawPct}%`;
+      const barWidth = Math.max(1, Math.min(100, rawPct));
+      defeatBarHtml = `
             <div class="defeat-hp-wrap">
               <div class="defeat-hp-label">
                 <span>Осталось HP: ${formatNum(remHp)} / ${formatNum(maxHp)}</span>
@@ -2019,56 +2089,56 @@ async function loadNotifications(category = "all") {
               </div>
             </div>
           `;
-        } else {
-          const maxSuffix = (Number.isFinite(maxHp) && maxHp > 1) ? ` (из ${formatNum(maxHp)})` : "";
-          defeatBarHtml = `
+    } else {
+      const maxSuffix = (Number.isFinite(maxHp) && maxHp > 1) ? ` (из ${formatNum(maxHp)})` : "";
+      defeatBarHtml = `
             <div class="defeat-hp-wrap">
               <div class="defeat-hp-label">
                 <span>Осталось HP: нет данных${maxSuffix}</span>
               </div>
             </div>
           `;
-        }
-      }
+    }
+  }
 
-      if (meta.outcome === "victory") {
-        card.classList.add("notif-boss-victory");
-      } else if (meta.outcome === "defeat") {
-        card.classList.add("notif-boss-defeat");
-      }
+  if (meta.outcome === "victory") {
+    card.classList.add("notif-boss-victory");
+  } else if (meta.outcome === "defeat") {
+    card.classList.add("notif-boss-defeat");
+  }
 
-      const rawDrops = Array.isArray(n.drops) && n.drops.length > 0
-        ? n.drops
-        : (Array.isArray(meta.cosmetic_drops) ? meta.cosmetic_drops : []);
+  const rawDrops = Array.isArray(n.drops) && n.drops.length > 0
+    ? n.drops
+    : (Array.isArray(meta.cosmetic_drops) ? meta.cosmetic_drops : []);
 
-      let dropsHtml = "";
-      const clickableDrops = [];
-      if (rawDrops.length > 0) {
-        dropsHtml = `
+  let dropsHtml = "";
+  const clickableDrops = [];
+  if (rawDrops.length > 0) {
+    dropsHtml = `
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
             ${rawDrops.map((d, idx) => {
-          const dropKind = String(d.kind || d.type || "").toLowerCase();
-          const isRare = ["tattoo", "clothing", "complect", "room", "camera"].includes(dropKind);
-          const isCosmetic = ["tattoo", "clothing", "complect"].includes(dropKind)
-            && Boolean(d.itemId || d.setId);
-          if (isCosmetic) {
-            clickableDrops.push({ idx, drop: d });
-          }
-          const iconHtml = getDropIconHtml(d);
-          return `
+      const dropKind = String(d.kind || d.type || "").toLowerCase();
+      const isRare = ["tattoo", "clothing", "complect", "room", "camera"].includes(dropKind);
+      const isCosmetic = ["tattoo", "clothing", "complect"].includes(dropKind)
+        && Boolean(d.itemId || d.setId);
+      if (isCosmetic) {
+        clickableDrops.push({ idx, drop: d });
+      }
+      const iconHtml = getDropIconHtml(d);
+      return `
                 <span class="drop-pill ${isRare ? 'drop-pill-rare ' : ''}${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
                   <span style="display:inline-flex;align-items:center;gap:4px;">${iconHtml} ${escapeHtml(d.title || d.name || 'Дроп')}</span>
                   ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.85;">(${escapeHtml(d.subtitle)})</span>` : ''}
                 </span>
               `;
-        }).join("")}
+    }).join("")}
           </div>
         `;
-      }
+  }
 
-      const timeStr = formatMoscowTime(n.created_at);
+  const timeStr = formatMoscowTime(n.created_at);
 
-      card.innerHTML = `
+  card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <div>
             <div style="font-weight: 700; font-size: 13px; color: #fff;">${n.title || 'Событие'}</div>
@@ -2082,25 +2152,69 @@ async function loadNotifications(category = "all") {
         ${dropsHtml}
       `;
 
-      clickableDrops.forEach(({ idx, drop }) => {
-        const pillEl = card.querySelector(`.drop-pill-clickable[data-drop-idx="${idx}"]`);
-        pillEl?.addEventListener("click", () => {
-          openItemPreviewModal({
-            type: drop.type || drop.kind || "tattoo",
-            itemId: drop.itemId || drop.id || null,
-            setId: drop.setId || null,
-            name: drop.name || drop.title || "",
-            imageUrl: drop.imageUrl || drop.previewUrl || "",
-            zone: drop.zone || 1,
-          });
-        });
+  clickableDrops.forEach(({ idx, drop }) => {
+    const pillEl = card.querySelector(`.drop-pill-clickable[data-drop-idx="${idx}"]`);
+    pillEl?.addEventListener("click", () => {
+      openItemPreviewModal({
+        type: drop.type || drop.kind || "tattoo",
+        itemId: drop.itemId || drop.id || null,
+        setId: drop.setId || null,
+        name: drop.name || drop.title || "",
+        imageUrl: drop.imageUrl || drop.previewUrl || "",
+        zone: drop.zone || 1,
       });
-
-      container.appendChild(card);
     });
-  } catch (err) {
-    console.warn("loadNotifications error:", err);
+  });
+
+  return card;
+}
+
+function prependRealtimeNotification(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const n = payload.notification || payload;
+  if (!n || typeof n !== "object") return false;
+
+  // 1. Обновление счетчиков и колокольчика
+  if (payload.counts && typeof updateNotificationCounts === "function") {
+    updateNotificationCounts(payload.counts);
+  } else {
+    const bellBadge = document.getElementById("bell-badge");
+    const cntUnread = document.getElementById("cnt-unread");
+    const cntAll = document.getElementById("cnt-all");
+    const nextUnread = payload.unread_count !== undefined && payload.unread_count !== null
+      ? Number(payload.unread_count)
+      : (Number(bellBadge?.textContent || cntUnread?.textContent || 0) + 1);
+    if (bellBadge) {
+      bellBadge.textContent = String(nextUnread);
+      bellBadge.style.display = nextUnread > 0 ? "flex" : "none";
+    }
+    if (cntUnread) cntUnread.textContent = String(nextUnread);
+    if (cntAll) cntAll.textContent = String(Number(cntAll.textContent || 0) + 1);
+    const cat = String(n.category || "other");
+    const cntCat = document.getElementById(`cnt-${cat}`);
+    if (cntCat) cntCat.textContent = String(Number(cntCat.textContent || 0) + 1);
   }
+
+  // 2. Мгновенная вставка в открытый #notifications-list без перезагрузки и дублей
+  const container = document.getElementById("notifications-list");
+  if (!container) return true;
+  const catFilter = typeof currentCatFilter === "string" ? currentCatFilter : "all";
+  const nCat = String(n.category || "other");
+  const matchesFilter = (catFilter === "all") || (catFilter === "unread" && !n.is_read) || (catFilter === nCat);
+  if (!matchesFilter) return true;
+
+  const nid = n.id !== undefined && n.id !== null ? String(n.id) : "";
+  if (nid && container.querySelector(`.notif-card[data-notif-id="${nid}"]`)) {
+    return false;
+  }
+
+  // Если был placeholder "Бот активен" без карточек — очищаем его
+  if (!container.querySelector(".notif-card")) {
+    container.innerHTML = "";
+  }
+  const card = buildNotificationCard(n);
+  container.prepend(card);
+  return true;
 }
 
 // Notification Filter Pills
@@ -6292,6 +6406,12 @@ const liveSyncClient = (() => {
     else if (slice === "bauls") renderBaulsData(data);
     else if (slice === "radar" && typeof renderActivePlayersRadarFromData === "function") {
       renderActivePlayersRadarFromData(data);
+    } else if (slice === "zaruby" && typeof renderZarubyState === "function") {
+      renderZarubyState({ success: true, state: data });
+    } else if (slice === "menyala" && typeof renderMenyalaState === "function") {
+      renderMenyalaState(data);
+    } else if (slice === "game_resources" && typeof renderHomeGameResources === "function") {
+      renderHomeGameResources(data);
     } else if (slice === "routine" && data) {
       if (data.monthly) renderMonthlyStateData(data.monthly);
       if (data.bauls) renderBaulsData(data.bauls);
@@ -6361,7 +6481,28 @@ const liveSyncClient = (() => {
       applySocialUpdatedEvent({ ...patch.social, revision: revs.social });
     }
     if (activeDomains.includes("notifications") && typeof loadNotifications === "function") {
-      scheduleDomainRefetch("notifications", () => loadNotifications());
+      const secNotif = document.getElementById("sec-notifications");
+      if (secNotif && secNotif.classList.contains("active")) {
+        scheduleDomainRefetch("notifications", () => loadNotifications(currentCatFilter));
+      }
+    }
+    if ((activeDomains.includes("player") || activeDomains.includes("resources")) && typeof refreshState === "function") {
+      scheduleDomainRefetch("player", () => refreshState());
+    }
+    if (activeDomains.includes("prisons") && typeof loadPrisons === "function") {
+      const secPrisons = document.getElementById("sec-prisons");
+      if (secPrisons && secPrisons.classList.contains("active")) {
+        scheduleDomainRefetch("prisons", () => loadPrisons());
+      }
+    }
+    if (activeDomains.includes("zaruby") && typeof loadZarubyState === "function") {
+      const secZaruby = document.getElementById("sec-zaruby");
+      if (secZaruby && secZaruby.classList.contains("active")) {
+        scheduleDomainRefetch("zaruby", () => loadZarubyState());
+      }
+    }
+    if (activeDomains.includes("menyala") && typeof loadMenyalaState === "function") {
+      scheduleDomainRefetch("menyala", () => loadMenyalaState());
     }
     if (activeDomains.includes("boss") && !patch.boss && typeof loadBoss === "function") {
       scheduleDomainRefetch("boss", () => loadBoss());
@@ -6371,12 +6512,55 @@ const liveSyncClient = (() => {
     }
   }
 
+  function resyncActiveSection() {
+    if (typeof refreshState === "function") refreshState();
+    const activeSec = document.querySelector(".section-pane.active");
+    const secId = activeSec ? activeSec.id : "";
+    if (secId === "sec-notifications" && typeof loadNotifications === "function") {
+      loadNotifications(currentCatFilter);
+    } else if (secId === "sec-zaruby" && typeof loadZarubyState === "function") {
+      loadZarubyState();
+    } else if (secId === "sec-bosses" && typeof loadBoss === "function") {
+      loadBoss();
+    } else if (secId === "sec-prisons" && typeof loadPrisons === "function") {
+      loadPrisons();
+    } else if (secId === "sec-friends" && typeof loadFriendsSummary === "function") {
+      loadFriendsSummary(true);
+      if (typeof loadFriendRequests === "function") loadFriendRequests();
+    }
+    if (typeof loadMenyalaState === "function") {
+      loadMenyalaState();
+    }
+  }
+
+  function handleRealtimeEvent(eventType, payload) {
+    if (payload && typeof payload === "object" && payload.server_now_ts) {
+      syncServerClock(payload.server_now_ts);
+    }
+    if (eventType === "notification") {
+      prependRealtimeNotification(payload);
+    } else if (eventType === "slice_update") {
+      if (payload) handleIncomingSlice(payload.slice, payload.data, payload.version);
+    } else if (eventType === "social_updated") {
+      if (typeof applySocialUpdatedEvent === "function") applySocialUpdatedEvent(payload);
+    } else if (eventType === "domain_sync") {
+      applyDomainSyncEvent(payload);
+    } else if (eventType === "snapshot" && payload) {
+      const vers = payload.versions || {};
+      const slices = payload.slices || {};
+      Object.entries(slices).forEach(([slice, data]) => {
+        handleIncomingSlice(slice, data, vers[slice]);
+      });
+    }
+  }
+
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       lastHiddenAt = Date.now();
     } else if (lastHiddenAt > 0 && Date.now() - lastHiddenAt > 5000) {
       lastHiddenAt = 0;
       if (typeof pollDeltaFallback === "function") pollDeltaFallback();
+      resyncActiveSection();
     }
   });
 
@@ -6448,15 +6632,12 @@ const liveSyncClient = (() => {
       evtSource = new EventSource(buildStreamUrl());
 
       evtSource.addEventListener("snapshot", e => {
+        const wasReconnect = retryDelayMs > 2000;
         retryDelayMs = 2000;
         stopDeltaFallback();
         try {
-          const payload = JSON.parse(e.data);
-          const vers = payload.versions || {};
-          const slices = payload.slices || {};
-          Object.entries(slices).forEach(([slice, data]) => {
-            handleIncomingSlice(slice, data, vers[slice]);
-          });
+          handleRealtimeEvent("snapshot", JSON.parse(e.data));
+          if (wasReconnect) resyncActiveSection();
         } catch (err) {
           console.debug("SSE snapshot parse error:", err);
         }
@@ -6464,19 +6645,23 @@ const liveSyncClient = (() => {
 
       evtSource.addEventListener("slice_update", e => {
         try {
-          const payload = JSON.parse(e.data);
-          handleIncomingSlice(payload.slice, payload.data, payload.version);
+          handleRealtimeEvent("slice_update", JSON.parse(e.data));
         } catch (err) {
           console.debug("SSE slice_update parse error:", err);
         }
       });
 
+      evtSource.addEventListener("notification", e => {
+        try {
+          handleRealtimeEvent("notification", JSON.parse(e.data));
+        } catch (err) {
+          console.debug("SSE notification parse error:", err);
+        }
+      });
+
       evtSource.addEventListener("social_updated", e => {
         try {
-          const payload = JSON.parse(e.data);
-          if (typeof applySocialUpdatedEvent === "function") {
-            applySocialUpdatedEvent(payload);
-          }
+          handleRealtimeEvent("social_updated", JSON.parse(e.data));
         } catch (err) {
           console.debug("SSE social_updated parse error:", err);
         }
@@ -6484,10 +6669,7 @@ const liveSyncClient = (() => {
 
       evtSource.addEventListener("domain_sync", e => {
         try {
-          const payload = JSON.parse(e.data);
-          if (typeof applyDomainSyncEvent === "function") {
-            applyDomainSyncEvent(payload);
-          }
+          handleRealtimeEvent("domain_sync", JSON.parse(e.data));
         } catch (err) {
           console.debug("SSE domain_sync parse error:", err);
         }
@@ -6517,6 +6699,7 @@ const liveSyncClient = (() => {
       started = true;
       connect();
     },
+    handleRealtimeEvent,
     onVisibilityChange() {
       if (!document.hidden) {
         flushPending();
@@ -6531,14 +6714,23 @@ const liveSyncClient = (() => {
   };
 })();
 
-// 1-second local countdown & energy interpolation tick (0 network calls)
-setInterval(() => {
-  if (document.hidden) return;
+function tickAllTimers() {
   updateMeleeTimers();
   updateBusinessCountdown();
   updateEnergyTimer();
   updateToiletPaperTimer();
-}, 1000);
+  if (typeof updateFartovyCountdownDom === "function") updateFartovyCountdownDom();
+  if (typeof _updateZarubyTimerTick === "function") _updateZarubyTimerTick();
+  if (typeof _updateMenyalaTimerDom === "function") _updateMenyalaTimerDom();
+}
+
+// 1-second unified local countdown & energy interpolation tick (0 network calls, leak-free)
+if (typeof window !== "undefined" && !window.__prisonUnifiedTimerId) {
+  window.__prisonUnifiedTimerId = setInterval(() => {
+    if (document.hidden) return;
+    tickAllTimers();
+  }, 1000);
+}
 
 // 15-second sequential ping measurement (non-overlapping)
 scheduleNextPing();
@@ -6617,6 +6809,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   await refreshState();
   await loadProfile();
   loadKatalaStatus();
+  if (typeof loadMenyalaState === "function") loadMenyalaState();
   if (typeof loadPokerState === "function") loadPokerState();
   if (typeof loadFartovyState === "function") loadFartovyState();
   if (typeof loadWheelState === "function") loadWheelState();
@@ -8615,6 +8808,14 @@ function renderRaidsList(raids, container) {
 
 let _lastNewsHash = "";
 let _newsFetchSeq = 0;
+let _newsRenderedIds = new Set();
+let _newsRenderedHashes = new Set();
+
+function computeNewsPostSignature(p) {
+  const txt = String(p?.text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const mediaKey = Array.isArray(p?.media) ? p.media.map(m => m?.id || m?.url || "").join(",") : "";
+  return `${txt}|${mediaKey}`;
+}
 
 // --- Subview 2: Новости (@itheprison Telegram Dark + GIF/Video Optimization) ---
 let _newsNextBefore = null;
@@ -8660,6 +8861,9 @@ function setupNewsVideoObserver(rootEl) {
 function renderNewsPostCard(p) {
   const card = document.createElement("div");
   card.className = "news-post-card";
+  if (p.post_id !== undefined && p.post_id !== null) {
+    card.dataset.postId = String(p.post_id);
+  }
   const mediaList = Array.isArray(p.media) ? p.media : [];
   const slowNet = isSlowNetworkConnection();
 
@@ -8669,16 +8873,19 @@ function renderNewsPostCard(p) {
       const mUrl = resolveAppAssetUrl(m.url || "");
       const pUrl = m.poster_url ? resolveAppAssetUrl(m.poster_url) : "";
       if (m.type === "gif") {
+        const bgHtml = pUrl ? `<img src="${escapeHtml(pUrl)}" class="news-media-backdrop" alt="" aria-hidden="true">` : "";
         return `
           <div class="news-media-wrap is-gif">
+            ${bgHtml}
             <video class="news-gif-video" loop muted playsinline preload="none" ${pUrl ? `poster="${escapeHtml(pUrl)}"` : ""} data-src="${escapeHtml(mUrl)}"></video>
-            <span class="news-gif-badge">GIF</span>
-            ${slowNet ? `<button type="button" class="news-gif-play-btn" title="Воспроизвести GIF">▶ GIF</button>` : ""}
+            <span class="news-gif-badge" style="z-index: 2;">GIF</span>
+            ${slowNet ? `<button type="button" class="news-gif-play-btn" style="z-index: 2;" title="Воспроизвести GIF">▶ GIF</button>` : ""}
           </div>
         `;
       }
       return `
         <div class="news-media-wrap">
+          <img src="${escapeHtml(mUrl)}" class="news-media-backdrop" alt="" aria-hidden="true">
           <img src="${escapeHtml(mUrl)}" class="news-post-img" loading="lazy" decoding="async" alt="Фото" onerror="this.closest('.news-media-wrap')?.remove()">
         </div>
       `;
@@ -8755,12 +8962,25 @@ async function loadNews(opts = {}) {
 
     if (!isMore) {
       container.innerHTML = "";
+      _newsRenderedIds.clear();
+      _newsRenderedHashes.clear();
     } else {
       container.querySelector("#btn-news-load-more")?.remove();
     }
 
     const frag = document.createDocumentFragment();
-    posts.forEach(p => frag.appendChild(renderNewsPostCard(p)));
+    let addedCount = 0;
+    posts.forEach(p => {
+      const pid = p?.post_id !== undefined && p?.post_id !== null ? String(p.post_id) : "";
+      const sig = computeNewsPostSignature(p);
+      if ((pid && _newsRenderedIds.has(pid)) || (sig && _newsRenderedHashes.has(sig))) {
+        return;
+      }
+      if (pid) _newsRenderedIds.add(pid);
+      if (sig) _newsRenderedHashes.add(sig);
+      frag.appendChild(renderNewsPostCard(p));
+      addedCount += 1;
+    });
 
     if (res.has_more && posts.length > 0) {
       const minId = posts[posts.length - 1].post_id;
@@ -9552,15 +9772,15 @@ function updateFartovyCountdownDom() {
     setTextIfChanged(secTimerEl, "Ожидание...");
     return;
   }
-  const leftSec = Math.max(0, Math.floor((_fartovyNextMatchAtMs - Date.now()) / 1000));
+  const leftSec = Math.max(0, Math.floor((_fartovyNextMatchAtMs - getSyncedNowMs()) / 1000));
   const formatted = leftSec > 0 ? formatGreenMatchTimer(leftSec) : "(+1 скоро)";
   setTextIfChanged(homeTimerEl, formatted);
   setTextIfChanged(secTimerEl, formatted);
 }
 
 function startFartovyCountdownTimer() {
-  if (_fartovyCountdownTimer) return;
-  _fartovyCountdownTimer = setInterval(updateFartovyCountdownDom, 1000);
+  // Обслуживается единым глобальным 1-секундным тикером tickAllTimers()
+  updateFartovyCountdownDom();
 }
 
 function renderHomeGameResources(res) {
@@ -9774,57 +9994,165 @@ async function loadWheelState() {
   }
 }
 
+let _zarubySelectedTaskId = null;
+let _zarubyLastState = null;
+let _zarubyZeroRefetchAtMs = 0;
+
+function _formatZarubyHMS(sec) {
+  if (typeof formatCountdown === "function") return formatCountdown(sec);
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rem = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
+}
+
+function _updateZarubyTimerTick() {
+  const timerEl = document.getElementById("zaruby-timer");
+  if (!timerEl || !_zarubyLastState || !_zarubyLastState.active || !_zarubyLastState.end_unix) {
+    if (timerEl) timerEl.style.display = "none";
+    return;
+  }
+  const nowSec = typeof getSyncedNowSec === "function" ? getSyncedNowSec() : Math.floor(Date.now() / 1000);
+  const left = Math.max(0, Number(_zarubyLastState.end_unix) - nowSec);
+  timerEl.style.display = "inline-flex";
+  setTextIfChanged(timerEl, _formatZarubyHMS(left));
+  if (left <= 0 && (Date.now() - _zarubyZeroRefetchAtMs) > 15000 && typeof loadZarubyState === "function") {
+    _zarubyZeroRefetchAtMs = Date.now();
+    loadZarubyState();
+  }
+}
+
+function _renderZarubySelectedDetail(task) {
+  const detailEl = document.getElementById("zaruby-selected-detail");
+  if (!detailEl) return;
+  if (!task) {
+    detailEl.innerHTML = `<div style="font-size:12px;color:var(--muted-foreground);">Выберите задание ниже для просмотра деталей</div>`;
+    return;
+  }
+  const cur = Number(task.current ?? 0);
+  const need = Math.max(1, Number(task.target ?? 1));
+  const done = Boolean(task.completed || cur >= need);
+  const pct = Math.min(100, Math.round((cur / need) * 100));
+  const cls = task.classification || "unknown";
+  const tag = cls === "safe_auto" ? "Авто" : cls === "skip_damage" ? "Урон (пропуск)" : cls === "skip_paid" ? "Платное (пропуск)" : cls === "skip_energy_conflict" ? "Энергия (пауза)" : "Ручное";
+  const iconFile = task.icon || "zaruba_i_avtoritet.webp";
+  const soapHint = (!done && Number(task.skip_soap_cost || 0) > 0) ? ` • Пропуск: ${task.skip_soap_cost} мыла` : "";
+
+  detailEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;">
+      <img src="${resolveAppAssetUrl(`/static/assets/icons/${iconFile}`)}" class="zaruby-task-tile-icon" alt="">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:700;color:#fff;line-height:1.3;">${escapeHtml(task.title || `Задание #${task.type || ""}`)}</div>
+        <div style="font-size:11px;color:${done ? "#4ade80" : "#93c5fd"};margin-top:2px;">${done ? "Выполнено" : tag}${escapeHtml(soapHint)}</div>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:#fbbf24;white-space:nowrap;">${formatNum(cur)} / ${formatNum(need)}</div>
+    </div>
+    <div class="zaruby-mini-bar" style="margin-top:8px;height:7px;">
+      <div class="zaruby-mini-bar-fill" style="width:${pct}%;${done ? "background:#4ade80;" : ""}"></div>
+    </div>
+  `;
+}
+
 function renderZarubyState(data) {
   if (!data) return;
-  const st = data.parsed || {};
-  const raw = data.state || {};
-  const prog = st.progress || raw.progress || {};
-  const bal = st.balances || raw.balances || {};
-  setTextIfChanged(document.getElementById("zaruby-level"), Number(prog.level || 0));
-  setTextIfChanged(document.getElementById("zaruby-signets"), Number(bal.signet || 0));
-  setTextIfChanged(document.getElementById("zaruby-ore"), Number(bal.ore_signet || 0));
+  // Поддержка нормализованного data.state (актуальный бэкенд) и legacy data.parsed
+  const st = (data.state && typeof data.state.level !== "undefined") ? data.state : (data.parsed || data.state || {});
+  _zarubyLastState = st;
 
-  const active = st.active || raw.active;
+  setTextIfChanged(document.getElementById("zaruby-level"), Number(st.level ?? st.progress?.level ?? 0));
+  setTextIfChanged(document.getElementById("zaruby-signets"), Number(st.signets ?? st.balances?.signet ?? 0));
+  setTextIfChanged(document.getElementById("zaruby-ore"), Number(st.ore_signet ?? st.balances?.ore_signet ?? 0));
+  setTextIfChanged(document.getElementById("zaruby-reward-signets"), Number(st.reward_signet ?? 10));
+
+  const isActive = Boolean(st.active);
   const banner = document.getElementById("zaruby-active-banner");
   const claimBtn = document.getElementById("btn-zaruby-claim");
   const startBtn = document.getElementById("btn-zaruby-start");
   const tasksList = document.getElementById("zaruby-tasks-list");
   const lbList = document.getElementById("zaruby-leaderboard-list");
 
-  const tasks = (active && active.tasks) || [];
-  const completed = Number(st.completed_count ?? active?.completedCount ?? 0);
-  const total = tasks.length || 8;
-  const pct = Math.round((completed / total) * 100);
+  const tasks = Array.isArray(st.tasks) ? st.tasks : (Array.isArray(st.active?.tasks) ? st.active.tasks : []);
+  const completed = Number(st.completed_count ?? tasks.filter(t => t.completed).length);
+  const total = Number(st.total_count ?? (tasks.length || 8));
+  const pct = Number.isFinite(Number(st.overall_pct)) ? Number(st.overall_pct) : Math.round((completed / Math.max(1, total)) * 100);
   setTextIfChanged(document.getElementById("zaruby-tasks-progress"), `${completed}/${total} (${pct}%)`);
   renderRoutineGameBadges({ zaruby_completed: completed, zaruby_total: total });
 
   if (banner) {
-    if (active) {
-      setTextIfChanged(banner, `Активная заруба (режим ${active.mode || "?"}) • Выполнено: ${completed}/${total}`);
+    if (isActive) {
+      const modeTitle = st.tier_title || `режим ${st.mode || "?"}`;
+      setTextIfChanged(banner, `Активная заруба: ${modeTitle} • Выполнено: ${completed}/${total} (${pct}%)`);
     } else {
       setTextIfChanged(banner, "Нет активной зарубы — выберите сложность и запустите");
     }
   }
-  if (startBtn) startBtn.disabled = Boolean(active);
-  if (claimBtn) claimBtn.style.display = active && active.canClaim ? "inline-flex" : "none";
+  if (startBtn) startBtn.disabled = isActive;
+  if (claimBtn) claimBtn.style.display = st.can_claim ? "inline-flex" : "none";
+
+  _updateZarubyTimerTick();
 
   if (tasksList) {
-    tasksList.innerHTML = tasks.length
-      ? tasks.map(t => {
+    if (tasks.length) {
+      if (!_zarubySelectedTaskId || !tasks.some(t => String(t.taskId) === String(_zarubySelectedTaskId))) {
+        const firstPending = tasks.find(t => !t.completed && Number(t.current || 0) < Number(t.target || 1));
+        _zarubySelectedTaskId = (firstPending || tasks[0]).taskId;
+      }
+      const selectedTask = tasks.find(t => String(t.taskId) === String(_zarubySelectedTaskId)) || tasks[0];
+      _renderZarubySelectedDetail(selectedTask);
+
+      tasksList.innerHTML = tasks.map((t, idx) => {
         const cur = Number(t.current ?? t.progress ?? 0);
-        const need = Number(t.target ?? t.need ?? 1);
+        const need = Math.max(1, Number(t.target ?? t.need ?? 1));
         const done = Boolean(t.completed || cur >= need);
-        const cls = t.classification || "unknown";
-        const tag = cls === "safe_auto" ? "Авто" : cls === "skip_damage" ? "Урон (пропуск)" : cls === "skip_paid" ? "Платное (пропуск)" : cls === "skip_energy_conflict" ? "Энергия (пауза)" : "Ручное";
-        return `<div class="zaruba-task-row" style="display:flex;justify-content:space-between;gap:8px;"><span>${escapeHtml(t.title || t.name || `Задание #${t.id || t.type}`)} (${cur}/${need})</span><span style="color:${done ? "#4ade80" : "#93c5fd"};">${done ? "Готово" : tag}</span></div>`;
-      }).join("")
-      : `<div style="font-size:12px;color:var(--muted-foreground);">Задания появятся после старта зарубы</div>`;
+        const tPct = Math.min(100, Math.round((cur / need) * 100));
+        const isSel = String(t.taskId) === String(selectedTask.taskId);
+        const iconFile = t.icon || "zaruba_i_avtoritet.webp";
+        return `
+          <div class="zaruby-task-tile ${done ? "is-done" : ""} ${isSel ? "is-selected" : ""}" data-task-id="${escapeHtml(String(t.taskId ?? idx))}" title="${escapeHtml(t.title || "")}">
+            ${done ? `<img src="${resolveAppAssetUrl("/static/assets/icons/zaruba_winIcon.webp")}" class="zaruby-task-done-badge" alt="✓">` : ""}
+            <img src="${resolveAppAssetUrl(`/static/assets/icons/${iconFile}`)}" class="zaruby-task-tile-icon" alt="">
+            <div style="font-size:10px;color:${done ? "#4ade80" : "#e5e7eb"};font-weight:700;">${formatNum(cur)}/${formatNum(need)}</div>
+            <div class="zaruby-mini-bar"><div class="zaruby-mini-bar-fill" style="width:${tPct}%;"></div></div>
+          </div>
+        `;
+      }).join("");
+
+      tasksList.querySelectorAll(".zaruby-task-tile").forEach(tile => {
+        tile.addEventListener("click", () => {
+          const tid = tile.getAttribute("data-task-id");
+          _zarubySelectedTaskId = tid;
+          const found = tasks.find(t => String(t.taskId) === String(tid));
+          tasksList.querySelectorAll(".zaruby-task-tile").forEach(el => el.classList.remove("is-selected"));
+          tile.classList.add("is-selected");
+          _renderZarubySelectedDetail(found);
+        });
+      });
+    } else {
+      _renderZarubySelectedDetail(null);
+      tasksList.innerHTML = `<div style="grid-column:1/-1;font-size:12px;color:var(--muted-foreground);">Задания появятся после старта зарубы</div>`;
+    }
   }
 
-  const participants = (active && active.participants) || [];
+  const participants = Array.isArray(st.leaderboard) ? st.leaderboard : (Array.isArray(st.active?.participants) ? st.active.participants : []);
   if (lbList) {
     lbList.innerHTML = participants.length
-      ? participants.slice(0, 5).map((p, idx) => `<div class="zaruba-leader-row" style="display:flex;justify-content:space-between;"><span>#${idx + 1} ${escapeHtml(p.name || p.userId || "Игрок")}</span><b>${Number(p.score || p.points || 0)}</b></div>`).join("")
+      ? participants.slice(0, 5).map((p, idx) => {
+        const rank = Number(p.rank || idx + 1);
+        const pPct = Number(p.progress_pct ?? p.progress ?? p.score ?? 0);
+        const pctStr = `${pPct.toFixed(2)}%`;
+        const barW = Math.max(2, Math.min(100, pPct));
+        const selfCls = p.is_self ? "is-self" : "";
+        return `
+          <div class="zaruby-leader-row ${selfCls}">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+              <span style="font-size:12px;font-weight:${p.is_self ? "700" : "600"};color:${p.is_self ? "#fde68a" : "#fff"};">#${rank} ${escapeHtml(p.nickname || p.name || `Игрок ${p.userId || ""}`)}</span>
+              <b style="font-size:12px;color:#fbbf24;">${pctStr}</b>
+            </div>
+            <div class="zaruby-mini-bar"><div class="zaruby-mini-bar-fill" style="width:${barW}%;"></div></div>
+          </div>
+        `;
+      }).join("")
       : `<div style="font-size:12px;color:var(--muted-foreground);">Нет данных лидерборда</div>`;
   }
 }
@@ -9930,6 +10258,222 @@ document.getElementById("btn-zaruby-claim")?.addEventListener("click", async () 
   }
 });
 
+let _menyalaLastState = null;
+let _menyalaZeroRefetchAtMs = 0;
+
+function _formatMenyalaCountdown(targetTsSec) {
+  const target = Number(targetTsSec || 0);
+  if (!target) return "—";
+  const nowSec = typeof getSyncedNowSec === "function" ? getSyncedNowSec() : Math.floor(Date.now() / 1000);
+  const diff = Math.max(0, target - nowSec);
+  if (typeof formatCountdown === "function") return formatCountdown(diff);
+  const d = Math.floor(diff / 86400);
+  const rem = diff % 86400;
+  const h = Math.floor(rem / 3600);
+  const m = Math.floor((rem % 3600) / 60);
+  const s = rem % 60;
+  const hms = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return d > 0 ? `${d}д ${hms}` : hms;
+}
+
+function _formatMskDateTooltip(tsSec) {
+  const ts = Number(tsSec || 0);
+  if (!ts) return "";
+  try {
+    const dt = new Date(ts * 1000 + 3 * 3600 * 1000);
+    const dd = String(dt.getUTCDate()).padStart(2, "0");
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    const hh = String(dt.getUTCHours()).padStart(2, "0");
+    const min = String(dt.getUTCMinutes()).padStart(2, "0");
+    return `${dd}.${mm} ${hh}:${min} МСК`;
+  } catch (e) {
+    return "";
+  }
+}
+
+function _updateMenyalaTimerDom() {
+  const timerEl = document.getElementById("menyala-timer");
+  if (!timerEl || !_menyalaLastState) return;
+  const nowSec = typeof getSyncedNowSec === "function" ? getSyncedNowSec() : Math.floor(Date.now() / 1000);
+  const fmt = (sec) => {
+    if (typeof formatCountdown === "function") return formatCountdown(sec);
+    const s = Math.max(0, Math.floor(Number(sec) || 0));
+    const d = Math.floor(s / 86400);
+    const r = s % 86400;
+    const hms = `${String(Math.floor(r / 3600)).padStart(2, "0")}:${String(Math.floor((r % 3600) / 60)).padStart(2, "0")}:${String(r % 60).padStart(2, "0")}`;
+    return d > 0 ? `${d}д ${hms}` : hms;
+  };
+  if (_menyalaLastState.is_active && _menyalaLastState.departure_ts) {
+    const left = Math.max(0, Number(_menyalaLastState.departure_ts) - nowSec);
+    setTextIfChanged(timerEl, `До отъезда: ${fmt(left)}`);
+    const mskLabel = _menyalaLastState.departure_msk || _formatMskDateTooltip(_menyalaLastState.departure_ts);
+    if (mskLabel) timerEl.title = `Отъезд: ${mskLabel} (в игре на иконке дни округляются вниз)`;
+    if (left <= 0 && (Date.now() - _menyalaZeroRefetchAtMs) > 15000 && typeof loadMenyalaState === "function") {
+      _menyalaZeroRefetchAtMs = Date.now();
+      loadMenyalaState();
+    }
+  } else if (!_menyalaLastState.is_active && _menyalaLastState.next_arrival_ts) {
+    const left = Math.max(0, Number(_menyalaLastState.next_arrival_ts) - nowSec);
+    setTextIfChanged(timerEl, `Через: ${fmt(left)}`);
+    const mskLabel = _menyalaLastState.next_arrival_msk || _formatMskDateTooltip(_menyalaLastState.next_arrival_ts);
+    if (mskLabel) timerEl.title = `Приезд: ${mskLabel}`;
+    if (left <= 0 && (Date.now() - _menyalaZeroRefetchAtMs) > 15000 && typeof loadMenyalaState === "function") {
+      _menyalaZeroRefetchAtMs = Date.now();
+      loadMenyalaState();
+    }
+  } else {
+    setTextIfChanged(timerEl, "—");
+    timerEl.title = "";
+  }
+}
+
+function renderMenyalaState(data) {
+  if (!data || typeof data !== "object") return;
+  if (data.server_now_ts) syncServerClock(data.server_now_ts);
+  const st = data.state && typeof data.state.is_active !== "undefined" ? data.state : data;
+  _menyalaLastState = st;
+
+  const waitBox = document.getElementById("menyala-waiting-box");
+  const activeBox = document.getElementById("menyala-active-box");
+  const subEl = document.getElementById("menyala-subtitle");
+  const promosGrid = document.getElementById("menyala-promos-grid");
+  const exBox = document.getElementById("menyala-exchange-box");
+
+  _updateMenyalaTimerDom();
+
+  if (!st.is_active) {
+    if (subEl) setTextIfChanged(subEl, "Ожидание приезда (каждую пятницу)");
+    if (waitBox) {
+      waitBox.style.display = "block";
+      waitBox.innerHTML = `Фургон Менялы ещё в пути. До следующего приезда: <b style="color:#fbbf24;">${escapeHtml(_formatMenyalaCountdown(st.next_arrival_ts))}</b>`;
+    }
+    if (activeBox) activeBox.style.display = "none";
+    return;
+  }
+
+  if (subEl) setTextIfChanged(subEl, `Меняла в зоне (${st.variant === "Cigarettes" ? "папиросы" : "сахар"})`);
+  if (waitBox) waitBox.style.display = "none";
+  if (activeBox) activeBox.style.display = "block";
+
+  const promos = Array.isArray(st.promos) ? st.promos : [];
+  if (promosGrid) {
+    promosGrid.innerHTML = promos.map(p => {
+      const claimed = Boolean(p.claimed);
+      const isFree = Boolean(p.is_free || Number(p.price_rubles || 0) <= 0);
+      const priceHtml = isFree
+        ? `<span style="color:#4ade80;font-weight:700;">Бесплатно</span>`
+        : `<span style="display:inline-flex;align-items:center;gap:4px;font-weight:700;color:#fde68a;">${formatNum(p.price_rubles)} <img src="${resolveAppAssetUrl("/static/assets/icons/rubles.webp")}" class="game-icon-xs" alt="руб."></span>`;
+      const itemsHtml = (Array.isArray(p.items) ? p.items : []).map(it => {
+        const iconPath = String(it.icon || "assets/icons/stash.webp").replace(/^\/+/, "");
+        const iconUrl = resolveAppAssetUrl(`/static/${iconPath}`);
+        return `<span class="menyala-loot-chip" title="${escapeHtml(it.label || it.key || "")}"><img src="${iconUrl}" class="game-icon-xs" alt="">+${formatNum(it.amount)}</span>`;
+      }).join("");
+      const btnLabel = claimed ? "Получено" : (isFree ? "Забрать" : "Купить");
+      const btnCls = claimed ? "btn-secondary" : (isFree ? "btn-primary" : "btn-secondary");
+      return `
+        <div class="menyala-promo-card ${claimed ? "is-claimed" : ""}">
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px;">
+              <b style="font-size:12px;color:#fff;">${escapeHtml(p.title || p.id)}</b>
+              <span style="font-size:11px;">${priceHtml}</span>
+            </div>
+            <div class="menyala-promo-items">${itemsHtml}</div>
+          </div>
+          <button type="button" class="btn ${btnCls} btn-sm btn-menyala-promo" data-promo-id="${escapeHtml(p.id)}" data-price="${Number(p.price_rubles || 0)}" data-title="${escapeHtml(p.title || p.id)}" ${claimed ? "disabled" : ""}>${btnLabel}</button>
+        </div>
+      `;
+    }).join("");
+
+    promosGrid.querySelectorAll(".btn-menyala-promo").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const promoId = btn.getAttribute("data-promo-id");
+        const price = Number(btn.getAttribute("data-price") || 0);
+        const title = btn.getAttribute("data-title") || promoId;
+        if (price > 0 && typeof confirm === "function") {
+          if (!confirm(`Купить набор «${title}» за ${price} руб.?`)) return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await apiFetch("/menyala/promo/claim", {
+            method: "POST",
+            body: JSON.stringify({ promo_id: promoId }),
+          });
+          showToast(`Набор «${title}» получен!`, "success");
+          if (res && res.state) renderMenyalaState(res.state);
+          else await loadMenyalaState();
+          refreshState();
+        } catch (err) {
+          showToast(`Ошибка Менялы: ${err.message}`, "error");
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  const exchanges = Array.isArray(st.exchanges) ? st.exchanges : [];
+  if (exBox) {
+    if (!exchanges.length) {
+      exBox.innerHTML = "";
+    } else {
+      const fromLabels = { sugar: "сахара", cigarettes: "папирос" };
+      const toLabels = { rubles: "Рубли", paper: "Бумага" };
+      const toIcons = { rubles: "rubles.webp", paper: "paper.webp" };
+      exBox.innerHTML = `
+        <div style="font-size:12px;font-weight:700;color:#fff;margin-bottom:8px;">Обмен (Меняла)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <select id="menyala-exchange-select" class="btn btn-secondary btn-sm" style="padding:5px 8px;">
+            ${exchanges.map(ex => `<option value="${escapeHtml(ex.id)}" data-rate="${Number(ex.rate_from || 1)}" data-from="${escapeHtml(ex.from_resource)}">${escapeHtml(toLabels[ex.to_resource] || ex.to_resource)} (1 = ${formatNum(ex.rate_from)} ${escapeHtml(fromLabels[ex.from_resource] || ex.from_resource)})</option>`).join("")}
+          </select>
+          <input id="menyala-exchange-amount" type="number" min="1" value="1" class="btn btn-secondary btn-sm" style="width:76px;text-align:center;" />
+          <span id="menyala-exchange-cost" style="font-size:11px;color:var(--muted-foreground);"></span>
+          <button id="btn-menyala-exchange" type="button" class="btn btn-primary btn-sm">Обменять</button>
+        </div>
+      `;
+      const selEl = document.getElementById("menyala-exchange-select");
+      const amtEl = document.getElementById("menyala-exchange-amount");
+      const costEl = document.getElementById("menyala-exchange-cost");
+      const updateCost = () => {
+        const opt = selEl?.selectedOptions?.[0];
+        const rate = Number(opt?.getAttribute("data-rate") || 1);
+        const fromKey = opt?.getAttribute("data-from") || "sugar";
+        const amt = Math.max(1, parseInt(amtEl?.value || "1", 10) || 1);
+        if (costEl) costEl.textContent = `Цена: ${formatNum(amt * rate)} ${fromLabels[fromKey] || fromKey}`;
+      };
+      selEl?.addEventListener("change", updateCost);
+      amtEl?.addEventListener("input", updateCost);
+      updateCost();
+
+      document.getElementById("btn-menyala-exchange")?.addEventListener("click", async () => {
+        const exId = selEl?.value;
+        const amt = Math.max(1, parseInt(amtEl?.value || "1", 10) || 1);
+        try {
+          const res = await apiFetch("/menyala/exchange", {
+            method: "POST",
+            body: JSON.stringify({ exchange_id: exId, amount: amt }),
+          });
+          showToast("Обмен выполнен!", "success");
+          if (res && res.state) renderMenyalaState(res.state);
+          else await loadMenyalaState();
+          refreshState();
+        } catch (err) {
+          showToast(`Ошибка обмена: ${err.message}`, "error");
+        }
+      });
+    }
+  }
+}
+
+async function loadMenyalaState() {
+  try {
+    const data = await apiFetch("/menyala/state");
+    if (data && data.success) renderMenyalaState(data);
+  } catch (e) {
+    console.warn("loadMenyalaState error:", e);
+  }
+}
+
+document.getElementById("btn-refresh-menyala")?.addEventListener("click", loadMenyalaState);
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     formatGreenMatchTimer,
@@ -9938,6 +10482,15 @@ if (typeof module !== "undefined" && module.exports) {
     renderFartovyState,
     renderWheelState,
     renderZarubyState,
+    renderMenyalaState,
+    syncServerClock: typeof syncServerClock !== "undefined" ? syncServerClock : undefined,
+    getSyncedNowMs: typeof getSyncedNowMs !== "undefined" ? getSyncedNowMs : undefined,
+    getSyncedNowSec: typeof getSyncedNowSec !== "undefined" ? getSyncedNowSec : undefined,
+    formatCountdown: typeof formatCountdown !== "undefined" ? formatCountdown : undefined,
+    renderResourceDeltas: typeof renderResourceDeltas !== "undefined" ? renderResourceDeltas : undefined,
+    renderNewsPostCard: typeof renderNewsPostCard !== "undefined" ? renderNewsPostCard : undefined,
+    prependRealtimeNotification: typeof prependRealtimeNotification !== "undefined" ? prependRealtimeNotification : undefined,
+    liveSyncClient: typeof liveSyncClient !== "undefined" ? liveSyncClient : undefined,
     renderRoutineGameBadges,
     handleDomainRevisionsSync,
   };
@@ -9980,6 +10533,10 @@ function handleDomainRevisionsSync(nextRevs) {
   if (changed("zaruby") && (activeSection === "zaruby" || activeSection === "routine") && typeof loadZarubyState === "function") {
     refreshed.push("zaruby");
     loadZarubyState();
+  }
+  if (changed("menyala") && typeof loadMenyalaState === "function") {
+    refreshed.push("menyala");
+    loadMenyalaState();
   }
 
   _lastDomainRevisions = { ..._lastDomainRevisions, ...nextRevs };
