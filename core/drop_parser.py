@@ -28,6 +28,7 @@ CURRENCY_LABELS = {
     "signets": "Печатки",
     "chips": "Фишки",
     "votes": "Голоса",
+    "stew": "Тушенка",
 }
 
 MODE_TITLES = {
@@ -55,6 +56,153 @@ class DropParser:
     Универсальный парсер наград, валют, нычек, татуировок и предметов
     из сырых JSON-ответов сервера.
     """
+
+    _cosmetic_cache_loaded: bool = False
+    _tattoo_by_id: Dict[int, Dict[str, Any]] = {}
+    _clothing_by_id: Dict[int, Dict[str, Any]] = {}
+    _camera_by_id: Dict[int, Dict[str, Any]] = {}
+
+    @classmethod
+    def load_cosmetic_catalog(cls) -> None:
+        """Загружает справочник татуировок, шмота и камер из storage/tattoo_clothing_cache.json."""
+        if cls._cosmetic_cache_loaded:
+            return
+        cls._cosmetic_cache_loaded = True
+        try:
+            import json
+            from pathlib import Path
+            cache_path = Path(__file__).resolve().parent.parent / "storage" / "tattoo_clothing_cache.json"
+            if not cache_path.exists():
+                return
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            for t in data.get("tattoos") or []:
+                if isinstance(t, dict) and t.get("id") is not None:
+                    try:
+                        cls._tattoo_by_id[int(t["id"])] = t
+                    except (TypeError, ValueError):
+                        pass
+            for c in data.get("clothing") or []:
+                if isinstance(c, dict) and c.get("id") is not None:
+                    try:
+                        cls._clothing_by_id[int(c["id"])] = c
+                    except (TypeError, ValueError):
+                        pass
+            for cam in data.get("cameras") or []:
+                if isinstance(cam, dict) and cam.get("id") is not None:
+                    try:
+                        cls._camera_by_id[int(cam["id"])] = cam
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as e:
+            logger.debug("Не удалось загрузить cosmetic catalog в DropParser: %s", e)
+
+    @classmethod
+    def _build_cosmetic_drop(cls, raw_item: Any, default_kind: str) -> Optional[Dict[str, Any]]:
+        cls.load_cosmetic_catalog()
+        kind = default_kind
+        if kind in ("cloth", "wear", "clothing_set"):
+            kind = "clothing"
+        elif kind in ("camera", "chamber", "hata"):
+            kind = "room"
+        elif kind in ("tattoo_set",):
+            kind = "tattoo"
+
+        item_id: Optional[int] = None
+        obj: Dict[str, Any] = {}
+        if isinstance(raw_item, dict):
+            obj = raw_item
+            raw_id = obj.get("tattooId") or obj.get("clothingId") or obj.get("cameraId") or obj.get("roomId") or obj.get("itemId") or obj.get("id")
+            if raw_id is not None and str(raw_id).strip().isdigit():
+                item_id = int(str(raw_id).strip())
+        elif isinstance(raw_item, (int, str)) and str(raw_item).strip().isdigit():
+            item_id = int(str(raw_item).strip())
+        elif isinstance(raw_item, str) and raw_item.strip():
+            nm_str = raw_item.strip()
+            if kind == "tattoo":
+                title = f"Наколка: {nm_str}" if not nm_str.lower().startswith("наколка") else nm_str
+                return {"kind": "tattoo", "type": "tattoo", "name": nm_str, "title": title, "subtitle": "Наколка", "count": 1, "icon": "/prison/assets/icons/complect.webp"}
+            if kind == "clothing":
+                title = f"Шмот: {nm_str}" if not nm_str.lower().startswith("шмот") else nm_str
+                return {"kind": "clothing", "type": "clothing", "name": nm_str, "title": title, "subtitle": "Шмот", "count": 1, "icon": "/prison/assets/icons/complect.webp"}
+            title = f"Хата «{nm_str}»" if not nm_str.lower().startswith("хата") else nm_str
+            return {"kind": "room", "type": "room", "name": nm_str, "title": title, "subtitle": "Камера", "count": 1, "icon": "/prison/assets/icons/room_reward.webp"}
+        else:
+            return None
+
+        if kind == "tattoo":
+            meta = cls._tattoo_by_id.get(item_id) if item_id is not None else None
+            name = obj.get("name") or obj.get("tattoo") or obj.get("item") or (meta.get("name") if meta else None)
+            set_name = obj.get("setName") or obj.get("set") or obj.get("title") or (meta.get("setName") if meta else None)
+            if obj.get("owned") is not None and obj.get("total") is not None and obj.get("title"):
+                raw_title = str(obj["title"])
+                title = raw_title if raw_title.startswith("Комплект") else f'Комплект "{raw_title}"'
+                item_label = name or "Элемент сета"
+                subtitle = f"{item_label} ({obj['owned']}/{obj['total']} сета)"
+                name = item_label
+            elif not name and set_name:
+                title = f"Наколка из «{set_name}»"
+                name = set_name
+                subtitle = set_name
+            elif name:
+                title = f"Наколка: {name}" if not str(name).lower().startswith("наколка") else str(name)
+                subtitle = set_name or "Наколка"
+            else:
+                name = f"Татуировка #{item_id}" if item_id is not None else "Татуировка"
+                title = f"Наколка: {name}"
+                subtitle = set_name or "Наколка"
+            img = obj.get("imageUrl") or obj.get("previewUrl") or (meta.get("cardPreviewUrl") or meta.get("imageUrl") if meta else "") or ""
+            return {
+                "kind": "tattoo",
+                "type": "tattoo",
+                "id": item_id,
+                "itemId": item_id,
+                "set_name": set_name,
+                "setId": obj.get("setId") or set_name,
+                "name": name,
+                "title": title,
+                "subtitle": subtitle,
+                "count": 1,
+                "icon": "/prison/assets/icons/complect.webp",
+                "imageUrl": img,
+            }
+
+        if kind == "clothing":
+            meta = cls._clothing_by_id.get(item_id) if item_id is not None else None
+            name = obj.get("name") or obj.get("title") or (meta.get("name") if meta else None) or (f"Шмотка #{item_id}" if item_id is not None else "Шмот")
+            set_name = obj.get("setName") or obj.get("set") or (meta.get("setName") if meta else None)
+            title = f"Шмот: {name}" if not str(name).lower().startswith("шмот") else str(name)
+            img = obj.get("imageUrl") or obj.get("previewUrl") or (meta.get("cardPreviewUrl") or meta.get("imageUrl") if meta else "") or ""
+            return {
+                "kind": "clothing",
+                "type": "clothing",
+                "id": item_id,
+                "itemId": item_id,
+                "set_name": set_name,
+                "setId": obj.get("setId") or set_name,
+                "name": name,
+                "title": title,
+                "subtitle": set_name or "Шмот",
+                "count": 1,
+                "icon": "/prison/assets/icons/complect.webp",
+                "imageUrl": img,
+            }
+
+        meta = cls._camera_by_id.get(item_id) if item_id is not None else None
+        name = obj.get("name") or obj.get("title") or (meta.get("name") if meta else None) or (f"Камера #{item_id}" if item_id is not None else "Хата")
+        title = f"Хата «{name}»" if not str(name).lower().startswith("хата") else str(name)
+        img = obj.get("imageUrl") or obj.get("previewUrl") or (meta.get("imageUrl") if meta else "") or ""
+        return {
+            "kind": "room",
+            "type": "room",
+            "id": item_id,
+            "itemId": item_id,
+            "name": name,
+            "title": title,
+            "subtitle": "Камера",
+            "count": 1,
+            "icon": "/prison/assets/icons/room_reward.webp",
+            "imageUrl": img,
+        }
 
     @staticmethod
     def _resolve_boss_name(payload: Dict[str, Any], boss_name: Optional[str] = None) -> str:
@@ -165,10 +313,16 @@ class DropParser:
             em = cur_emoji.get(rw.get("currency"), "🎁")
             lines.append(f"{em} {rw.get('label')}: +{rw.get('amount')}")
         for dr in parsed.get("drops") or []:
-            kind = str(dr.get("kind") or "").lower()
-            em = "📦" if kind == "stash" else ("🎒" if kind == "stashed_gear" else ("🏠" if kind == "room" else ("🧩" if kind in ("tattoo", "clothing", "complect") else "🎁")))
+            kind = str(dr.get("kind") or dr.get("type") or "").lower()
+            em = (
+                "📦" if kind == "stash"
+                else ("🎒" if kind == "stashed_gear"
+                else ("🏠" if kind == "room"
+                else ("👕" if kind == "clothing"
+                else ("🧩" if kind in ("tattoo", "complect") else "🎁"))))
+            )
             title = dr.get("title") or dr.get("name") or "Предмет"
-            sub = dr.get("subtitle")
+            sub = dr.get("subtitle") or dr.get("set_name")
             if sub and sub.lower() not in title.lower():
                 lines.append(f"{em} {title} ({sub})")
             else:
@@ -419,108 +573,67 @@ class DropParser:
                             "subtitle": "Заныканный шмот",
                         })
 
-        # 4. Разбор дропов татуировок и сетов (rewardSets, soloSetReward, tattoo, clothing, room)
+        # 4. Разбор дропов татуировок, шмота и хат по всем контейнерам (с дедупликацией)
         cosmetic_drops: List[Dict[str, Any]] = []
-        reward_sets = payload.get("rewardSets") or (raw_rewards.get("rewardSets") if isinstance(raw_rewards, dict) else None)
-        if isinstance(reward_sets, list):
-            for r_set in reward_sets:
-                if isinstance(r_set, dict):
-                    title = r_set.get("title") or r_set.get("name") or "Комплект татуировок"
-                    tattoo_name = r_set.get("tattoo") or r_set.get("item") or "Элемент тату"
-                    owned = r_set.get("owned", 1)
-                    total = r_set.get("total", 20)
-                    r_kind = str(r_set.get("kind") or r_set.get("type") or "tattoo")
-                    c_item = {
-                        "kind": r_kind,
-                        "type": "clothing" if "cloth" in r_kind.lower() else ("room" if "room" in r_kind.lower() or "cam" in r_kind.lower() else "tattoo"),
-                        "itemId": r_set.get("itemId") or r_set.get("id"),
-                        "setId": r_set.get("setId") or title,
-                        "name": tattoo_name if tattoo_name != "Элемент тату" else title,
-                        "imageUrl": r_set.get("imageUrl") or r_set.get("previewUrl") or "",
-                        "title": title if title.startswith("Комплект") else f'Комплект "{title}"',
-                        "subtitle": f"{tattoo_name} ({owned}/{total} сета)",
-                    }
-                    drops.append(c_item)
-                    cosmetic_drops.append(c_item)
-                elif isinstance(r_set, str):
-                    c_item = {
-                        "kind": "tattoo",
-                        "type": "tattoo",
-                        "setId": r_set,
-                        "name": r_set,
-                        "title": r_set,
-                        "subtitle": "Новая татуировка",
-                    }
-                    drops.append(c_item)
-                    cosmetic_drops.append(c_item)
+        seen_cosmetics: set = set()
 
-        solo_set = payload.get("soloSetReward") or (raw_rewards.get("soloSetReward") if isinstance(raw_rewards, dict) else None)
-        if isinstance(solo_set, dict):
-            title = solo_set.get("title") or solo_set.get("name") or 'Комплект "Биомеханика"'
-            tattoo_name = solo_set.get("tattoo") or solo_set.get("item") or "Элемент сета"
-            owned = solo_set.get("owned", 1)
-            total = solo_set.get("total", 20)
-            c_item = {
-                "kind": "tattoo",
-                "type": "tattoo",
-                "itemId": solo_set.get("itemId") or solo_set.get("id"),
-                "setId": solo_set.get("setId") or title,
-                "name": tattoo_name if tattoo_name != "Элемент сета" else title,
-                "imageUrl": solo_set.get("imageUrl") or solo_set.get("previewUrl") or "",
-                "title": title if title.startswith("Комплект") else f'Комплект "{title}"',
-                "subtitle": f"{tattoo_name} ({owned}/{total} сета)",
-            }
+        def _push_cosmetic(c_item: Optional[Dict[str, Any]]) -> None:
+            if not c_item:
+                return
+            dedup_key = (str(c_item.get("kind")), str(c_item.get("itemId") or ""), str(c_item.get("title") or ""))
+            if dedup_key in seen_cosmetics:
+                return
+            seen_cosmetics.add(dedup_key)
             drops.append(c_item)
             cosmetic_drops.append(c_item)
 
-        tattoo_item = payload.get("tattoo") or (raw_rewards.get("tattoo") if isinstance(raw_rewards, dict) else None)
-        if isinstance(tattoo_item, dict):
-            t_title = tattoo_item.get("set") or tattoo_item.get("title") or 'Комплект "Биомеханика"'
-            t_name = tattoo_item.get("name") or "Татуировка"
-            c_item = {
-                "kind": "tattoo",
-                "type": "tattoo",
-                "itemId": tattoo_item.get("id") or tattoo_item.get("tattooId"),
-                "setId": tattoo_item.get("setId") or t_title,
-                "name": t_name,
-                "imageUrl": tattoo_item.get("imageUrl") or tattoo_item.get("previewUrl") or "",
-                "title": t_title if t_title.startswith("Комплект") else f'Комплект "{t_title}"',
-                "subtitle": t_name,
-            }
-            drops.append(c_item)
-            cosmetic_drops.append(c_item)
-        elif isinstance(tattoo_item, str):
-            c_item = {
-                "kind": "tattoo",
-                "type": "tattoo",
-                "setId": tattoo_item,
-                "name": tattoo_item,
-                "title": tattoo_item if tattoo_item.startswith("Комплект") else f'Комплект "{tattoo_item}"',
-                "subtitle": "Татуировка",
-            }
-            drops.append(c_item)
-            cosmetic_drops.append(c_item)
+        for c_src in containers:
+            if not c_src:
+                continue
+            r_sets = c_src.get("rewardSets")
+            if isinstance(r_sets, list):
+                for r_set in r_sets:
+                    if isinstance(r_set, dict):
+                        r_kind = str(r_set.get("kind") or r_set.get("type") or "tattoo").lower()
+                        _push_cosmetic(cls._build_cosmetic_drop(r_set, r_kind))
+                    elif isinstance(r_set, str):
+                        _push_cosmetic(cls._build_cosmetic_drop(r_set, "tattoo"))
 
-        for cos_key, cos_type, cos_label in (
-            ("clothing", "clothing", "Шмот"),
-            ("room", "room", "Хата"),
-            ("camera", "room", "Хата"),
-        ):
-            cos_obj = payload.get(cos_key) or (raw_rewards.get(cos_key) if isinstance(raw_rewards, dict) else None)
-            if isinstance(cos_obj, dict):
-                nm = cos_obj.get("name") or cos_obj.get("title") or cos_label
-                c_item = {
-                    "kind": cos_type,
-                    "type": cos_type,
-                    "itemId": cos_obj.get("id"),
-                    "setId": cos_obj.get("setName") or cos_obj.get("setId"),
-                    "name": nm,
-                    "imageUrl": cos_obj.get("imageUrl") or cos_obj.get("previewUrl") or "",
-                    "title": nm,
-                    "subtitle": cos_label,
-                }
-                drops.append(c_item)
-                cosmetic_drops.append(c_item)
+            s_set = c_src.get("soloSetReward")
+            if isinstance(s_set, dict):
+                _push_cosmetic(cls._build_cosmetic_drop(s_set, str(s_set.get("kind") or s_set.get("type") or "tattoo").lower()))
+
+            for key_name, default_kind in (
+                ("tattoo", "tattoo"), ("tattoos", "tattoo"), ("newTattoos", "tattoo"),
+                ("tattooId", "tattoo"), ("tattooIds", "tattoo"),
+                ("clothing", "clothing"), ("clothes", "clothing"), ("cloth", "clothing"),
+                ("newClothes", "clothing"), ("clothingId", "clothing"), ("clothingIds", "clothing"),
+                ("room", "room"), ("rooms", "room"), ("newRooms", "room"),
+                ("camera", "room"), ("cameras", "room"), ("cameraId", "room"), ("roomId", "room"),
+            ):
+                raw_cos = c_src.get(key_name)
+                if not raw_cos:
+                    continue
+                cos_list = raw_cos if isinstance(raw_cos, list) else [raw_cos]
+                for entry in cos_list:
+                    _push_cosmetic(cls._build_cosmetic_drop(entry, default_kind))
+
+            for list_key in ("rewards", "items", "drops", "droppedItems", "newItems"):
+                raw_items = c_src.get(list_key)
+                if not isinstance(raw_items, list):
+                    continue
+                for entry in raw_items:
+                    if not isinstance(entry, dict):
+                        continue
+                    e_type = str(entry.get("type") or entry.get("kind") or "").lower()
+                    if e_type in ("tattoo", "tattoo_set", "clothing", "clothing_set", "cloth", "wear", "room", "camera", "chamber"):
+                        _push_cosmetic(cls._build_cosmetic_drop(entry, e_type))
+                    elif entry.get("tattooId") is not None:
+                        _push_cosmetic(cls._build_cosmetic_drop(entry, "tattoo"))
+                    elif entry.get("clothingId") is not None:
+                        _push_cosmetic(cls._build_cosmetic_drop(entry, "clothing"))
+                    elif entry.get("cameraId") is not None or entry.get("roomId") is not None:
+                        _push_cosmetic(cls._build_cosmetic_drop(entry, "room"))
 
         # Ключи за победу
         keys_won = payload.get("keys") or (raw_rewards.get("keys") if isinstance(raw_rewards, dict) else None)

@@ -1,4 +1,4 @@
-const ASSET_CACHE_NAME = "prisonbot-assets-v24";
+const ASSET_CACHE_NAME = "prisonbot-assets-v26";
 
 function isImmutableAssetRequest(url) {
   const path = url.pathname || "";

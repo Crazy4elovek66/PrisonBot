@@ -214,3 +214,37 @@ def test_parse_boss_claim_nested_global_reward_and_damage_bonuses():
     assert "Папиросы +150" in inline
     assert "Рубли +15" in inline
     assert "получены" not in inline
+
+
+
+def test_parse_boss_claim_resolves_tattoo_clothing_room_and_tg_lines():
+    """
+    DropParser.parse_boss_claim корректно резолвит наколки (по tattooId из cache),
+    шмот (clothingId) и хату (camera/room), а также включает их в строки Telegram.
+    """
+    from core.drop_parser import DropParser
+
+    payload = {
+        "success": True,
+        "rewards": {
+            "cigarettes": 500,
+            "authority": 250,
+            "tattoos": [{"tattooId": 181}],
+            "clothes": [{"clothingId": 73}],
+            "camera": {"id": 33, "name": "Уютная"},
+        },
+    }
+    parsed = DropParser.parse_boss_claim(payload, boss_name="Лютый", mode="avtoritetny")
+    kinds = {d.get("kind") for d in parsed["drops"]}
+    assert {"tattoo", "clothing", "room"}.issubset(kinds)
+
+    tattoo_drop = next(d for d in parsed["drops"] if d["kind"] == "tattoo")
+    assert "Гладиатор" in (tattoo_drop.get("set_name") or "") or "Гладиатор" in tattoo_drop["title"]
+
+    room_drop = next(d for d in parsed["drops"] if d["kind"] == "room")
+    assert "Уютная" in room_drop["title"]
+
+    lines_text = "\n".join(DropParser.format_boss_rewards_lines(parsed))
+    assert "Гладиатор" in lines_text
+    assert "Тапки" in lines_text
+    assert "Уютная" in lines_text

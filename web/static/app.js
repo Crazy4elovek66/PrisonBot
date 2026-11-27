@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_03";
+const ASSET_VERSION = "20261127_05";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -693,6 +693,15 @@ function applyStateData(data) {
   if (data.katala_guard && data.katala_guard.rubles_guard_tripped) {
     renderKatalaFreeStatus({ success: true, guard_tripped: true, free_available: false });
   }
+  if (data.parcels_progress && typeof renderParcelsProgress === "function") {
+    renderParcelsProgress(data.parcels_progress);
+  }
+  if (data.resource_deltas && typeof renderResourceDeltas === "function") {
+    renderResourceDeltas(data.resource_deltas, data.snapshot || null);
+  }
+  if (data.snapshot && data.snapshot.stew !== undefined) {
+    setTextIfChanged(document.getElementById("cur-stew"), formatNum(data.snapshot.stew));
+  }
   if (data.game_resources && typeof renderHomeGameResources === "function") {
     renderHomeGameResources(data.game_resources);
     if (typeof renderRoutineGameBadges === "function") {
@@ -1087,6 +1096,12 @@ function renderProfileData(data) {
   setTextIfChanged(document.getElementById("cur-rubles"), formatNum(cur.rubles));
   setTextIfChanged(document.getElementById("cur-paper"), formatNum(cur.paper));
   setTextIfChanged(document.getElementById("cur-soap"), formatNum(cur.soap));
+  if (cur.stew !== undefined) {
+    setTextIfChanged(document.getElementById("cur-stew"), formatNum(cur.stew));
+  }
+  if (data.parcels_progress && typeof renderParcelsProgress === "function") {
+    renderParcelsProgress(data.parcels_progress);
+  }
   renderResourceDeltas(data.resource_deltas, cur);
 
   setTextIfChanged(document.getElementById("inv-poison-count"), `${wep.poisonCount || 0} шт.`);
@@ -1116,8 +1131,26 @@ function formatResourceDelta(value) {
   return { text: "0", cls: "is-zero" };
 }
 
+function renderParcelsProgress(parcels) {
+  if (!parcels || typeof parcels !== "object") return;
+  if (parcels.stew_count !== undefined && parcels.stew_count !== null) {
+    setTextIfChanged(document.getElementById("cur-stew"), formatNum(parcels.stew_count));
+  }
+  const aCur = Math.max(0, Number(parcels.achievements_current || 0));
+  const aTgt = Math.max(1, Number(parcels.achievements_target || 50));
+  const aPct = Math.min(100, Math.round((aCur / aTgt) * 100));
+  setTextIfChanged(document.getElementById("home-achiev-progress-text"), `${aCur} / ${aTgt}`);
+  setWidthIfChanged(document.getElementById("home-achiev-progress-fill"), `${aPct}%`);
+
+  const pCur = Math.max(0, Number(parcels.guaranteed_item_current || 0));
+  const pTgt = Math.max(1, Number(parcels.guaranteed_item_target || 20));
+  const pPct = Math.min(100, Math.round((pCur / pTgt) * 100));
+  setTextIfChanged(document.getElementById("home-parcel-pity-text"), `${pCur} / ${pTgt}`);
+  setWidthIfChanged(document.getElementById("home-parcel-pity-fill"), `${pPct}%`);
+}
+
 function renderResourceDeltas(resourceDeltas, currentCurrencies = null) {
-  const keys = ["cigarettes", "sugar", "rubles", "paper", "soap"];
+  const keys = ["cigarettes", "sugar", "rubles", "paper", "soap", "stew"];
   const deltas = (resourceDeltas && resourceDeltas.deltas) || {};
   const baseline = (resourceDeltas && resourceDeltas.baseline) || {};
   const capturedAt = resourceDeltas && resourceDeltas.captured_at ? formatMoscowTime(resourceDeltas.captured_at) : "";
@@ -1957,6 +1990,7 @@ async function loadNotifications(category = "all") {
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;">
             ${rawDrops.map((d, idx) => {
           const dropKind = String(d.kind || d.type || "").toLowerCase();
+          const isRare = ["tattoo", "clothing", "complect", "room", "camera"].includes(dropKind);
           const isCosmetic = ["tattoo", "clothing", "complect"].includes(dropKind)
             && Boolean(d.itemId || d.setId);
           if (isCosmetic) {
@@ -1964,9 +1998,9 @@ async function loadNotifications(category = "all") {
           }
           const iconHtml = getDropIconHtml(d);
           return `
-                <span class="drop-pill ${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
-                  <span style="display:inline-flex;align-items:center;gap:4px;">${iconHtml} ${d.title || d.name || 'Дроп'}</span>
-                  ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.8;">(${d.subtitle})</span>` : ''}
+                <span class="drop-pill ${isRare ? 'drop-pill-rare ' : ''}${isCosmetic ? 'drop-pill-clickable' : ''}" ${isCosmetic ? `data-drop-idx="${idx}" title="Нажмите для примерки"` : ''}>
+                  <span style="display:inline-flex;align-items:center;gap:4px;">${iconHtml} ${escapeHtml(d.title || d.name || 'Дроп')}</span>
+                  ${d.subtitle ? `<span style="font-size: 9px; opacity: 0.85;">(${escapeHtml(d.subtitle)})</span>` : ''}
                 </span>
               `;
         }).join("")}

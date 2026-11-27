@@ -3300,3 +3300,53 @@ async def test_catalogs_gladiator_full_bonus_and_owned_count(web_setup):
         bot_context.player_api = orig_player
         bot_context.boss_api = orig_boss
         bot_context.prison_api = orig_prison
+
+
+
+@pytest.mark.asyncio
+async def test_stew_daily_delta_and_parcels_progress_in_state(web_setup):
+    """
+    Проверка подсчёта суточной дельты тушенки (stew: 0 -> 2 -> 1) и отдачи
+    parcels_progress (достижения X/50, гарант вещи X/20) через /api/v1/state.
+    """
+    from datetime import datetime
+    from core.config import MSK_TZ
+    from core.database import compute_daily_resource_deltas
+    from core.state_hub import state_hub
+    from client.api.player import PlayerAPI
+    from web.routes import _hub_source_tag
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    now_msk = datetime(2026, 11, 27, 15, 0, tzinfo=MSK_TZ)
+    base_res = {"cigarettes": 100, "sugar": 50, "rubles": 10, "paper": 5, "soap": 2, "stew": 0}
+    d0 = await compute_daily_resource_deltas(base_res, now_msk=now_msk, engine=engine)
+    assert d0["deltas"]["stew"] == 0
+
+    d1 = await compute_daily_resource_deltas({**base_res, "stew": 2}, now_msk=now_msk, engine=engine)
+    assert d1["deltas"]["stew"] == 2
+
+    d2 = await compute_daily_resource_deltas({**base_res, "stew": 1}, now_msk=now_msk, engine=engine)
+    assert d2["deltas"]["stew"] == 1
+
+    parsed_p = PlayerAPI.parse_parcels_progress({
+        "success": True,
+        "stewBalance": 1,
+        "progress": {"current": 3, "step": 50},
+        "clothingProgress": {"opensSinceClothing": 6, "pityOpenings": 20},
+    })
+    assert parsed_p == {
+        "stew_count": 1,
+        "achievements_current": 3,
+        "achievements_target": 50,
+        "guaranteed_item_current": 6,
+        "guaranteed_item_target": 20,
+    }
+    state_hub.update_slice(1, "parcels_progress", parsed_p, source_tag=_hub_source_tag())
+
+    r = await client.get("/api/v1/state", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["parcels_progress"]["achievements_current"] == 3
+    assert body["parcels_progress"]["guaranteed_item_current"] == 6

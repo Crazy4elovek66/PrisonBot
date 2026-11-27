@@ -1936,6 +1936,72 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 /* ==========================================================================
    BOSS MENU MODAL & QUEUE
    ========================================================================== */
+.drop-pill-rare {
+  border-color: rgba(234, 179, 8, 0.55) !important;
+  background: rgba(234, 179, 8, 0.14) !important;
+  color: #fef08a !important;
+  font-weight: 600;
+}
+
+.parcels-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.parcel-progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.parcel-progress-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.parcel-progress-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.parcel-progress-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #fbbf24;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.parcel-progress-bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.parcel-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.35s ease;
+}
+
+.parcel-progress-fill.achiev-fill {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+}
+
+.parcel-progress-fill.pity-fill {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
 .boss-modal-card {
   max-width: 520px;
   width: 100%;

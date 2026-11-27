@@ -53,6 +53,7 @@ class SchedulerController:
         self.health_monitor = server_health_monitor
         self.account_id = getattr(routine_worker, "account_id", 1)
         self._boss_fast_mode = False
+        self._battle_watcher_task: Optional[asyncio.Task] = None
         self._immediate_boss_task: Optional[asyncio.Task] = None
         self._immediate_prison_task: Optional[asyncio.Task] = None
         self._immediate_routine_task: Optional[asyncio.Task] = None
@@ -117,9 +118,11 @@ class SchedulerController:
             pass
 
     def set_boss_fast_mode(self, active: bool) -> None:
-        """Переключает интервал проверки боссов (12с в бою / 60с в простое)."""
+        """Переключает интервал проверки боссов (адаптивный BattleWatcher в бою / 60с в простое)."""
         target_fast = bool(active)
         if target_fast == self._boss_fast_mode:
+            if target_fast and (self._battle_watcher_task is None or self._battle_watcher_task.done()):
+                self._start_battle_watcher()
             return
         self._boss_fast_mode = target_fast
         interval_sec = self.BOSS_FAST_INTERVAL_SEC if target_fast else self.BOSS_IDLE_INTERVAL_SEC
@@ -131,6 +134,73 @@ class SchedulerController:
                 logger.info("BossWorker переключен в %s режим (%sс).", "быстрый" if target_fast else "фоновый", interval_sec)
         except Exception as e:
             logger.debug("Не удалось изменить интервал BossWorker: %s", e)
+
+        if target_fast:
+            self._start_battle_watcher()
+        else:
+            self._stop_battle_watcher()
+
+    def _start_battle_watcher(self) -> None:
+        if not self.boss_worker:
+            return
+        if self._battle_watcher_task is not None and not self._battle_watcher_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._battle_watcher_task = loop.create_task(self._battle_watcher_loop())
+        except RuntimeError:
+            pass
+
+    def _stop_battle_watcher(self) -> None:
+        if self._battle_watcher_task is not None and not self._battle_watcher_task.done():
+            self._battle_watcher_task.cancel()
+        self._battle_watcher_task = None
+
+    async def _battle_watcher_loop(self) -> None:
+        from workers.boss_worker import compute_adaptive_battle_poll_interval
+
+        last_logged_interval: Optional[float] = None
+        try:
+            while self._boss_fast_mode and self.boss_worker:
+                cur_hp = None
+                max_hp = None
+                boss_entry = self.state_hub.get_slice(self.account_id, "boss")
+                if boss_entry and isinstance(boss_entry.data, dict):
+                    sess = boss_entry.data.get("session") or {}
+                    if isinstance(sess, dict):
+                        cur_hp = sess.get("currentHp")
+                        max_hp = sess.get("maxHp")
+
+                degraded = bool(
+                    self.health_monitor.is_maintenance
+                    or getattr(self.health_monitor, "consecutive_failures", 0) > 0
+                )
+                interval = compute_adaptive_battle_poll_interval(cur_hp, max_hp, server_degraded=degraded)
+                if last_logged_interval != interval:
+                    logger.info(
+                        "BattleWatcher: адаптивный интервал %.1fс (hp=%s/%s, degraded=%s).",
+                        interval,
+                        cur_hp,
+                        max_hp,
+                        degraded,
+                    )
+                    last_logged_interval = interval
+
+                await asyncio.sleep(interval)
+                if not self._boss_fast_mode or not self.boss_worker:
+                    break
+
+                tick = await self.boss_worker.watch_active_battle_tick()
+                if tick.get("needs_action"):
+                    await self.boss_worker.run_cycle()
+                    await self.refresh_tier1()
+                elif not tick.get("active"):
+                    self.set_boss_fast_mode(False)
+                    break
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("BattleWatcher завершился с ошибкой: %s", e)
 
     def reschedule_prison_in(self, wait_seconds: float) -> None:
         """Планирует следующее пробуждение PrisonWorker точно к моменту накопления энергии на 1 этап."""

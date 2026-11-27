@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v24" in sw
+    assert "prisonbot-assets-v26" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_03";' in js
+    assert 'const ASSET_VERSION = "20261127_05";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_03" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_05" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_03"',
-        'src="assets/icons/room_reward.webp?v=20261127_03"',
-        'src="assets/icons/complect.webp?v=20261127_03"',
-        'src="assets/icons/podogrev.webp?v=20261127_03"',
-        'src="assets/icons/authority.webp?v=20261127_03"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_03"',
+        'src="assets/icons/boss.webp?v=20261127_05"',
+        'src="assets/icons/room_reward.webp?v=20261127_05"',
+        'src="assets/icons/complect.webp?v=20261127_05"',
+        'src="assets/icons/podogrev.webp?v=20261127_05"',
+        'src="assets/icons/authority.webp?v=20261127_05"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_05"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1270,3 +1270,85 @@ console.log('JS_RUNTIME_SMOKE_OK');
     proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, encoding="utf-8", check=False)
     assert proc.returncode == 0, f"Node smoke failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
     assert "JS_RUNTIME_SMOKE_OK" in proc.stdout
+
+
+
+def test_home_stew_and_parcels_progress_runtime_node():
+    """
+    JS runtime smoke-тест: проверка отображения тушенки с дельтой (+1),
+    прогресс-баров достижений (3 / 50) и гаранта посылки (6 / 20) на главной.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    js_path = (root / "web" / "static" / "app.js").as_posix()
+
+    node_script = f"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeEl(id) {{
+  return {{
+    id, style: {{}}, className: '', textContent: '', title: '', innerHTML: '',
+    classList: {{ toggle: () => {{}}, add: () => {{}}, remove: () => {{}} }},
+    addEventListener: () => {{}},
+  }};
+}}
+const ids = [
+  'cur-cigs', 'cur-sugar', 'cur-rubles', 'cur-paper', 'cur-soap', 'cur-stew',
+  'res-cigarettes-delta', 'res-sugar-delta', 'res-rubles-delta', 'res-paper-delta', 'res-soap-delta', 'res-stew-delta',
+  'home-achiev-progress-text', 'home-achiev-progress-fill',
+  'home-parcel-pity-text', 'home-parcel-pity-fill',
+];
+const els = Object.fromEntries(ids.map(i => [i, makeEl(i)]));
+const sandbox = {{
+  console, Map, Set, Array, Object, Number, String, Boolean, JSON, Math, Promise, Date, RegExp, Error,
+  setTimeout: () => 0, clearTimeout: () => {{}}, setInterval: () => 0, clearInterval: () => {{}},
+  localStorage: {{ getItem: () => null, setItem: () => {{}} }},
+  navigator: {{}}, location: {{ search: '', hostname: 'localhost' }},
+  Telegram: {{ WebApp: {{ ready: () => {{}}, expand: () => {{}} }} }},
+  addEventListener: () => {{}}, removeEventListener: () => {{}},
+  document: {{ getElementById: (id) => els[id] || null, querySelector: () => null, querySelectorAll: () => [], createElement: () => makeEl('x'), addEventListener: () => {{}} }},
+  fetch: async () => ({{ ok: true, status: 200, json: async () => ({{}}) }}),
+}};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync({json.dumps(js_path)}, 'utf8'), sandbox);
+
+vm.runInContext(`
+  applyStateData({{
+    success: true,
+    config: {{}},
+    snapshot: {{ cigarettes: 100, sugar: 50, rubles: 10, paper: 5, soap: 2, stew: 1 }},
+    resource_deltas: {{ deltas: {{ cigarettes: 10, sugar: 0, rubles: 0, paper: 0, soap: 0, stew: 1 }}, baseline: {{ stew: 0 }} }},
+    parcels_progress: {{ stew_count: 1, achievements_current: 3, achievements_target: 50, guaranteed_item_current: 6, guaranteed_item_target: 20 }},
+    counts: {{}}
+  }});
+`, sandbox);
+
+if (els['cur-stew'].textContent !== '1') throw new Error('bad cur-stew: ' + els['cur-stew'].textContent);
+if (els['res-stew-delta'].textContent !== '+1') throw new Error('bad stew delta: ' + els['res-stew-delta'].textContent);
+if (els['home-achiev-progress-text'].textContent !== '3 / 50') throw new Error('bad achiev text: ' + els['home-achiev-progress-text'].textContent);
+if (els['home-achiev-progress-fill'].style.width !== '6%') throw new Error('bad achiev width: ' + els['home-achiev-progress-fill'].style.width);
+if (els['home-parcel-pity-text'].textContent !== '6 / 20') throw new Error('bad pity text: ' + els['home-parcel-pity-text'].textContent);
+if (els['home-parcel-pity-fill'].style.width !== '30%') throw new Error('bad pity width: ' + els['home-parcel-pity-fill'].style.width);
+console.log('HOME_STEW_PARCELS_SMOKE_OK');
+"""
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert proc.returncode == 0, f"Node smoke failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+    assert "HOME_STEW_PARCELS_SMOKE_OK" in proc.stdout
+
+    # Проверка HTML-контракта #home-parcels-card:
+    # слева achievement.png и parcel_cloth.webp, справа в счетчиках нет <img>
+    import re
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    card_m = re.search(r'<div class="card" id="home-parcels-card">.*?<!-- Weapons Inventory Card -->', html, re.S)
+    assert card_m is not None
+    card_html = card_m.group(0)
+    assert re.search(r'achievement\.png[^>]*>\s*Достижения \(до \+1 тушенки\)', card_html)
+    assert re.search(r'parcel_cloth\.webp[^>]*>\s*До гарантированной вещи', card_html)
+    assert not re.search(r'stew\.webp[^>]*>\s*До гарантированной вещи', card_html)
+    for val_block in re.findall(r'<span class="parcel-progress-val">(.*?)</span>\s*</div>', card_html, re.S):
+        assert "<img" not in val_block

@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     BUSINESS_COLLECT_MIN_MINUTES: int = 480
     BOSS_INTERVAL_MINUTES: int = 10
     BOSS_ALLOW_PAID_WEAPONS: bool = False
+    BOSS_ACTIVE_POLL_FAST_SEC: float = 2.0
+    BOSS_ACTIVE_POLL_NORMAL_SEC: float = 4.0
+    BOSS_ACTIVE_POLL_HEAVY_SEC: float = 8.0
+    BOSS_ACTIVE_POLL_DEGRADED_MULTIPLIER: float = 2.5
+    BOSS_ACTIVE_POLL_MIN_SEC: float = 1.5
 
     # Prison & Energy Settings
     PRISON_INTERVAL_MINUTES: int = 3

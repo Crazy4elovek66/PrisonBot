@@ -268,11 +268,16 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
                     rubles INTEGER NOT NULL,
                     paper INTEGER NOT NULL,
                     soap INTEGER NOT NULL,
+                    stew INTEGER NOT NULL DEFAULT 0,
                     captured_at TEXT NOT NULL
                 );
                 """
             )
         )
+        res_cols = await conn.execute(text("PRAGMA table_info(daily_resource_snapshots)"))
+        existing_snapshot_cols = {row[1] for row in res_cols.fetchall()}
+        if "stew" not in existing_snapshot_cols:
+            await conn.execute(text("ALTER TABLE daily_resource_snapshots ADD COLUMN stew INTEGER NOT NULL DEFAULT 0"))
 
 
 @asynccontextmanager
@@ -439,18 +444,23 @@ async def prune_old_notifications(engine: Optional[AsyncEngine] = None, days: in
         return int(res.rowcount or 0)
 
 
-_DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap")
+_DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap", "stew")
+_REQUIRED_DAILY_RESOURCE_KEYS = ("cigarettes", "sugar", "rubles", "paper", "soap")
 _last_known_resources: Optional[dict] = None
 
 
 def _validate_daily_resources(resources: object) -> Optional[dict]:
-    """Проверяет, что словарь ресурсов содержит все 5 целевых ключей с целыми значениями >= 0."""
+    """Проверяет, что словарь ресурсов содержит базовые ключи с целыми значениями >= 0 (stew опционален)."""
     if not isinstance(resources, dict):
         return None
     out = {}
     for k in _DAILY_RESOURCE_KEYS:
         raw = resources.get(k)
-        if raw is None or isinstance(raw, bool):
+        if raw is None:
+            if k in _REQUIRED_DAILY_RESOURCE_KEYS:
+                return None
+            raw = 0
+        if isinstance(raw, bool):
             return None
         try:
             val = int(raw)
@@ -470,7 +480,7 @@ async def get_daily_resource_baseline(
     async with get_session(engine) as session:
         res = await session.execute(
             text(
-                "SELECT day_msk, cigarettes, sugar, rubles, paper, soap, captured_at "
+                "SELECT day_msk, cigarettes, sugar, rubles, paper, soap, stew, captured_at "
                 "FROM daily_resource_snapshots WHERE day_msk = :day_msk"
             ),
             {"day_msk": day_msk},
@@ -485,7 +495,8 @@ async def get_daily_resource_baseline(
             "rubles": int(row[3]),
             "paper": int(row[4]),
             "soap": int(row[5]),
-            "captured_at": str(row[6]),
+            "stew": int(row[6] or 0),
+            "captured_at": str(row[7]),
         }
 
 
@@ -515,8 +526,8 @@ async def ensure_daily_resource_baseline(
         await session.execute(
             text(
                 "INSERT OR IGNORE INTO daily_resource_snapshots "
-                "(day_msk, cigarettes, sugar, rubles, paper, soap, captured_at) "
-                "VALUES (:day_msk, :cigarettes, :sugar, :rubles, :paper, :soap, :captured_at)"
+                "(day_msk, cigarettes, sugar, rubles, paper, soap, stew, captured_at) "
+                "VALUES (:day_msk, :cigarettes, :sugar, :rubles, :paper, :soap, :stew, :captured_at)"
             ),
             {
                 "day_msk": day_msk,
@@ -525,6 +536,7 @@ async def ensure_daily_resource_baseline(
                 "rubles": valid["rubles"],
                 "paper": valid["paper"],
                 "soap": valid["soap"],
+                "stew": valid["stew"],
                 "captured_at": cap_ts,
             },
         )
@@ -570,8 +582,9 @@ async def compute_daily_resource_deltas(
     if not baseline_row:
         return None
 
-    baseline = {k: int(baseline_row[k]) for k in _DAILY_RESOURCE_KEYS}
-    deltas = {k: int(valid[k]) - baseline[k] for k in _DAILY_RESOURCE_KEYS}
+    out_keys = _DAILY_RESOURCE_KEYS if (isinstance(current_resources, dict) and "stew" in current_resources) else _REQUIRED_DAILY_RESOURCE_KEYS
+    baseline = {k: int(baseline_row[k]) for k in out_keys}
+    deltas = {k: int(valid[k]) - baseline[k] for k in out_keys}
     return {
         "day_msk": day_msk,
         "captured_at": baseline_row["captured_at"],

@@ -3288,3 +3288,43 @@ async def test_boss_availability_all_categories_and_no_false_lock_when_defeated(
     assert by_id3[10]["isLocked"] is False
     assert by_id3[10]["canAttack"] is True
     assert by_id3[11]["isLocked"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_adaptive_battle_poll_interval_and_watcher_tick():
+    """
+    Проверка адаптивного интервала активного боя (fast/normal/heavy/degraded)
+    и легковесного watch_active_battle_tick без тяжелых запросов и с обновлением StateHub.
+    """
+    from unittest.mock import AsyncMock
+    from workers.boss_worker import compute_adaptive_battle_poll_interval
+    from core.state_hub import state_hub
+
+    assert compute_adaptive_battle_poll_interval(1000, 1000, False) == 2.0
+    assert compute_adaptive_battle_poll_interval(150_000, 1_000_000, False) == 2.0
+    assert compute_adaptive_battle_poll_interval(500_000, 1_000_000, False) == 4.0
+    assert compute_adaptive_battle_poll_interval(5_000_000, 10_000_000, False) == 8.0
+    assert compute_adaptive_battle_poll_interval(1000, 1000, True) == 5.0
+
+    state_hub.clear(1)
+    state_hub.update_slice(1, "boss", {"state": "active", "session": {"bossId": 1, "currentHp": 1000, "maxHp": 1000}})
+
+    boss_api = AsyncMock()
+    boss_api.get_bootstrap.return_value = {
+        "state": "active",
+        "session": {"bossId": 1, "currentHp": 450, "maxHp": 1000, "personalDamage": 550},
+    }
+    import time as _time
+    bw = BossWorker(account_id=1, boss_api=boss_api, state_hub=state_hub, enable_jitter=False)
+    bw.melee_ready_at = {"punchChest": _time.time() + 1000.0}
+    tick = await bw.watch_active_battle_tick()
+    assert tick["active"] is True
+    assert tick["current_hp"] == 450
+    assert tick["needs_action"] is False
+    boss_api.get_all_bosses.assert_not_called()
+    assert state_hub.get_slice(1, "boss").data["session"]["currentHp"] == 450
+
+    boss_api.get_bootstrap.return_value = {"state": "reward", "session": {"bossId": 1, "currentHp": 0}}
+    tick_done = await bw.watch_active_battle_tick()
+    assert tick_done["needs_action"] is True

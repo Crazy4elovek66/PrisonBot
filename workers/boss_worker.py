@@ -58,6 +58,44 @@ def _normalize_boss_mode(mode: Optional[str]) -> Optional[str]:
     return MODE_ALIASES.get(m, m)
 
 
+def compute_adaptive_battle_poll_interval(
+    current_hp: Optional[int],
+    max_hp: Optional[int],
+    server_degraded: bool = False,
+) -> float:
+    """
+    Вычисляет адаптивный интервал опроса активного боя с боссом:
+    - быстрый (2.0с) при малом HP или в фазе добивания (<= 20%);
+    - умеренный (4.0с) для средних боссов (<= 1_000_000 HP);
+    - редкий (8.0с) для жирных боссов (> 1_000_000 HP);
+    - с backoff-множителем при деградации игрового сервера.
+    """
+    from core.config import settings
+
+    fast_sec = float(getattr(settings, "BOSS_ACTIVE_POLL_FAST_SEC", 2.0))
+    normal_sec = float(getattr(settings, "BOSS_ACTIVE_POLL_NORMAL_SEC", 4.0))
+    heavy_sec = float(getattr(settings, "BOSS_ACTIVE_POLL_HEAVY_SEC", 8.0))
+    degraded_mult = float(getattr(settings, "BOSS_ACTIVE_POLL_DEGRADED_MULTIPLIER", 2.5))
+    min_sec = float(getattr(settings, "BOSS_ACTIVE_POLL_MIN_SEC", 1.5))
+
+    cur = int(current_hp) if current_hp is not None else None
+    mx = int(max_hp) if max_hp is not None else None
+
+    if (cur is not None and cur <= 50_000) or (mx is not None and mx <= 100_000):
+        base = fast_sec
+    elif cur is not None and mx is not None and mx > 0 and (cur / mx) <= 0.20:
+        base = fast_sec
+    elif mx is not None and mx <= 1_000_000:
+        base = normal_sec
+    else:
+        base = heavy_sec
+
+    if server_degraded:
+        base *= degraded_mult
+
+    return max(min_sec, round(base, 2))
+
+
 def resolve_catalog_boss_max_hp(
     boss_id: Optional[int] = None,
     boss_name: Optional[str] = None,
@@ -409,6 +447,66 @@ class BossWorker:
         if not self.db_engine:
             return None
         return await get_or_create_config(self.account_id, self.db_engine)
+
+    async def watch_active_battle_tick(self) -> Dict[str, Any]:
+        """
+        Легковесный тик мониторинга активного боя (под общим _cycle_lock):
+        делает только быстрый GET /api/boss/bootstrap без тяжелых каталогов,
+        обновляет HP/урон в StateHub и сигнализирует планировщику, если нужно действие
+        (готовый удар, победа/сбор награды или поражение).
+        """
+        if self._cycle_lock.locked():
+            return {"active": True, "needs_action": False, "skipped": "locked"}
+
+        async with self._cycle_lock:
+            if server_health_monitor.is_maintenance:
+                return {"active": True, "needs_action": False, "skipped": "maintenance"}
+            try:
+                bootstrap = await self._fetch_bootstrap_ready()
+            except GameMaintenanceError:
+                return {"active": True, "needs_action": False, "skipped": "maintenance"}
+            except Exception as e:
+                logger.debug(f"BattleWatcher tick bootstrap error: {e}")
+                return {"active": True, "needs_action": False, "error": str(e)}
+
+            state, battle = self._extract_battle(bootstrap)
+            cur_hp = battle.get("currentHp") if isinstance(battle, dict) else None
+            max_hp = battle.get("maxHp") if isinstance(battle, dict) else None
+
+            if state in ("reward", "reward_processing", "defeat", "lost", "timeout", "failed"):
+                return {"active": True, "needs_action": True, "current_hp": cur_hp, "max_hp": max_hp}
+
+            if state in ("active", "in_progress") and isinstance(battle, dict):
+                if cur_hp is not None and int(cur_hp) <= 0:
+                    return {"active": True, "needs_action": True, "current_hp": 0, "max_hp": max_hp}
+
+                if self.state_hub:
+                    boss_entry = self.state_hub.get_slice(self.account_id, "boss")
+                    if boss_entry and isinstance(boss_entry.data, dict):
+                        patched = dict(boss_entry.data)
+                        sess = dict(patched.get("session") or {})
+                        sess.update({
+                            "currentHp": cur_hp,
+                            "maxHp": max_hp or sess.get("maxHp"),
+                            "personalDamage": battle.get("personalDamage", sess.get("personalDamage")),
+                            "endsAt": battle.get("endsAt", sess.get("endsAt")),
+                        })
+                        patched["session"] = sess
+                        patched["state"] = state
+                        self.state_hub.update_slice(self.account_id, "boss", patched)
+
+                await self._save_live_battle_snapshot(battle)
+
+                now_ts = datetime.now(timezone.utc).timestamp()
+                melee_ready = any(now_ts >= float(ts) for ts in self.melee_ready_at.values())
+                return {
+                    "active": True,
+                    "needs_action": melee_ready,
+                    "current_hp": cur_hp,
+                    "max_hp": max_hp,
+                }
+
+            return {"active": False, "needs_action": False}
 
     async def _fetch_bootstrap_ready(self) -> Dict[str, Any]:
         """Получает bootstrap; при промежуточном статусе 'reward_processing' ждёт и повторяет запрос."""
@@ -1337,12 +1435,18 @@ class BossWorker:
                 try:
                     from core.state_hub import state_hub
                     ev_type = "boss_finished" if outcome == "victory" else "boss_claimed"
+                    extra = ["profile", "talents", "notifications"]
+                    if isinstance(parsed, dict) and any(
+                        str(d.get("kind") or d.get("type") or "").lower() in ("tattoo", "clothing", "room", "complect")
+                        for d in (parsed.get("drops") or [])
+                    ):
+                        extra.append("wardrobe")
                     state_hub.notify_mutation(
                         self.account_id,
                         ev_type,
                         payload={"boss": {"outcome": outcome}},
                         reason=f"boss_{outcome}",
-                        extra_domains=["profile", "talents", "notifications"],
+                        extra_domains=extra,
                     )
                 except Exception:
                     pass

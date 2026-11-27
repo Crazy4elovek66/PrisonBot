@@ -127,6 +127,31 @@ class PlayerAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_stew_status(self, rebuild: bool = False) -> Dict[str, Any]:
+        """Получение баланса тушенки, прогресса достижений и гаранта посылок."""
+        flag = "true" if rebuild else "false"
+        resp = await self.http.get(f"/api/achievement/stew/status?rebuild={flag}")
+        resp.raise_for_status()
+        return resp.json()
+
+    @staticmethod
+    def parse_parcels_progress(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+        """Нормализует ответ /api/achievement/stew/status в единый объект parcels_progress."""
+        if not isinstance(raw, dict):
+            return None
+        prog = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+        cp = raw.get("clothingProgress") if isinstance(raw.get("clothingProgress"), dict) else {}
+        stew_val = raw.get("stewBalance") if raw.get("stewBalance") is not None else raw.get("stew")
+        if stew_val is None and not prog and not cp:
+            return None
+        return {
+            "stew_count": max(0, int(stew_val or 0)),
+            "achievements_current": max(0, int(prog.get("current") or 0)),
+            "achievements_target": max(1, int(prog.get("step") or 50)),
+            "guaranteed_item_current": max(0, int(cp.get("opensSinceClothing") or 0)),
+            "guaranteed_item_target": max(1, int(cp.get("pityOpenings") or 20)),
+        }
+
     async def upgrade_talent(self, talent_id: int) -> Dict[str, Any]:
         """Прокачка таланта."""
         resp = await self.http.post("/api/talent/upgrade", json={"talentId": talent_id})

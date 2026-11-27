@@ -598,11 +598,27 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
     katala_guard["played_today_msk"] = bool(katala_guard.get("last_free_day_msk") == today_msk)
     scheduler_status = "paused" if bot_context.is_paused() else "active"
 
+    parcels_entry = hub.get_slice(account_id, "parcels_progress", max_age_seconds=90.0, source_tag=tag)
+    parcels_progress = parcels_entry.data if parcels_entry else None
+    if parcels_progress is None and getattr(bot_context, "player_api", None) is not None and hasattr(bot_context.player_api, "get_stew_status"):
+        try:
+            from client.api.player import PlayerAPI
+            stew_raw = await bot_context.player_api.get_stew_status()
+            parcels_progress = PlayerAPI.parse_parcels_progress(stew_raw)
+            if parcels_progress is not None:
+                hub.update_slice(account_id, "parcels_progress", parcels_progress, source_tag=tag)
+        except Exception as st_err:
+            logger.debug("get_stew_status in get_state failed: %s", st_err)
+
     resource_deltas = None
     if snap_data and int(snap_data.get("level") or 0) > 0:
         try:
             from core.database import compute_daily_resource_deltas
-            resource_deltas = await compute_daily_resource_deltas(snap_data, engine=engine)
+            delta_input = dict(snap_data)
+            if isinstance(parcels_progress, dict) and "stew_count" in parcels_progress:
+                delta_input["stew"] = parcels_progress["stew_count"]
+                snap_data["stew"] = parcels_progress["stew_count"]
+            resource_deltas = await compute_daily_resource_deltas(delta_input, engine=engine)
         except Exception as rd_err:
             logger.debug("compute_daily_resource_deltas in get_state failed: %s", rd_err)
 
@@ -613,6 +629,7 @@ async def get_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str
         "success": True,
         "snapshot": snap_data,
         "resource_deltas": resource_deltas,
+        "parcels_progress": parcels_progress,
         "game_resources": game_res_entry.data if game_res_entry else None,
         "domain_revisions": sync_meta["domain_revisions"],
         "sync_meta": sync_meta,
@@ -1416,12 +1433,29 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
     from workers.routine_worker import get_toilet_paper_reset_info
     tp_info = get_toilet_paper_reset_info(can_claim_paper)
 
+    parcels_progress = None
+    if getattr(bot_context, "player_api", None) is not None and hasattr(bot_context.player_api, "get_stew_status"):
+        try:
+            from client.api.player import PlayerAPI
+            stew_raw = await bot_context.player_api.get_stew_status()
+            parcels_progress = PlayerAPI.parse_parcels_progress(stew_raw)
+            if parcels_progress is not None:
+                hub.update_slice(account_id, "parcels_progress", parcels_progress, source_tag=tag)
+        except Exception as st_err:
+            logger.debug("get_stew_status in get_live_profile failed: %s", st_err)
+
+    stew_val = (
+        parcels_progress["stew_count"]
+        if isinstance(parcels_progress, dict) and "stew_count" in parcels_progress
+        else int(currencies.get("stew", 0) or 0)
+    )
     currencies_payload = {
         "cigarettes": currencies.get("cigarettes", 0),
         "sugar": currencies.get("sugar", 0),
         "rubles": currencies.get("rubles", 0),
         "paper": currencies.get("paper", 0),
         "soap": currencies.get("soap", 0),
+        "stew": stew_val,
         "keys": currencies.get("keys", 0),
     }
     resource_deltas = None
@@ -1455,6 +1489,7 @@ async def get_live_profile(account_id: int = 1, force: bool = Query(False)) -> D
         "toiletPaper": tp_info,
         "currencies": currencies_payload,
         "resource_deltas": resource_deltas,
+        "parcels_progress": parcels_progress,
         "weapons": {
             "poisonCount": poison_cnt,
             "gunshotCount": gunshot_cnt,
