@@ -76,10 +76,17 @@ jobs:
             git reset --hard origin/main
             /opt/prisonbot/venv/bin/pip install -q -r requirements.txt
             systemctl restart prisonbot.service
-            sleep 4
-            if ! systemctl is-active --quiet prisonbot.service || ! curl -fsS http://127.0.0.1:8085/ > /dev/null; then
+            ok=0
+            for i in $(seq 1 15); do
+              if systemctl is-active --quiet prisonbot.service && curl -fsS http://127.0.0.1:8085/prison/ > /dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$ok" -ne 1 ]; then
               echo "Health check failed! Last 40 lines of journalctl:"
               journalctl -u prisonbot.service -n 40 --no-pager
               exit 1
             fi
-            echo "Deploy succeeded and prisonbot.service is healthy."
+            echo "Deploy and health check OK!"
