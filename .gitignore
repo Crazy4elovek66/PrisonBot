@@ -35,12 +35,22 @@ htmlcov/
 # Sensitive data & local storage
 storage/
 storage/asset_cache/
+storage/*.db
+storage/*.db-wal
+storage/*.db-shm
+storage/*.session*
 *.session
+*.session*
 *.session-journal
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 .env
+github_setup_keys.txt
+repomix-output*.xml
+*.log
 
 # Raw dumps & reverse-engineering artifacts
 raw_dump/

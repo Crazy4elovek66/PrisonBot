@@ -1,0 +1,85 @@
+name: Deploy PrisonBot
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'task.md'
+      - 'docs/**'
+      - 'screenshots/**'
+      - 'inf/**'
+      - 'ref/**'
+      - 'reference_archive/**'
+      - 'scratch/**'
+      - '*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prisonbot-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test & Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check frontend JS syntax
+        run: |
+          node --check web/static/app.js
+          node --check web/static/sw.js
+
+      - name: Run pytest suite
+        run: python -m pytest -q tests/
+
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/prisonbot
+            mkdir -p /opt/prisonbot/backups
+            if [ -f /opt/prisonbot/storage/prison_bot.db ]; then
+              cp /opt/prisonbot/storage/prison_bot.db "/opt/prisonbot/backups/prison_bot_$(date +%Y%m%d_%H%M%S).db"
+              ls -1t /opt/prisonbot/backups/prison_bot_*.db | tail -n +6 | xargs -r rm -f
+            fi
+            git fetch origin main
+            git reset --hard origin/main
+            /opt/prisonbot/venv/bin/pip install -q -r requirements.txt
+            systemctl restart prisonbot.service
+            sleep 4
+            if ! systemctl is-active --quiet prisonbot.service || ! curl -fsS http://127.0.0.1:8085/ > /dev/null; then
+              echo "Health check failed! Last 40 lines of journalctl:"
+              journalctl -u prisonbot.service -n 40 --no-pager
+              exit 1
+            fi
+            echo "Deploy succeeded and prisonbot.service is healthy."
