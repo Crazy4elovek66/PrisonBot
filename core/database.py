@@ -297,6 +297,26 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
         ):
             if extra_col not in existing_snapshot_cols:
                 await conn.execute(text(f"ALTER TABLE daily_resource_snapshots ADD COLUMN {extra_col} INTEGER DEFAULT NULL"))
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS monthly_tasks_schedule (
+                    year_month TEXT NOT NULL,
+                    day_num INTEGER NOT NULL,
+                    date_iso TEXT NOT NULL,
+                    task_key TEXT DEFAULT '',
+                    task_title TEXT DEFAULT '',
+                    task_description TEXT DEFAULT '',
+                    target_value INTEGER DEFAULT 0,
+                    progress_value INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'upcoming',
+                    source TEXT DEFAULT 'api',
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (year_month, day_num)
+                );
+                """
+            )
+        )
 
 
 @asynccontextmanager
@@ -682,6 +702,129 @@ async def compute_daily_resource_deltas(
         "baseline": baseline,
         "deltas": deltas,
     }
+
+
+async def upsert_monthly_tasks(
+    year_month: str,
+    days_list: list,
+    source: str = "api",
+    engine: Optional[AsyncEngine] = None,
+) -> int:
+    """
+    Атомарно сохраняет/обновляет расписание месячных делюг в monthly_tasks_schedule.
+    При наступлении нового месяца очищает устаревшие месяцы (year_month != :year_month).
+    Никогда не удаляет данные при пустом/невалидном списке и не затирает непустой task_title/task_description пустой строкой.
+    """
+    import re as _re
+    import time as _time
+
+    if not year_month or not isinstance(year_month, str) or not _re.fullmatch(r"\d{4}-\d{2}", year_month):
+        return 0
+    if not isinstance(days_list, list) or not days_list:
+        return 0
+
+    valid_items = []
+    for item in days_list:
+        if not isinstance(item, dict) or item.get("day_num") is None:
+            continue
+        try:
+            day_num = int(item["day_num"])
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= day_num <= 31):
+            continue
+        valid_items.append((day_num, item))
+
+    if not valid_items:
+        return 0
+
+    now_ts = _time.time()
+    count = 0
+    async with get_session(engine) as session:
+        await session.execute(
+            text("DELETE FROM monthly_tasks_schedule WHERE year_month != :year_month"),
+            {"year_month": year_month},
+        )
+        for day_num, item in valid_items:
+            date_iso = str(item.get("date_iso") or f"{year_month}-{day_num:02d}")
+            task_key = str(item.get("task_key") or "").strip()
+            task_title = str(item.get("title") or item.get("task_title") or "").strip()
+            task_desc = str(item.get("task_description") or "").strip()
+            target_val = int(item.get("target") or item.get("target_value") or 0)
+            progress_val = int(item.get("progress") or item.get("progress_value") or 0)
+            status_val = str(item.get("status") or "upcoming")
+
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO monthly_tasks_schedule (
+                        year_month, day_num, date_iso, task_key, task_title, task_description,
+                        target_value, progress_value, status, source, updated_at
+                    ) VALUES (
+                        :year_month, :day_num, :date_iso, :task_key, :task_title, :task_description,
+                        :target_value, :progress_value, :status, :source, :updated_at
+                    )
+                    ON CONFLICT(year_month, day_num) DO UPDATE SET
+                        date_iso = excluded.date_iso,
+                        task_key = CASE WHEN excluded.task_key != '' THEN excluded.task_key ELSE monthly_tasks_schedule.task_key END,
+                        task_title = CASE WHEN excluded.task_title != '' THEN excluded.task_title ELSE monthly_tasks_schedule.task_title END,
+                        task_description = CASE WHEN excluded.task_description != '' THEN excluded.task_description ELSE monthly_tasks_schedule.task_description END,
+                        target_value = CASE WHEN excluded.target_value > 0 THEN excluded.target_value ELSE monthly_tasks_schedule.target_value END,
+                        progress_value = excluded.progress_value,
+                        status = excluded.status,
+                        source = CASE WHEN excluded.task_title != '' THEN excluded.source ELSE monthly_tasks_schedule.source END,
+                        updated_at = excluded.updated_at
+                    """
+                ),
+                {
+                    "year_month": year_month,
+                    "day_num": day_num,
+                    "date_iso": date_iso,
+                    "task_key": task_key,
+                    "task_title": task_title,
+                    "task_description": task_desc,
+                    "target_value": target_val,
+                    "progress_value": progress_val,
+                    "status": status_val,
+                    "source": source,
+                    "updated_at": now_ts,
+                },
+            )
+            count += 1
+        await session.commit()
+    return count
+
+
+async def get_monthly_tasks(
+    year_month: str,
+    engine: Optional[AsyncEngine] = None,
+) -> list:
+    """Возвращает сохранённое расписание месячных делюг для указанного YYYY-MM."""
+    async with get_session(engine) as session:
+        res = await session.execute(
+            text(
+                "SELECT year_month, day_num, date_iso, task_key, task_title, task_description, "
+                "target_value, progress_value, status, source, updated_at "
+                "FROM monthly_tasks_schedule WHERE year_month = :ym ORDER BY day_num ASC"
+            ),
+            {"ym": year_month},
+        )
+        return [
+            {
+                "year_month": r[0],
+                "day_num": int(r[1]),
+                "date_iso": str(r[2]),
+                "task_key": str(r[3] or ""),
+                "task_title": str(r[4] or ""),
+                "task_description": str(r[5] or ""),
+                "target_value": int(r[6] or 0),
+                "progress_value": int(r[7] or 0),
+                "status": str(r[8] or "upcoming"),
+                "source": str(r[9] or "api"),
+                "updated_at": float(r[10] or 0.0),
+            }
+            for r in res.fetchall()
+        ]
 
 
 async def get_katala_guard_state(account_id: int = 1, engine: Optional[AsyncEngine] = None) -> dict:

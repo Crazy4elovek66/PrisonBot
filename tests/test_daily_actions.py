@@ -187,3 +187,133 @@ async def test_daily_deltas_matches_tickets_and_weapons_migration_and_reset(tmp_
     assert reset_res["deltas"]["match_red"] == 0
     assert reset_res["deltas"]["weapon_poison"] == 0
     await engine.dispose()
+
+
+def test_parse_monthly_state_full_month_and_hidden_future_and_rewards():
+    from datetime import datetime, timezone
+    from client.api.monthly import parse_monthly_state
+
+    now = datetime(2026, 11, 28, 9, 0, tzinfo=timezone.utc)
+    raw_full = {
+        "active": True,
+        "global": {
+            "year": 2026,
+            "month": 11,
+            "daysInMonth": 30,
+            "days": [
+                {"dayId": 1, "action": "ScamGambler", "target": 5, "title": "Разведи каталу 5 раз"},
+                {"dayId": 27, "action": "SpitSoup", "target": 14, "title": "Харкни в баланду 14 раз"},
+                {"dayId": 28, "action": "KillBoss", "target": 1, "title": "Убей босса: Кирпич"},
+                {"dayId": 29, "action": "AddYeast", "target": 10, "title": "Подкинь дрожжей 10 раз"},
+                {"dayId": 30, "action": "PrisonRun", "target": 1, "title": "Выполни 1 ходку в БУТЫРКА"},
+            ],
+            "tierRewards": {
+                "2": {"currencies": {"rubles": 30}},
+                "5": {"currencies": {"chefir": 2}},
+                "10": {"currencies": {}, "gunshot": 70},
+                "20": {"currencies": {"stew": 4}},
+                "30": {"currencies": {"rubles": 130, "stew": 3}, "clothingIds": [382, 383]},
+            },
+        },
+        "user": {
+            "activeDayId": 28,
+            "completedCount": 7,
+            "days": {
+                "1": {"progress": 0, "completed": False, "expired": True},
+                "27": {"progress": 14, "completed": True, "expired": False},
+                "28": {"progress": 1, "completed": True, "expired": False},
+            },
+            "claimableTiers": [5],
+            "claimedTiers": [2],
+        },
+    }
+    parsed = parse_monthly_state(raw_full, now_utc=now)
+    assert parsed["year_month"] == "2026-11"
+    assert parsed["completed_count"] == 7
+    assert parsed["total_days"] == 30
+    assert parsed["today_day"] == 28
+    assert parsed["future_tasks_available"] is True
+    assert len(parsed["schedule"]) == 30
+    assert parsed["schedule"][0]["status"] == "missed"
+    assert parsed["schedule"][26]["status"] == "completed"
+    assert parsed["schedule"][27]["is_today"] is True
+    assert parsed["schedule"][29]["title"] == "Выполни 1 ходку в БУТЫРКА"
+    assert parsed["schedule"][29]["status"] == "upcoming"
+
+    assert len(parsed["rewards"]) == 5
+    assert parsed["rewards"][0]["status"] == "claimed" and parsed["rewards"][0]["required_count"] == 2
+    assert parsed["rewards"][1]["status"] == "claimable" and parsed["rewards"][1]["claimable"] is True
+    assert parsed["rewards"][2]["status"] == "locked" and parsed["rewards"][2]["remaining_count"] == 3
+    assert parsed["rewards"][2]["amount"] == 70 and parsed["rewards"][2]["icon"] == "assets/icons/gunshot.webp"
+
+    # Сценарий B: сервер скрыл будущие задания
+    raw_hidden = {
+        "active": True,
+        "global": {"year": 2026, "month": 11, "daysInMonth": 30, "days": [{"dayId": 28, "target": 1, "title": "Убей Кирпича"}], "tierRewards": {}},
+        "user": {"activeDayId": 28, "completedCount": 1, "days": {"28": {"progress": 0, "completed": False}}},
+    }
+    parsed_b = parse_monthly_state(raw_hidden, history_rows=[{"day_num": 27, "task_title": "Харкни 14 раз", "target_value": 14, "progress_value": 14}], now_utc=now)
+    assert parsed_b["future_tasks_available"] is False
+    assert parsed_b["schedule"][26]["title"] == "Харкни 14 раз"
+    assert parsed_b["schedule"][28]["title"] == ""
+
+
+@pytest.mark.asyncio
+async def test_monthly_tasks_schedule_atomic_overwrite_and_guards(tmp_path):
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import get_monthly_tasks, get_session, init_db, upsert_monthly_tasks
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'monthly_sched.db'}")
+    await init_db(engine)
+
+    # 1. Сохраняем два старых месяца (2026-10 и 2026-11)
+    await upsert_monthly_tasks(
+        "2026-10",
+        [{"day_num": 15, "date_iso": "2026-10-15", "task_key": "OldTask", "title": "Октябрь 15", "target": 1, "progress": 1, "status": "completed"}],
+        engine=engine,
+    )
+    await upsert_monthly_tasks(
+        "2026-11",
+        [{"day_num": 27, "date_iso": "2026-11-27", "task_key": "SpitSoup", "title": "Харкни 14 раз", "target": 14, "progress": 10, "status": "today"}],
+        engine=engine,
+    )
+
+    # 2. Внутри одного месяца повторный upsert с пустым title сохраняет старый task_title и обновляет status/progress
+    saved_same = await upsert_monthly_tasks(
+        "2026-11",
+        [{"day_num": 27, "date_iso": "2026-11-27", "task_key": "", "title": "", "target": 0, "progress": 14, "status": "completed"}],
+        engine=engine,
+    )
+    assert saved_same == 1
+    nov = await get_monthly_tasks("2026-11", engine=engine)
+    assert len(nov) == 1
+    assert nov[0]["task_title"] == "Харкни 14 раз"
+    assert nov[0]["status"] == "completed"
+    assert nov[0]["progress_value"] == 14
+
+    # 3. При наступлении нового месяца (2026-12) старые месяцы (2026-10, 2026-11) атомарно удаляются
+    saved_dec = await upsert_monthly_tasks(
+        "2026-12",
+        [{"day_num": 1, "date_iso": "2026-12-01", "title": "Декабрь день 1", "target": 5, "progress": 0, "status": "today"}],
+        engine=engine,
+    )
+    assert saved_dec == 1
+    assert await get_monthly_tasks("2026-10", engine=engine) == []
+    assert await get_monthly_tasks("2026-11", engine=engine) == []
+    dec = await get_monthly_tasks("2026-12", engine=engine)
+    assert len(dec) == 1 and dec[0]["task_title"] == "Декабрь день 1"
+
+    async with get_session(engine) as session:
+        res = await session.execute(text("SELECT DISTINCT year_month FROM monthly_tasks_schedule"))
+        months_in_db = [row[0] for row in res.fetchall()]
+    assert months_in_db == ["2026-12"]
+
+    # 4. Защита от пустого/невалидного ввода: 2026-12 не должен удалиться
+    assert await upsert_monthly_tasks("2026-12", [], engine=engine) == 0
+    assert await upsert_monthly_tasks("2026-12", [{"day_num": 99, "title": "Bad"}], engine=engine) == 0
+    assert await upsert_monthly_tasks("invalid", [{"day_num": 1, "title": "Bad"}], engine=engine) == 0
+    dec_after_guards = await get_monthly_tasks("2026-12", engine=engine)
+    assert len(dec_after_guards) == 1 and dec_after_guards[0]["task_title"] == "Декабрь день 1"
+
+    await engine.dispose()

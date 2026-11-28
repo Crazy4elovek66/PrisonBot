@@ -901,6 +901,21 @@ class RoutineWorker:
         if not isinstance(m_state, dict):
             return summary
 
+        try:
+            from client.api.monthly import parse_monthly_state
+            from core.database import get_monthly_tasks, upsert_monthly_tasks
+            from core.state_hub import state_hub
+
+            g_m = m_state.get("global") if isinstance(m_state.get("global"), dict) else {}
+            ym = f"{int(g_m.get('year') or 0):04d}-{int(g_m.get('month') or 0):02d}" if g_m.get("year") and g_m.get("month") else datetime.now(MSK_TZ).strftime("%Y-%m")
+            hist = await get_monthly_tasks(ym, engine=self.db_engine) if self.db_engine else []
+            parsed_m = parse_monthly_state(m_state, history_rows=hist)
+            if self.db_engine and parsed_m.get("schedule"):
+                await upsert_monthly_tasks(parsed_m["year_month"], parsed_m["schedule"], source="api", engine=self.db_engine)
+            state_hub.update_slice(self.account_id, "monthly", {"success": True, "state": m_state, **parsed_m})
+        except Exception as m_sync_err:
+            logger.debug("Monthly schedule DB/Hub sync skipped: %s", m_sync_err)
+
         user_m = m_state.get("user", {}) or {}
         global_m = m_state.get("global", {}) or {}
         active_day_id = user_m.get("activeDayId")

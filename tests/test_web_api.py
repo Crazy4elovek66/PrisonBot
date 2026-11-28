@@ -3350,3 +3350,43 @@ async def test_stew_daily_delta_and_parcels_progress_in_state(web_setup):
     body = r.json()
     assert body["parcels_progress"]["achievements_current"] == 3
     assert body["parcels_progress"]["guaranteed_item_current"] == 6
+
+
+@pytest.mark.asyncio
+async def test_monthly_state_and_claim_endpoints(web_setup):
+    from unittest.mock import AsyncMock
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    bot_context.social_api = AsyncMock()
+    bot_context.social_api.get_monthly_state.return_value = {
+        "active": True,
+        "global": {
+            "year": 2026,
+            "month": 11,
+            "daysInMonth": 30,
+            "days": [
+                {"dayId": 28, "action": "KillBoss", "target": 1, "title": "Убей босса: Кирпич"},
+                {"dayId": 29, "action": "AddYeast", "target": 10, "title": "Подкинь дрожжей 10 раз"},
+            ],
+            "tierRewards": {"2": {"currencies": {"rubles": 30}}, "5": {"currencies": {"chefir": 2}}},
+        },
+        "user": {"activeDayId": 28, "completedCount": 7, "days": {"28": {"progress": 1, "completed": True}}, "claimableTiers": [5], "claimedTiers": [2]},
+    }
+    bot_context.social_api.claim_monthly_reward.return_value = {"success": True, "reward": {"currencies": {"chefir": 2}}}
+
+    r = await client.get("/api/v1/monthly/state?force=true", headers=headers)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["success"] is True
+    assert d["future_tasks_available"] is True
+    assert len(d["schedule"]) == 30
+    assert len(d["rewards"]) == 2
+    assert d["server_now_ts"] > 0
+
+    r_claim = await client.post("/api/v1/monthly/claim", json={"tier": 5}, headers=headers)
+    assert r_claim.status_code == 200
+    assert r_claim.json()["success"] is True
+    bot_context.social_api.claim_monthly_reward.assert_awaited_once_with(5)

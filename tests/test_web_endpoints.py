@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v31" in sw
+    assert "prisonbot-assets-v32" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_10";' in js
+    assert 'const ASSET_VERSION = "20261127_11";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_10" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_11" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_10"',
-        'src="assets/icons/room_reward.webp?v=20261127_10"',
-        'src="assets/icons/complect.webp?v=20261127_10"',
-        'src="assets/icons/podogrev.webp?v=20261127_10"',
-        'src="assets/icons/authority.webp?v=20261127_10"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_10"',
+        'src="assets/icons/boss.webp?v=20261127_11"',
+        'src="assets/icons/room_reward.webp?v=20261127_11"',
+        'src="assets/icons/complect.webp?v=20261127_11"',
+        'src="assets/icons/podogrev.webp?v=20261127_11"',
+        'src="assets/icons/authority.webp?v=20261127_11"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_11"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1458,7 +1458,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_10',
+  ASSET_VERSION: '20261127_11',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -1825,3 +1825,101 @@ console.log('OBSHAK_JS_OK');
     res = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
     assert "OBSHAK_JS_OK" in res.stdout
+
+
+def test_js_runtime_monthly_rewards_and_accordion_sse_preserve():
+    import subprocess
+    from pathlib import Path
+
+    app_txt = Path("web/static/app.js").read_text(encoding="utf-8")
+
+    def _extract_fn(src: str, sig: str) -> str:
+        idx = src.index(sig)
+        brace_start = src.index("{", idx)
+        depth = 0
+        for pos in range(brace_start, len(src)):
+            if src[pos] == "{":
+                depth += 1
+            elif src[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[idx : pos + 1]
+        raise AssertionError(f"Unclosed: {sig}")
+
+    toggle_fn = _extract_fn(app_txt, "function toggleMonthlyScheduleAccordion(")
+    render_fn = _extract_fn(app_txt, "function renderMonthlyStateData(")
+
+    script = f"""
+const elements = {{}};
+const makeEl = (id) => {{
+  if (!elements[id]) {{
+    const attrs = {{}};
+    elements[id] = {{
+      id, textContent: '', innerHTML: '', style: {{}}, disabled: false,
+      setAttribute(k, v) {{ attrs[k] = String(v); }},
+      getAttribute(k) {{ return attrs[k] || null; }},
+      querySelector() {{ return null; }},
+      querySelectorAll() {{ return []; }},
+    }};
+  }}
+  return elements[id];
+}};
+['monthly-progress-text','monthly-rewards-ribbon','monthly-schedule-title','monthly-schedule-badge','monthly-schedule-tbody','monthly-schedule-accordion','monthly-schedule-body'].forEach(makeEl);
+global.document = {{ getElementById: (id) => elements[id] || null }};
+const liveSlices = {{ data: {{}} }};
+function setTextIfChanged(el, t) {{ if (el) el.textContent = String(t ?? ''); }}
+function escapeHtml(s) {{ return String(s ?? ''); }}
+function resolveAppAssetUrl(u) {{ return u; }}
+function formatNum(n) {{ return String(n ?? 0); }}
+function apiFetch() {{ return Promise.resolve({{}}); }}
+function showToast() {{}}
+function refreshState() {{}}
+let monthlyScheduleExpanded = false;
+let _monthlyScrolledOnce = false;
+
+{toggle_fn}
+{render_fn}
+
+const sample = {{
+  success: true,
+  year_month: '2026-11',
+  month_label: 'Ноябрь 2026',
+  completed_count: 7,
+  total_days: 30,
+  today_day: 28,
+  today_task: {{ day_num: 28, title: 'Убей босса: Кирпич', progress: 1, target: 1 }},
+  rewards: [
+    {{ index: 0, tier: 2, required_count: 2, current_count: 7, title: 'Рубли', amount: 30, icon: 'assets/icons/rubles.webp', status: 'claimed', claimable: false }},
+    {{ index: 1, tier: 5, required_count: 5, current_count: 7, title: 'Чифир', amount: 2, icon: 'assets/icons/energy.webp', status: 'claimable', claimable: true }},
+    {{ index: 2, tier: 10, required_count: 10, current_count: 7, title: 'Самопал', amount: 70, icon: 'assets/icons/gunshot.webp', status: 'locked', claimable: false }},
+  ],
+  schedule: [
+    {{ day_num: 27, date_label: '27.11', weekday: 'ПТ', title: 'Харкни 14 раз', progress: 14, target: 14, status: 'completed', is_today: false }},
+    {{ day_num: 28, date_label: '28.11', weekday: 'СБ', title: 'Убей босса: Кирпич', progress: 1, target: 1, status: 'today', is_today: true }},
+    {{ day_num: 29, date_label: '29.11', weekday: 'ВС', title: '', progress: 0, target: 0, status: 'upcoming', is_today: false }},
+  ]
+}};
+
+renderMonthlyStateData(sample);
+if (!elements['monthly-rewards-ribbon'].innerHTML.includes('Выполни <b>10</b> делюг')) throw new Error('missing reward tier 10');
+if (!elements['monthly-rewards-ribbon'].innerHTML.includes('Забрать')) throw new Error('missing claim button');
+if (!elements['monthly-schedule-tbody'].innerHTML.includes('Сегодня') || !elements['monthly-schedule-tbody'].innerHTML.includes('Откроется 29.11')) {{
+  throw new Error('missing today highlight or future fallback');
+}}
+if (elements['monthly-schedule-tbody'].innerHTML.includes('undefined') || elements['monthly-schedule-tbody'].innerHTML.includes('NaN')) {{
+  throw new Error('unexpected undefined/NaN in schedule');
+}}
+
+toggleMonthlyScheduleAccordion(true);
+if (elements['monthly-schedule-body'].style.display !== 'block') throw new Error('accordion did not expand');
+
+// Повторный рендер (SSE) обязан сохранить раскрытое состояние аккордеона
+renderMonthlyStateData(sample);
+if (elements['monthly-schedule-body'].style.display !== 'block' || elements['monthly-schedule-accordion'].getAttribute('data-expanded') !== 'true') {{
+  throw new Error('SSE re-render collapsed accordion');
+}}
+console.log('MONTHLY_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "MONTHLY_JS_OK" in res.stdout

@@ -2836,7 +2836,7 @@ async def get_friendship_requests(
 
 @api_router.get("/monthly/state")
 async def get_monthly_state(account_id: int = 1, force: bool = Query(False)) -> Dict[str, Any]:
-    """Получение актуального состояния Месячных делюг."""
+    """Получение актуального состояния Месячных делюг, полного календаря на месяц и этапных наград."""
     social_api = bot_context.social_api
     if not social_api:
         raise HTTPException(status_code=503, detail="SocialAPI not available")
@@ -2845,11 +2845,33 @@ async def get_monthly_state(account_id: int = 1, force: bool = Query(False)) -> 
     tag = _hub_source_tag()
     if not force:
         warm = hub.get_slice(account_id, "monthly", max_age_seconds=180.0, source_tag=tag)
-        if warm is not None:
+        if warm is not None and isinstance(warm.data, dict) and "schedule" in warm.data:
             return warm.data
 
     try:
+        from datetime import datetime as _dt
+        from core.config import MSK_TZ
+        from core.database import get_monthly_tasks, upsert_monthly_tasks
+        from client.api.monthly import parse_monthly_state
+
         st = await social_api.get_monthly_state()
+        engine = bot_context.db_engine
+        cur_ym = _dt.now(MSK_TZ).strftime("%Y-%m")
+        if isinstance(st, dict) and isinstance(st.get("global"), dict):
+            gy = st["global"].get("year")
+            gm = st["global"].get("month")
+            if gy and gm:
+                cur_ym = f"{int(gy):04d}-{int(gm):02d}"
+
+        history_rows = await get_monthly_tasks(cur_ym, engine=engine) if engine else []
+        parsed = parse_monthly_state(st, history_rows=history_rows)
+
+        if engine and parsed.get("schedule"):
+            try:
+                await upsert_monthly_tasks(parsed["year_month"], parsed["schedule"], source="api", engine=engine)
+            except Exception as db_err:
+                logger.debug("upsert_monthly_tasks in get_monthly_state failed: %s", db_err)
+
         if isinstance(st, dict):
             user_m = st.get("user") or {}
             global_m = st.get("global") or {}
@@ -2874,11 +2896,50 @@ async def get_monthly_state(account_id: int = 1, force: bool = Query(False)) -> 
                     "target": today_tgt,
                     "completed": bool(day_prog.get("completed", False)),
                 }
-        payload = {"success": True, "state": st}
+
+        payload = {"success": True, "state": st, **parsed}
         hub.update_slice(account_id, "monthly", payload, source_tag=tag)
         return payload
     except Exception as e:
         logger.error("Error fetching monthly state: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/monthly/claim")
+async def post_monthly_claim(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Ручной сбор готовой этапной награды Месячных делюг."""
+    social_api = bot_context.social_api
+    if not social_api:
+        raise HTTPException(status_code=503, detail="SocialAPI not available")
+    tier_raw = payload.get("tier") or payload.get("reward_id")
+    if tier_raw is None:
+        raise HTTPException(status_code=400, detail="Не указан tier награды")
+    try:
+        tier = int(tier_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректный tier награды")
+
+    try:
+        res = await social_api.claim_monthly_reward(tier)
+        engine = bot_context.db_engine
+        if engine:
+            try:
+                parsed_drop = DropParser.parse_monthly_claim(res if isinstance(res, dict) else {}, tier=tier)
+                await DropParser.save_notification(account_id, parsed_drop, engine)
+            except Exception as ne:
+                logger.debug("save_notification for monthly claim failed: %s", ne)
+
+        hub = _get_hub()
+        hub.invalidate_slice(account_id, "monthly")
+        fresh = await get_monthly_state(account_id=account_id, force=True)
+        hub.notify_mutation(account_id, "routine_action", reason="manual_monthly_claim")
+        return {"success": True, "result": res, **fresh}
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

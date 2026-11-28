@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_10";
+const ASSET_VERSION = "20261127_11";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -1900,22 +1900,152 @@ function renderBusinesses() {
   );
 }
 
+let monthlyScheduleExpanded = false;
+let _monthlyScrolledOnce = false;
+
+function toggleMonthlyScheduleAccordion(forceState = null) {
+  monthlyScheduleExpanded = forceState !== null ? Boolean(forceState) : !monthlyScheduleExpanded;
+  const acc = document.getElementById("monthly-schedule-accordion");
+  const body = document.getElementById("monthly-schedule-body");
+  if (acc) acc.setAttribute("data-expanded", monthlyScheduleExpanded ? "true" : "false");
+  if (body) body.style.display = monthlyScheduleExpanded ? "block" : "none";
+  if (monthlyScheduleExpanded && !_monthlyScrolledOnce && body) {
+    _monthlyScrolledOnce = true;
+    const todayRow = body.querySelector(".monthly-schedule-row.is-today");
+    todayRow?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  }
+}
+
+document.getElementById("btn-toggle-monthly-schedule")?.addEventListener("click", () => {
+  toggleMonthlyScheduleAccordion();
+});
+
 function renderMonthlyStateData(data) {
   const el = document.getElementById("monthly-progress-text");
   if (!el) return;
   if (data) liveSlices.data.monthly = data;
-  if (data && data.success && data.state) {
-    const st = data.state;
-    const completed = st.summary?.completedDisplay || (st.user?.claimedTiers ? `${st.user.claimedTiers.length}/30` : "-");
-    const claimable = Array.isArray(st.user?.claimableTiers) ? st.user.claimableTiers.length : 0;
-    let text = `Выполнено этапов: <b>${completed}</b> • Готово к сбору наград: <b>${claimable}</b>`;
-    if (st.today?.title) {
-      const cur = Number(st.today.current ?? st.today.progress ?? 0);
-      const tgt = Number(st.today.target ?? 0);
-      const progSuffix = tgt > 0 ? ` (${cur}/${tgt} выполнено)` : "";
-      text += ` • Сегодня: <i>${st.today.title}</i>${progSuffix}`;
+  if (data && data.success && (data.state || Array.isArray(data.schedule))) {
+    const st = data.state || {};
+    const completedCnt = Number(data.completed_count ?? st.summary?.completedCount ?? st.user?.completedCount ?? 0);
+    const totalDays = Number(data.total_days ?? st.summary?.totalDays ?? 30);
+    const completedDisp = st.summary?.completedDisplay || `${completedCnt}/${totalDays}`;
+    const rewardsList = Array.isArray(data.rewards) ? data.rewards : [];
+    const claimableCnt = rewardsList.length
+      ? rewardsList.filter(r => r.claimable).length
+      : (Array.isArray(st.user?.claimableTiers) ? st.user.claimableTiers.length : 0);
+
+    let text = `Выполнено: <b>${escapeHtml(completedDisp)}</b> • Готово к сбору наград: <b>${claimableCnt}</b>`;
+    const todayTask = data.today_task || st.today;
+    if (todayTask && todayTask.title) {
+      const cur = Number(todayTask.current ?? todayTask.progress ?? 0);
+      const tgt = Number(todayTask.target ?? 0);
+      const progSuffix = tgt > 0 ? ` (${cur}/${tgt})` : "";
+      text += ` • Сегодня: <i>${escapeHtml(todayTask.title)}</i>${progSuffix}`;
     }
     if (el.innerHTML !== text) el.innerHTML = text;
+
+    // 1. Рендер ленты этапных наград месяца
+    const rewardsEl = document.getElementById("monthly-rewards-ribbon");
+    if (rewardsEl) {
+      if (rewardsList.length) {
+        rewardsEl.innerHTML = rewardsList.map(rw => {
+          const items = Array.isArray(rw.items) && rw.items.length
+            ? rw.items
+            : [{ title: rw.title, amount: rw.amount, icon: rw.icon }];
+          const itemsHtml = items.map(it => {
+            const iconRel = String(it.icon || "assets/icons/stash.webp").replace(/^\/+/, "");
+            const iconSrc = typeof resolveAppAssetUrl === "function" ? resolveAppAssetUrl(`/static/${iconRel}`) : iconRel;
+            return `<span style="display:inline-flex;align-items:center;gap:3px;font-weight:700;color:#fff;" title="${escapeHtml(it.title || "")}"><img src="${escapeHtml(iconSrc)}" class="game-icon-xs" alt="">x${formatNum(it.amount)}</span>`;
+          }).join(" ");
+          const reqCnt = Number(rw.required_count || rw.tier || 0);
+          const curCnt = Number(rw.current_count ?? completedCnt);
+          let statusHtml = `<span style="color:var(--muted-foreground);">Осталось ${Math.max(0, reqCnt - curCnt)}</span>`;
+          let cls = "";
+          if (rw.status === "claimed") {
+            cls = "is-claimed";
+            statusHtml = `<span style="color:#4ade80;font-weight:700;">✓ Получено</span>`;
+          } else if (rw.claimable || rw.status === "claimable") {
+            cls = "is-claimable";
+            statusHtml = `<button type="button" class="btn btn-primary btn-sm btn-monthly-claim-tier" data-tier="${escapeHtml(String(rw.tier ?? rw.reward_id))}" style="padding:2px 8px;font-size:10px;">Забрать</button>`;
+          }
+          return `
+            <div class="monthly-reward-card ${cls}">
+              <div style="color:var(--muted-foreground);font-size:10px;">Выполни <b>${reqCnt}</b> делюг</div>
+              <div class="monthly-reward-items">${itemsHtml}</div>
+              <div>${statusHtml}</div>
+            </div>
+          `;
+        }).join("");
+
+        rewardsEl.querySelectorAll(".btn-monthly-claim-tier").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const tier = btn.getAttribute("data-tier");
+            btn.disabled = true;
+            try {
+              const res = await apiFetch("/monthly/claim", {
+                method: "POST",
+                body: JSON.stringify({ tier: Number(tier) }),
+              });
+              showToast(`Награда за ${tier} делюг получена!`, "success");
+              if (res) renderMonthlyStateData(res);
+              refreshState();
+            } catch (err) {
+              showToast(`Ошибка сбора награды: ${err.message}`, "error");
+              btn.disabled = false;
+            }
+          });
+        });
+      } else {
+        rewardsEl.innerHTML = "";
+      }
+    }
+
+    // 2. Рендер аккордеона календаря делюг
+    const titleEl = document.getElementById("monthly-schedule-title");
+    const badgeEl = document.getElementById("monthly-schedule-badge");
+    const tbodyEl = document.getElementById("monthly-schedule-tbody");
+    const accEl = document.getElementById("monthly-schedule-accordion");
+    const bodyEl = document.getElementById("monthly-schedule-body");
+    if (accEl) accEl.setAttribute("data-expanded", monthlyScheduleExpanded ? "true" : "false");
+    if (bodyEl) bodyEl.style.display = monthlyScheduleExpanded ? "block" : "none";
+
+    if (titleEl) {
+      const mLabel = data.month_label || "Месяц";
+      setTextIfChanged(titleEl, `Расписание на месяц (${mLabel})`);
+    }
+    if (badgeEl) {
+      setTextIfChanged(badgeEl, completedDisp);
+    }
+
+    const sched = Array.isArray(data.schedule) ? data.schedule : [];
+    if (tbodyEl) {
+      tbodyEl.innerHTML = sched.length
+        ? sched.map(row => {
+          const stCode = row.status || "upcoming";
+          const rowCls = `monthly-schedule-row is-${stCode}${row.is_today ? " is-today" : ""}`;
+          const dateCell = `
+            <div style="white-space:nowrap;font-weight:${row.is_today ? "700" : "600"};color:${row.is_today ? "#fde68a" : "#fff"};">
+              ${escapeHtml(row.date_label || String(row.day_num))} <span style="font-size:10px;color:var(--muted-foreground);">${escapeHtml(row.weekday || "")}</span>
+            </div>
+            ${row.is_today ? `<span class="badge" style="background:rgba(251,191,36,0.22);color:#fbbf24;font-size:9px;padding:1px 5px;margin-top:2px;display:inline-block;">Сегодня</span>` : ""}
+          `;
+          const hasTitle = Boolean(row.title && String(row.title).trim());
+          const tgt = Number(row.target || 0);
+          const cur = Number(row.progress || 0);
+          const progStr = hasTitle && tgt > 0 ? ` <span style="color:var(--muted-foreground);">(${formatNum(cur)}/${formatNum(tgt)})</span>` : "";
+          const taskCell = hasTitle
+            ? `<span style="color:#e5e7eb;">${escapeHtml(row.title)}</span>${progStr}`
+            : `<span style="color:var(--muted-foreground);font-style:italic;">Откроется ${escapeHtml(row.date_label || "")}</span>`;
+
+          let statusBadge = `<span style="color:var(--muted-foreground);">Ожидается</span>`;
+          if (stCode === "completed") statusBadge = `<span style="color:#4ade80;font-weight:700;">✓ Выполнено</span>`;
+          else if (stCode === "missed") statusBadge = `<span style="color:#f87171;">Пропущено</span>`;
+          else if (stCode === "today") statusBadge = `<span style="color:#fbbf24;font-weight:700;">Активно</span>`;
+
+          return `<tr class="${rowCls}"><td>${dateCell}</td><td>${taskCell}</td><td style="white-space:nowrap;">${statusBadge}</td></tr>`;
+        }).join("")
+        : `<tr><td colspan="3" style="color:var(--muted-foreground);text-align:center;">Нет данных календаря</td></tr>`;
+    }
   } else {
     setTextIfChanged(el, "Ежемесячные задания и награды активны");
   }

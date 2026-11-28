@@ -2073,6 +2073,114 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   cursor: pointer;
 }
 
+.monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
 .obshak-badge {
   display: inline-flex;
   align-items: center;
@@ -2133,7 +2241,115 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 }
 
 @media (max-width: 900px) {
-  .obshak-badge {
+  .monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
+.obshak-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2191,7 +2407,115 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 }
 
 @media (max-width: 480px) {
-  .obshak-badge {
+  .monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
+.obshak-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2299,7 +2623,115 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 }
 
 @media (max-width: 820px) {
-  .obshak-badge {
+  .monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
+.obshak-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2359,7 +2791,115 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 }
 
 @media (max-width: 900px) {
-  .obshak-badge {
+  .monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
+.obshak-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2417,7 +2957,115 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
 }
 
 @media (max-width: 480px) {
-  .obshak-badge {
+  .monthly-rewards-ribbon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 780px) {
+  .monthly-rewards-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monthly-reward-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.monthly-reward-card.is-claimed {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.06);
+}
+
+.monthly-reward-card.is-claimable {
+  border-color: rgba(251, 191, 36, 0.65);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.monthly-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.monthly-accordion {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.monthly-accordion-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthly-accordion-chevron {
+  transition: transform 0.2s ease;
+}
+
+.monthly-accordion[data-expanded="true"] .monthly-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.monthly-schedule-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.monthly-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.monthly-schedule-table th,
+.monthly-schedule-table td {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.monthly-schedule-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.monthly-schedule-row.is-today {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.monthly-schedule-row.is-completed {
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.monthly-schedule-row.is-missed {
+  opacity: 0.72;
+}
+
+.obshak-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
