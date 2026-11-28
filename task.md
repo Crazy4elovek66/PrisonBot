@@ -1,149 +1,126 @@
-# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: НАСТРОЙКА АВТОМАТИЧЕСКОГО CI/CD ДЕПЛОЯ PRISONBOT ЧЕРЕЗ GITHUB ACTIONS (ТЕСТЫ + АВТООБНОВЛЕНИЕ VPS)
+# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: ПОЧИНКА 33 ПАДЕНИЙ ТЕСТОВ В GITHUB ACTIONS CI И ФИНАЛЬНЫЙ АУДИТ / ОЧИСТКА VPS ДЛЯ ПЕРВОГО АВТОДЕПЛОЯ
 
-Ты выступаешь в роли Senior DevOps / Full-Stack разработчика (Python / FastAPI / GitHub Actions / Linux systemd / SSH) на проекте PrisonBot.
+Ты выступаешь в роли Senior DevOps / Full-Stack разработчика (Python / FastAPI / SQLite / GitHub Actions / Linux systemd) на проекте PrisonBot.
 
-**Анализ текущего состояния проекта:**
-- Боевой сервис работает на VPS `178.17.60.16` в директории `/opt/prisonbot` (`prisonbot.service`, статика `20261127_16`, SW `prisonbot-assets-v37`, 317 тестов зеленые).
-- Локальный репозиторий подключен к GitHub (ветка `main`), данные подключения к VPS находятся в `.env_server` и `vps_audit.md`.
-- Сейчас деплой выполняется вручную через одноразовые скрипты `deploy_*.py`, которые копируют отдельные файлы на сервер. Владелец хочет перейти на полноценный автоматический цикл: при каждом `git push` в `main` GitHub Actions сначала прогоняет все проверки и тесты в чистом Linux, и только если они прошли - сам подключается к VPS по SSH, делает резервную копию БД, обновляет код через `git pull`, при необходимости обновляет зависимости и перезапускает `prisonbot.service` с проверкой работоспособности.
+**Анализ текущего состояния проекта и выявленные проблемы:**
+- Пайплайн `.github/workflows/deploy.yml` уже подключен и успешно запускается при `push` в `main`.
+- На чистом Linux-раннере GitHub Actions прошли 287 из 320 тестов, а **33 теста упали** строго по 5 конкретным причинам:
+  1. **Отсутствие 3 статических JSON-справочников игры в Git (24 падения)**: правило игнорирования папки `storage/` скрыло не только БД и сессии, но и статические справочники `storage/bosses_catalog.json`, `storage/collections_catalog.json`, `storage/tattoo_clothing_cache.json`. В чистом CI каталог боссов оказался пустым (`0` вместо `58`), пропали 48 хат и бонусы вещей (`test_boss_worker.py`, `test_web_api.py`, `test_improvements_v2.py`, `test_drop_parser.py`, `test_wardrobe_api.py`, `test_raids_api.py`, `test_asset_cache.py`).
+  2. **6 тестов в `tests/test_prison_worker.py` ходили в реальную БД**: при создании `AuthProvider(account_id=acc_id)` не передан `db_engine=engine`, из-за чего в CI без локальной БД возникает `sqlite3.OperationalError: no such table: sessions`.
+  3. **Отсутствует `Pillow` (`PIL`) в окружении CI (1 падение)**: `tests/test_web_api.py::test_back_poworot_icon_integrity` падает с `ModuleNotFoundError: No module named 'PIL'`. Также нужно закрепить `greenlet` / `sqlalchemy[asyncio]` в `requirements.txt`.
+  4. **Проверка `parsed_js/` в `tests/test_reference_archive.py::test_code_dump_completeness` (1 падение)**: папка `reference_archive/pro_prison_bot/parsed_js/` намеренно исключена из Git (чтобы не раздувать репозиторий), но тест жестко требует ее наличия.
+  5. **Недетерминированный порядок выборки в SQLite на Linux (1 падение)**: в `tests/test_friend_outreach_worker.py::test_run_profile_enrichment_pass_and_429_backoff_and_coverage` при равных полях сортировки у `6001` и `6002` SQLite в Linux вернул первым `6002`, а не `6001`, из-за отсутствия вторичного ключа сортировки `user_id ASC`.
+- **Дополнительно требуется финальная инспекция и уборка VPS (`178.17.60.16:/opt/prisonbot`)** перед первым реальным автодеплоем из GitHub Actions: проверить, что на сервере нет конфликтующих неотслеживаемых файлов, временного мусора от старых ручных деплоев, что Deploy Key реально работает с GitHub (`git fetch origin main`), и что первый `git reset --hard origin/main` пройдет чисто и безопасно для `.env`, `storage/` и `prisonbot.service`.
 
-**Твоя задача:**
-1. Безопасно подготовить репозиторий (`.gitignore`, аудит трекинга секретов/БД) и создать готовый workflow `.github/workflows/deploy.yml`.
-2. Полностью подготовить VPS `178.17.60.16:/opt/prisonbot` к работе через Git и SSH-деплой (бэкап БД и `.env`, генерация отдельных SSH-ключей для чтения репозитория и для входа GitHub Actions, безопасная привязка `/opt/prisonbot` к GitHub без остановки/потери данных).
-3. Сохранить все готовые ключи и значения для ручного добавления на GitHub в локальный игнорируемый файл `github_setup_keys.txt` (который НИКОГДА не попадет в Git), покрыть конфигурацию автотестом и проверить, что боевой `prisonbot.service` продолжает стабильно работать.
+Твоя задача - исправить все 5 причин падения тестов в CI, провести инспекцию и безопасную уборку `/opt/prisonbot` на VPS, проверить готовность Git/SSH-связки на сервере и убедиться, что все тесты проходят на 100%.
 
 ---
 
 ## 1. ЦЕЛЬ И БИЗНЕС-ТРЕБОВАНИЯ
 
-### 1.1. Безопасность секретов и данных БД (КРИТИЧНО)
-- Провести аудит `.gitignore` и `git ls-files` в локальном репозитории:
-  - убедиться, что `.env`, `.env_server`, `github_setup_keys.txt`, `storage/*.db`, `storage/*.db-wal`, `storage/*.db-shm`, `storage/*.session*`, `storage/asset_cache/`, `repomix-output*.xml`, `__pycache__/`, `.pytest_cache/` и временные отладочные скрипты/логи надежно закрыты в `.gitignore`;
-  - проверить через `git ls-files`, не отслеживаются ли сейчас в Git файлы `.env`, `.env_server`, `storage/prison_bot.db`, `storage/prison.db`, `storage/user_session.session` (если какой-то из них случайно отслеживается - аккуратно убрать из индекса через `git rm --cached`, не удаляя сам файл с диска, чтобы при `git reset --hard` на VPS боевые данные никогда не затерлись).
-- Ни один приватный SSH-ключ, пароль или токен не должен попадать в `.github/workflows/deploy.yml` или в коммит.
+### 1.1. Исправление всех 5 причин падения тестов в GitHub Actions CI
+1. **Включить 3 статических JSON-справочника в Git (`.gitignore`)**:
+   - Проверить `.gitignore` и настроить исключения для `storage/` так, чтобы:
+     - секреты, БД, сессии и тяжелый кэш картинок (`storage/*.db*`, `storage/*.session*`, `storage/asset_cache/`) оставались строго в `.gitignore`;
+     - 3 статических справочника игры (`storage/bosses_catalog.json`, `storage/collections_catalog.json`, `storage/tattoo_clothing_cache.json`) были явно разрешены (`!storage/`, `!storage/bosses_catalog.json`, `!storage/collections_catalog.json`, `!storage/tattoo_clothing_cache.json`) и добавлены в индекс Git (`git add`).
+   - Убедиться через `git status` и `git ls-files storage/`, что в Git попадают **только** эти 3 справочника и ни один `.db` / `.session` / `asset_cache` файл.
+2. **Изолировать `tests/test_prison_worker.py` от реальной БД**:
+   - Во всех 6 упавших тестах (`test_prison_worker_energy_drain_cycle`, `test_prison_worker_skip_low_energy`, `test_prison_worker_night_mode`, `test_prison_worker_single_hit_energy_drain`, `test_prison_worker_checkpoint_claim`, `test_prison_drain_all_energy_across_circle_completion`) передать `db_engine=engine` в `AuthProvider(account_id=acc_id, db_engine=engine)` (проверить остальные тесты в файле, чтобы ни один не создавал `AuthProvider` без `db_engine=engine`).
+3. **Зафиксировать зависимости (`requirements.txt` и `.github/workflows/deploy.yml`)**:
+   - Убедиться, что в `requirements.txt` присутствуют `greenlet` (или `sqlalchemy[asyncio]`) и все нужные рантайм-зависимости.
+   - В `.github/workflows/deploy.yml` в шаге установки зависимостей для тестов добавить `pillow` (либо добавить `pillow` в `requirements.txt`), чтобы `from PIL import Image` гарантированно работал в CI.
+4. **Адаптировать `tests/test_reference_archive.py::test_code_dump_completeness` под CI**:
+   - В `test_code_dump_completeness` проверять наличие `raw_js` и `css` всегда, а `parsed_js` проверять только если директория присутствует (либо пропускать проверку `parsed_js` в CI через проверку `os.environ.get("GITHUB_ACTIONS")` / `if parsed_dir.exists():`), не удаляя сам тест и не добавляя тяжелый `parsed_js/` в Git.
+5. **Детерминированная сортировка в `get_candidates_needing_profile_enrichment()` (`core/database.py`)**:
+   - Добавить явный вторичный ключ сортировки `TrackedCandidate.user_id.asc()` (в конец `order_by(...)`), чтобы порядок выдачи кандидатов с одинаковым приоритетом был 100% одинаковым на Windows и Linux.
 
-### 1.2. Автоматический пайплайн `.github/workflows/deploy.yml`
-- Создать рабочий пайплайн GitHub Actions `.github/workflows/deploy.yml`, состоящий из двух последовательных джоб:
-  1. **`test` (Проверка кода и автотесты на `ubuntu-latest`)**:
-     - запуск при `push` в ветку `main` и по ручной кнопке `workflow_dispatch`;
-     - настроить `paths-ignore`, чтобы правки только в `task.md`, `docs/**`, `screenshots/**`, `inf/**`, `ref/**`, `reference_archive/**`, `scratch/**`, `*.md` не запускали лишние перезапуски боевого сервера;
-     - настроить `concurrency` (`group: deploy-prisonbot-main`, `cancel-in-progress: false`), чтобы два параллельных пуша не перебивали друг друга на сервере;
-     - установить Python (версия как на VPS, например `3.11` / `3.12`) с кэшированием `pip`, установить Node.js (`20`), установить зависимости из `requirements.txt` (и `pytest`, если его нет в `requirements.txt`);
-     - выполнить проверки:
-       - `node --check web/static/app.js`
-       - `node --check web/static/sw.js`
-       - `python -m pytest -q tests/`
-     - если хотя бы один тест упал - пайплайн немедленно завершается с ошибкой, шаг `deploy` НЕ запускается, боевой сервер остается на предыдущей стабильной версии.
-  2. **`deploy` (Автоматическое обновление VPS, `needs: test`)**:
-     - запускается строго после успешного прохождения `test`;
-     - подключается к VPS через `appleboy/ssh-action@v1` с использованием секретов GitHub:
-       - `host: ${{ secrets.VPS_HOST }}`
-       - `username: ${{ secrets.VPS_USER }}`
-       - `key: ${{ secrets.VPS_SSH_KEY }}`
-     - выполняет на сервере в `/opt/prisonbot` безопасный и идемпотентный скрипт обновления (с `set -euo pipefail`):
-       1. создает бэкап SQLite базы `/opt/prisonbot/storage/prison_bot.db` в `/opt/prisonbot/backups/` с датой и оставляет последние 5 бэкапов;
-       2. забирает свежий код с GitHub (`git fetch origin main` и `git reset --hard origin/main`, не трогая неотслеживаемые `.env`, `storage/`, `venv/`, `backups/`);
-       3. устанавливает/обновляет пакеты из `requirements.txt` в фактический `venv`, который использует `prisonbot.service` (определить точный путь к python/pip из `systemctl cat prisonbot.service`);
-       4. перезапускает `prisonbot.service` (`systemctl restart prisonbot.service`);
-       5. ждет 4 секунды и выполняет живой health-check (`systemctl is-active --quiet prisonbot.service` + HTTP-проверка локального порта `127.0.0.1:8085` и отсутствия падения процесса); если сервис не поднялся - выводит последние 40 строк `journalctl -u prisonbot.service` и завершает шаг с ненулевым кодом ошибки.
-
-### 1.3. Полная подготовка VPS (`178.17.60.16:/opt/prisonbot`) агентом
-- Проверить конфигурацию `prisonbot.service` (`systemctl cat prisonbot.service`) и текущий статус папки `/opt/prisonbot`.
-- Сделать полную резервную копию `.env` и всей папки `/opt/prisonbot/storage` (`prison_bot.db*`, `user_session.session` и др.) в `/opt/prisonbot/backups/pre_cicd_backup_<timestamp>/`.
-- Сгенерировать на VPS две отдельные SSH-пары (`ed25519`, без парольной фразы):
-  1. **Ключ для чтения GitHub с VPS (Deploy Key)**: `/root/.ssh/prisonbot_github_deploy` (и `.pub`):
-     - добавить `github.com` в `/root/.ssh/known_hosts` через `ssh-keyscan -H github.com`;
-     - настроить для репозитория `/opt/prisonbot` явную команду `git config core.sshCommand "ssh -i /root/.ssh/prisonbot_github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"`.
-  2. **Ключ для входа GitHub Actions на VPS**: `/root/.ssh/prisonbot_gha_access` (и `.pub`):
-     - аккуратно дописать публичную часть (`/root/.ssh/prisonbot_gha_access.pub`) в `/root/.ssh/authorized_keys` (проверив права `700` на `/root/.ssh` и `600` на `authorized_keys`, НЕ удаляя существующие ключи!).
-- Подготовить директорию `/opt/prisonbot` как Git-репозиторий:
-  - узнать точный URL репозитория из локального `git remote -v` и преобразовать в SSH-формат `git@github.com:<owner>/<repo>.git`;
-  - если `/opt/prisonbot/.git` еще не существует - аккуратно выполнить `git init -b main` и `git remote add origin git@github.com:<owner>/<repo>.git` + настроить `core.sshCommand` (при этом НЕ удалять `.env`, `storage/`, `venv/` и не ломать работающий сервис).
-  - проверить, что `prisonbot.service` активен (`active`) и соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) не затронуты.
-
-### 1.4. Удобная выдача ключей владельцу (`github_setup_keys.txt`)
-- Создать локально в корне проекта временный файл `github_setup_keys.txt` (строго добавленный в `.gitignore`!) с аккуратно отформатированными и готовыми к копированию блоками:
-  - `DEPLOY_KEY_PUB` - содержимое `/root/.ssh/prisonbot_github_deploy.pub` (для GitHub -> Settings -> Deploy keys);
-  - `VPS_HOST` - IP сервера `178.17.60.16`;
-  - `VPS_USER` - имя пользователя SSH (из `.env_server`, например `root`);
-  - `VPS_SSH_KEY` - полное содержимое приватного ключа `/root/.ssh/prisonbot_gha_access` (от `-----BEGIN OPENSSH PRIVATE KEY-----` до `-----END OPENSSH PRIVATE KEY-----`).
-- Проверить через `git status --ignored`, что `github_setup_keys.txt` точно игнорируется Git и не попадет в коммит.
+### 1.2. Финальная инспекция и безопасная очистка VPS (`178.17.60.16:/opt/prisonbot`)
+- Подключиться к VPS `178.17.60.16` и провести полный аудит директории `/opt/prisonbot`:
+  1. **Проверка Git и Deploy Key**:
+     - выполнить `ssh -i /root/.ssh/prisonbot_github_deploy -o IdentitiesOnly=yes -T git@github.com` и `git fetch origin main` в `/opt/prisonbot` - убедиться, что VPS уже авторизован на GitHub и успешно видит ветку `main`;
+     - проверить `git status` в `/opt/prisonbot` - выявить все неотслеживаемые (`untracked`) и измененные файлы.
+  2. **Безопасная очистка лишнего мусора на VPS**:
+     - удалить на VPS только очевидный временный мусор от прошлых ручных сессий/деплоев (например, временные `audit_*.py`, `test_guild_*.py`, `*.bak`, `__pycache__`, `.pytest_cache`, если они завалялись в `/opt/prisonbot`);
+     - **СТРОГО НЕ ТРОГАТЬ** на VPS: `.env`, всю папку `storage/` (`prison_bot.db*`, `user_session.session`, `asset_cache/`), `venv/`, `backups/`, а также соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`);
+     - проверить, не вызовет ли предстоящий `git reset --hard origin/main` конфликта с уже лежащими на VPS файлами `storage/bosses_catalog.json`, `storage/collections_catalog.json`, `storage/tattoo_clothing_cache.json` (если нужно - убедиться, что `git fetch` + `git reset --hard origin/main` в `deploy.yml` корректно их обновит без ошибки `untracked working tree files would be overwritten`).
+  3. **Проверка сервиса и автобэкапа**:
+     - проверить, что `prisonbot.service` активен (`active`), нет ошибок в `journalctl -u prisonbot.service -n 50`;
+     - проверить наличие свежих данных фонового обогащения общака (`obshak_coverage`) и подтвердить в отчете, что фоновый сбор на VPS работает штатно.
 
 ---
 
 ## 2. КОНФИГУРАЦИЯ
 
-### 2.1. Файлы для создания и изменения
-- `.gitignore` - убедиться в защите `.env`, `.env_server`, `github_setup_keys.txt`, `storage/*.db*`, `storage/*.session*`, `storage/asset_cache/`, `repomix-output*.xml`, `__pycache__/`, `.pytest_cache/`.
-- `.github/workflows/deploy.yml` (новый файл) - CI/CD пайплайн тестирования и автодеплоя на VPS.
-- `tests/test_ci_workflow.py` (новый файл) - автотесты валидности `.github/workflows/deploy.yml` и правил `.gitignore`.
-- `github_setup_keys.txt` (локальный временный игнорируемый файл) - ключи для разовой вставки на сайте GitHub.
-- `requirements.txt` - проверить, все ли пакеты, нужные для запуска приложения и `pytest` в чистом Linux, присутствуют (при необходимости указать установку `pytest` / `pytest-asyncio` / `httpx` прямо в шаге CI, если они dev-зависимости).
+### 2.1. Файлы для изменения
+- `.gitignore` - разрешить `storage/bosses_catalog.json`, `storage/collections_catalog.json`, `storage/tattoo_clothing_cache.json`, сохранив жесткий игнор для `storage/*.db*`, `storage/*.session*`, `storage/asset_cache/`, `.env`, `.env_server`, `github_setup_keys.txt`.
+- `requirements.txt` и/или `.github/workflows/deploy.yml` - закрепить `greenlet` и `pillow`.
+- `core/database.py` - добавить `TrackedCandidate.user_id.asc()` в `order_by` метода `get_candidates_needing_profile_enrichment()`.
+- `tests/test_prison_worker.py` - передать `db_engine=engine` в `AuthProvider(...)` во всех тестах файла.
+- `tests/test_reference_archive.py` - сделать проверку `parsed_js/` совместимой с чистой средой CI (GitHub Actions).
 
 ### 2.2. Ограничения сохранности файлов и сервисов
-- **НЕ удалять** `reference_archive/pro_prison_bot/`, `tests/test_reference_archive.py` и существующие скрипты `deploy_*.py`.
-- **НЕ коммитить** и не выводить в публичные логи содержимое `.env` или `.env_server`.
-- На VPS **НЕ затрагивать** соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) и не удалять файлы из `/opt/prisonbot/storage/`.
+- **НЕ удалять** локально `reference_archive/pro_prison_bot/`, `tests/test_reference_archive.py` и скрипты `deploy_*.py`.
+- **НЕ коммитить** `.env`, `.env_server`, `storage/*.db*`, `storage/*.session*`, `github_setup_keys.txt`.
+- На VPS **НЕ затрагивать** `.env`, `storage/`, `venv/`, `backups/`, `crayfish_omni_hub`, `autoclip_service`.
 
 ---
 
 ## 3. ЛОГИКА / АРХИТЕКТУРА
 
-### 3.1. Проверка совместимости тестов с чистой средой Linux (GitHub Actions)
-- Перед завершением проанализировать тесты в `tests/`: убедиться, что ни один тест не зависит от:
-  - жестких Windows-путей (`d:\...` или `\` вместо `Path`);
-  - наличия локального `.env`, `.env_server`, `storage/prison_bot.db` или `storage/user_session.session`;
-  - реального сетевого доступа к VPS или игровому серверу.
-- Если найдется тест, который в чистой среде Linux без `.env` / локальной БД может упасть - аккуратно поправить его (добавить мок/временную фикстуру), чтобы в GitHub Actions гарантированно проходили 100% тестов.
+### 3.1. Проверка чистоты CI-среды локально
+- Проверить, что в `git ls-files storage/` присутствуют ровно 3 JSON-справочника:
+  - `storage/bosses_catalog.json`
+  - `storage/collections_catalog.json`
+  - `storage/tattoo_clothing_cache.json`
+- Проверить, что все тесты в `tests/` проходят без обращения к локальным `.db` / `.env` файлам (имитация чистого Linux-раннера GitHub Actions).
 
-### 3.2. Идемпотентность скрипта деплоя на VPS
-- Внутри `.github/workflows/deploy.yml` шаг деплоя должен корректно работать при каждом последующем пуше:
-  ```bash
-  set -euo pipefail
-  cd /opt/prisonbot
-  mkdir -p /opt/prisonbot/backups
-  if [ -f /opt/prisonbot/storage/prison_bot.db ]; then
-    cp /opt/prisonbot/storage/prison_bot.db "/opt/prisonbot/backups/prison_bot_$(date +%Y%m%d_%H%M%S).db"
-    ls -1t /opt/prisonbot/backups/prison_bot_*.db | tail -n +6 | xargs -r rm -f
-  fi
-  git fetch origin main
-  git reset --hard origin/main
-  <ACTUAL_VENV_PIP> install -q -r requirements.txt
-  systemctl restart prisonbot.service
-  sleep 4
-  systemctl is-active --quiet prisonbot.service
-  curl -fsS [http://127.0.0.1:8085/prison/](http://127.0.0.1:8085/prison/) > /dev/null
-  ```
-- Заменить `<ACTUAL_VENV_PIP>` на реальный путь к `pip` из `systemctl cat prisonbot.service` (и проверить точный URL локального health-check эндпоинта на VPS).
-- Убедиться, что если в `/opt/prisonbot` лежат старые локальные файлы-конфликты (например, неотслеживаемые файлы, которые теперь есть в Git), первый `git reset --hard` пройдет без ошибки `untracked working tree files would be overwritten by checkout` (для этого на этапе подготовки VPS аккуратно проверить пересечения или сделать бэкап и синхронизировать).
+### 3.2. Безопасный `git reset --hard` на VPS при первом автодеплое
+- Поскольку 3 JSON-файла в `storage/` раньше не отслеживались в Git, а на VPS они уже существуют на диске, при первом `git reset --hard origin/main` Git может выдать ошибку `untracked working tree files would be overwritten`.
+- Чтобы первый и все последующие автодеплои из GitHub Actions прошли гарантированно без сбоев:
+  - при инспекции VPS убедиться, что `/opt/prisonbot` синхронизирован с текущим `origin/main` (или аккуратно убрать конфликтные неотслеживаемые копии этих 3 JSON-файлов / забэкапить их перед `git reset --hard`), а остальные важные файлы (`.env`, `storage/prison_bot.db*`, `storage/user_session.session`, `storage/asset_cache/`) остались полностью нетронутыми.
 
 ---
 
 ## 4. ТЕСТИРОВАНИЕ
 
-Создать `tests/test_ci_workflow.py` и прогнать весь пакет тестов:
-1. Проверка наличия и синтаксической валидности `.github/workflows/deploy.yml` (парсинг YAML, наличие джоб `test` и `deploy`, `needs: test`, триггер `push` в `main`, `workflow_dispatch`, игнорирование `task.md`, использование `secrets.VPS_HOST`, `secrets.VPS_USER`, `secrets.VPS_SSH_KEY`, отсутствие захардкоженных IP/паролей/приватных ключей).
-2. Проверка `.gitignore`: содержит правила для `.env`, `.env_server`, `github_setup_keys.txt`, `*.db`, `*.session`.
-3. Полный прогон `node --check web/static/app.js`, `node --check web/static/sw.js` и `python -m pytest -q tests/` (проверить, что все тесты проходят даже при запуске без локальных секретов).
+1. Прогнать точечно все ранее упавшие тестовые модули:
+   - `tests/test_asset_cache.py`
+   - `tests/test_boss_worker.py`
+   - `tests/test_drop_parser.py`
+   - `tests/test_friend_outreach_worker.py`
+   - `tests/test_improvements_v2.py`
+   - `tests/test_prison_worker.py`
+   - `tests/test_raids_api.py`
+   - `tests/test_reference_archive.py`
+   - `tests/test_wardrobe_api.py`
+   - `tests/test_web_api.py`
+   - `tests/test_ci_workflow.py`
+2. Прогнать синтаксис JS (`node --check web/static/app.js && node --check web/static/sw.js`) и полный пакет `python -m pytest -q tests/`.
+3. Проверить `git status` и `git ls-files storage/` на отсутствие утечки секретов и БД.
 
 ---
 
 ## 5. ПОРЯДОК РЕАЛИЗАЦИИ ДЛЯ АГЕНТА
 
 ### Чеклист выполнения
-- [ ] 1. Проверить локальный `git remote -v`, `git ls-files` и `.gitignore` (убрать из индекса любые случайно отслеживаемые секреты/БД через `git rm --cached`, добавить `github_setup_keys.txt` в `.gitignore`).
-- [ ] 2. Проинспектировать на VPS (`178.17.60.16`) `systemctl cat prisonbot.service` (точный путь к Python/venv и локальный порт), сделать бэкап `.env` и `storage/` в `/opt/prisonbot/backups/`.
-- [ ] 3. Сгенерировать на VPS две SSH-пары (`prisonbot_github_deploy` для GitHub Deploy Key и `prisonbot_gha_access` для GitHub Actions), добавить `prisonbot_gha_access.pub` в `/root/.ssh/authorized_keys`, добавить `github.com` в `/root/.ssh/known_hosts`, привязать `/opt/prisonbot` к GitHub remote `origin` (`git@github.com:...`) с настроенным `core.sshCommand`.
-- [ ] 4. Записать готовые значения (`DEPLOY_KEY_PUB`, `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`) в локальный игнорируемый файл `github_setup_keys.txt` и проверить через `git status`, что он не попадает в отслеживаемые файлы.
-- [ ] 5. Создать `.github/workflows/deploy.yml` с джобами `test` и `deploy`, настроенным `paths-ignore`, автобэкапом БД на VPS и health-check после рестарта `prisonbot.service`.
-- [ ] 6. Проверить совместимость всех тестов в `tests/` с чистым Linux (GitHub Actions), написать `tests/test_ci_workflow.py` и прогнать `node --check` + `python -m pytest -q tests/`.
-- [ ] 7. Проверить состояние VPS после подготовки: `systemctl is-active prisonbot.service` (`active`), отсутствие ошибок в `journalctl -u prisonbot.service -n 50`, соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) не затронуты. В финальном отчете кратко подтвердить готовность и сообщить пользователю, что файл `github_setup_keys.txt` создан локально и готов для переноса ключей в GitHub.
+- [ ] 1. Обновить `.gitignore`, чтобы 3 справочника (`storage/bosses_catalog.json`, `storage/collections_catalog.json`, `storage/tattoo_clothing_cache.json`) отслеживались в Git, а все `.db*`, `.session*`, `asset_cache/`, `.env*` оставались строго игнорируемыми; выполнить `git add` для этих 3 справочников и проверить `git ls-files storage/`.
+- [ ] 2. Добавить `greenlet` и `pillow` в `requirements.txt` / `.github/workflows/deploy.yml`.
+- [ ] 3. Передать `db_engine=engine` в `AuthProvider(...)` во всех тестах `tests/test_prison_worker.py`.
+- [ ] 4. Добавить `TrackedCandidate.user_id.asc()` в `order_by` функции `get_candidates_needing_profile_enrichment()` в `core/database.py`.
+- [ ] 5. Адаптировать `tests/test_reference_archive.py::test_code_dump_completeness` под отсутствие `parsed_js/` в GitHub Actions.
+- [ ] 6. Прогнать `node --check` и `python -m pytest -q tests/` - убедиться, что все 320+ тестов зеленые.
+- [ ] 7. Провести инспекцию и безопасную уборку VPS (`178.17.60.16:/opt/prisonbot`):
+  - проверить работу Deploy Key (`ssh -i /root/.ssh/prisonbot_github_deploy -T git@github.com`) и `git fetch origin main`;
+  - проверить `git status` в `/opt/prisonbot`, удалить только временный отладочный мусор (НЕ трогая `.env`, `storage/`, `venv/`, `backups/` и соседние контейнеры), устранить возможные конфликты `untracked` для первого `git reset --hard origin/main`;
+  - проверить `systemctl is-active prisonbot.service`, логи `journalctl -u prisonbot.service -n 50` и актуальный `obshak_coverage` на VPS;
+  - в финальном отчете кратко указать, что было почищено на VPS, подтвердить готовность к `git push` из VS Code и привести текущий статус `prisonbot.service` и `obshak_coverage`.
 
 ### Команды проверки
 ```bash
 node --check web/static/app.js
 node --check web/static/sw.js
-python -m pytest tests/test_ci_workflow.py -v
+git ls-files storage/
+python -m pytest tests/test_prison_worker.py tests/test_friend_outreach_worker.py tests/test_reference_archive.py tests/test_ci_workflow.py -v
 python -m pytest -q tests/
 git status
 ```
