@@ -141,6 +141,7 @@ def _migrate_bot_configs(connection) -> None:
         ("auto_fartovy_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_zaruby_enabled", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("auto_zaruby_tier", "VARCHAR(32) DEFAULT 'pacan' NOT NULL"),
+        ("outreach_criteria", "JSON DEFAULT '{}' NOT NULL"),
     ]
 
     for col_name, col_type in col_defs:
@@ -1016,3 +1017,177 @@ async def reset_game_guard(account_id: int, game_key: str, engine: Optional[Asyn
             row.guard_tripped = False
             row.guard_reason = None
             await session.commit()
+
+
+DEFAULT_OUTREACH_SOURCES = ["weekly_top", "achievements", "tg_channel", "guild"]
+
+
+def normalize_outreach_criteria(raw: Any = None, cfg: Any = None) -> dict:
+    """
+    Нормализует и валидирует JSON-критерии авто-рассылки заявок в друзья,
+    совмещая `BotConfig.outreach_criteria` и legacy-поля `BotConfig`.
+    """
+    base = {
+        "enabled": bool(getattr(cfg, "auto_friend_outreach", False)) if cfg is not None else False,
+        "daily_limit": int(getattr(cfg, "friend_outreach_daily_limit", 50) or 50) if cfg is not None else 50,
+        "min_damage": int(getattr(cfg, "friend_outreach_min_damage", 0) or 0) if cfg is not None else 0,
+        "max_damage": int(getattr(cfg, "friend_outreach_max_damage", 0) or 0) if cfg is not None else 0,
+        "min_authority": 0,
+        "max_authority": 0,
+        "sources": list(DEFAULT_OUTREACH_SOURCES),
+        "sort_by": "fresh",
+        "batch_size": 5,
+        "delay_between_requests_sec": 3.0,
+        "cycle_interval_sec": 300,
+        "exclude_keywords": "",
+    }
+    if isinstance(raw, dict):
+        for k in base:
+            if k in raw and raw[k] is not None:
+                base[k] = raw[k]
+    if cfg is not None and "auto_friend_outreach" in getattr(cfg, "__dict__", {}):
+        # Синхронизируем enabled с legacy-флагом, если raw не переопределял его явно
+        if not isinstance(raw, dict) or "enabled" not in raw:
+            base["enabled"] = bool(getattr(cfg, "auto_friend_outreach", False))
+
+    base["enabled"] = bool(base["enabled"])
+    base["daily_limit"] = max(1, min(100, int(base["daily_limit"] or 50)))
+    base["min_damage"] = max(0, int(base["min_damage"] or 0))
+    base["max_damage"] = max(0, int(base["max_damage"] or 0))
+    if base["max_damage"] > 0 and base["min_damage"] > base["max_damage"]:
+        base["min_damage"], base["max_damage"] = base["max_damage"], base["min_damage"]
+
+    base["min_authority"] = max(0, int(base["min_authority"] or 0))
+    base["max_authority"] = max(0, int(base["max_authority"] or 0))
+    if base["max_authority"] > 0 and base["min_authority"] > base["max_authority"]:
+        base["min_authority"], base["max_authority"] = base["max_authority"], base["min_authority"]
+
+    raw_sources = base.get("sources")
+    if isinstance(raw_sources, list):
+        clean_sources = [str(s).strip() for s in raw_sources if str(s).strip()]
+        base["sources"] = clean_sources if clean_sources else list(DEFAULT_OUTREACH_SOURCES)
+    else:
+        base["sources"] = list(DEFAULT_OUTREACH_SOURCES)
+
+    sort_by = str(base.get("sort_by") or "fresh").lower().strip()
+    base["sort_by"] = sort_by if sort_by in ("fresh", "damage", "authority") else "fresh"
+    base["batch_size"] = max(1, min(20, int(base["batch_size"] or 5)))
+    base["delay_between_requests_sec"] = max(1.0, min(30.0, float(base["delay_between_requests_sec"] or 3.0)))
+    base["cycle_interval_sec"] = max(60, min(3600, int(base["cycle_interval_sec"] or 300)))
+    base["exclude_keywords"] = str(base.get("exclude_keywords") or "").strip()
+    return base
+
+
+async def count_outreach_sent_last_24h(
+    account_id: int = 1,
+    now_ts: Optional[float] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> int:
+    """Считает количество успешно отправленных заявок (`status == 'sent'`) за скользящие 24 часа."""
+    import time as _time
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory, SentFriendRequest
+
+    cur_ts = float(now_ts if now_ts is not None else _time.time())
+    cutoff_ts = cur_ts - 86400.0
+    async with get_session(engine) as session:
+        res_hist = await session.execute(
+            select(FriendOutreachHistory.target_id).where(
+                FriendOutreachHistory.account_id == account_id,
+                FriendOutreachHistory.status == "sent",
+                FriendOutreachHistory.sent_at >= cutoff_ts,
+            )
+        )
+        hist_ids = {int(r) for r in res_hist.scalars().all() if r is not None}
+
+        cutoff_dt = datetime.utcfromtimestamp(cutoff_ts)
+        res_legacy = await session.execute(
+            select(SentFriendRequest.target_user_id).where(
+                SentFriendRequest.account_id == account_id,
+                SentFriendRequest.status == "sent",
+                SentFriendRequest.created_at >= cutoff_dt,
+            )
+        )
+        legacy_ids = {int(r) for r in res_legacy.scalars().all() if r is not None}
+    return len(hist_ids | legacy_ids)
+
+
+async def get_outreach_excluded_ids(
+    account_id: int = 1,
+    engine: Optional[AsyncEngine] = None,
+) -> set[int]:
+    """Возвращает множество target_id, которым уже отправлялась заявка или они недоступны."""
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory, SentFriendRequest
+
+    excluded: set[int] = set()
+    async with get_session(engine) as session:
+        res_h = await session.execute(
+            select(FriendOutreachHistory.target_id).where(
+                FriendOutreachHistory.account_id == account_id,
+                FriendOutreachHistory.status.in_(["sent", "already_friend", "already_pending", "privacy_blocked"]),
+            )
+        )
+        for uid in res_h.scalars().all():
+            if uid is not None:
+                excluded.add(int(uid))
+
+        res_l = await session.execute(
+            select(SentFriendRequest.target_user_id).where(
+                SentFriendRequest.account_id == account_id,
+            )
+        )
+        for uid in res_l.scalars().all():
+            if uid is not None:
+                excluded.add(int(uid))
+    return excluded
+
+
+async def record_outreach_history(
+    account_id: int,
+    target_id: int,
+    nickname: str = "",
+    source: str = "radar",
+    damage: int = 0,
+    authority: int = 0,
+    status: str = "sent",
+    error_message: Optional[str] = None,
+    sent_at: Optional[float] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Сохраняет или обновляет запись в `friend_outreach_history` (upsert по account_id + target_id)."""
+    import time as _time
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory
+
+    ts = float(sent_at if sent_at is not None else _time.time())
+    async with get_session(engine) as session:
+        stmt = select(FriendOutreachHistory).where(
+            FriendOutreachHistory.account_id == account_id,
+            FriendOutreachHistory.target_id == int(target_id),
+        )
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            existing.nickname = nickname or existing.nickname
+            existing.source = source or existing.source
+            existing.damage = max(int(existing.damage or 0), int(damage or 0))
+            existing.authority = max(int(existing.authority or 0), int(authority or 0))
+            existing.status = status
+            existing.error_message = error_message[:255] if error_message else None
+            existing.sent_at = ts
+        else:
+            session.add(
+                FriendOutreachHistory(
+                    account_id=account_id,
+                    target_id=int(target_id),
+                    nickname=nickname or f"Игрок #{target_id}",
+                    source=source or "radar",
+                    damage=int(damage or 0),
+                    authority=int(authority or 0),
+                    status=status,
+                    error_message=error_message[:255] if error_message else None,
+                    sent_at=ts,
+                )
+            )
+        await session.commit()

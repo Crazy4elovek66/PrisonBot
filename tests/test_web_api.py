@@ -3430,16 +3430,68 @@ async def test_energy_target_xor_mutex_and_master_drain(web_setup):
 
     # 5. Ручной слив энергии у мастера
     from unittest.mock import AsyncMock
+    orig_player = bot_context.player_api
+    orig_prison = bot_context.prison_api
+    orig_pw = bot_context.prison_worker
     bot_context.player_api = AsyncMock()
     bot_context.prison_api = AsyncMock()
     bot_context.prison_worker = None
-    bot_context.player_api.init_player.return_value = {"energy": 4, "maxEnergy": 50}
-    bot_context.prison_api.enter_master.return_value = {
-        "checkpoints": [{"clicksRequired": 5, "energyCost": 2}],
-        "data": {"progress": {"currentCheckpoint": 0, "clicksInCheckpoint": 0, "level": 0}},
-    }
-    bot_context.prison_api.do_master_work.side_effect = [{"energy": 2}, {"energy": 0}]
-    r_drain = await client.post("/api/v1/actions/master/drain", json={"masterId": 1}, headers=headers)
-    assert r_drain.status_code == 200
-    assert r_drain.json()["success"] is True
-    assert r_drain.json()["works_done"] == 2
+    try:
+        bot_context.player_api.init_player.return_value = {"energy": 4, "maxEnergy": 50}
+        bot_context.prison_api.enter_master.return_value = {
+            "checkpoints": [{"clicksRequired": 5, "energyCost": 2}],
+            "data": {"progress": {"currentCheckpoint": 0, "clicksInCheckpoint": 0, "level": 0}},
+        }
+        bot_context.prison_api.do_master_work.side_effect = [{"energy": 2}, {"energy": 0}]
+        r_drain = await client.post("/api/v1/actions/master/drain", json={"masterId": 1}, headers=headers)
+        assert r_drain.status_code == 200
+        assert r_drain.json()["success"] is True
+        assert r_drain.json()["works_done"] == 2
+    finally:
+        bot_context.player_api = orig_player
+        bot_context.prison_api = orig_prison
+        bot_context.prison_worker = orig_pw
+
+
+@pytest.mark.asyncio
+async def test_outreach_criteria_status_run_now_and_no_proprisonbot(web_setup):
+    from unittest.mock import AsyncMock
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    r_raids = await client.get("/api/v1/raids", headers=headers)
+    assert r_raids.status_code == 200
+    d_raids = r_raids.json()
+    assert d_raids["success"] is True
+    assert d_raids["isPaywalled"] is False
+    assert d_raids["sourceStatus"] != "unauthorized"
+
+    r_patch = await client.patch(
+        "/api/v1/outreach/criteria",
+        json={"daily_limit": 35, "min_damage": 1_000_000, "sources": ["weekly_top", "tg_channel"], "sort_by": "damage"},
+        headers=headers,
+    )
+    assert r_patch.status_code == 200
+    d_patch = r_patch.json()
+    assert d_patch["criteria"]["daily_limit"] == 35
+    assert d_patch["criteria"]["min_damage"] == 1_000_000
+    assert "server_now_ts" in d_patch
+
+    r_status = await client.get("/api/v1/outreach/status", headers=headers)
+    assert r_status.status_code == 200
+    assert r_status.json()["daily_limit"] == 35
+
+    orig_social = bot_context.social_api
+    orig_ow = getattr(bot_context, "friend_outreach_worker", None)
+    bot_context.social_api = AsyncMock()
+    bot_context.social_api.get_all_friend_ids.return_value = set()
+    bot_context.friend_outreach_worker = None
+    try:
+        r_run = await client.post("/api/v1/outreach/run-now", headers=headers)
+        assert r_run.status_code == 200
+        assert r_run.json()["success"] is True
+    finally:
+        bot_context.social_api = orig_social
+        bot_context.friend_outreach_worker = orig_ow

@@ -457,6 +457,7 @@ def create_scheduler(
     poker_worker: Optional[Any] = None,
     fartovy_worker: Optional[Any] = None,
     zaruby_worker: Optional[Any] = None,
+    friend_outreach_worker: Optional[Any] = None,
     routine_interval_minutes: Optional[int] = None,
     boss_interval_minutes: Optional[int] = None,
     prison_interval_minutes: Optional[int] = None,
@@ -476,6 +477,7 @@ def create_scheduler(
     controller.poker_worker = poker_worker
     controller.fartovy_worker = fartovy_worker
     controller.zaruby_worker = zaruby_worker
+    controller.friend_outreach_worker = friend_outreach_worker
     try:
         from core.state_hub import state_hub
         state_hub.register_wakeup_callback(controller.schedule_wakeup)
@@ -624,6 +626,20 @@ def create_scheduler(
         logger.info(
             f"Быстрая проверка входящих заявок в друзья зарегистрирована с интервалом {SchedulerController.FRIEND_REQUESTS_FAST_SEC}с."
         )
+
+    if friend_outreach_worker is not None:
+        scheduler.add_job(
+            friend_outreach_worker.run_cycle,
+            trigger="interval",
+            seconds=300,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+            id=f"friend_outreach_worker_{acc_id}",
+            name=f"Friend Outreach Worker for account {acc_id}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("FriendOutreachWorker зарегистрирован с независимым интервалом 300с (старт через 10с).")
 
     # Многоуровневые фоновые обновления LiveStateHub (для бесшовного SSE UI)
     scheduler.add_job(

@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v33" in sw
+    assert "prisonbot-assets-v34" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_12";' in js
+    assert 'const ASSET_VERSION = "20261127_13";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_12" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_13" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_12"',
-        'src="assets/icons/room_reward.webp?v=20261127_12"',
-        'src="assets/icons/complect.webp?v=20261127_12"',
-        'src="assets/icons/podogrev.webp?v=20261127_12"',
-        'src="assets/icons/authority.webp?v=20261127_12"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_12"',
+        'src="assets/icons/boss.webp?v=20261127_13"',
+        'src="assets/icons/room_reward.webp?v=20261127_13"',
+        'src="assets/icons/complect.webp?v=20261127_13"',
+        'src="assets/icons/podogrev.webp?v=20261127_13"',
+        'src="assets/icons/authority.webp?v=20261127_13"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_13"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1463,7 +1463,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_12',
+  ASSET_VERSION: '20261127_13',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -2100,3 +2100,111 @@ console.log('MASTERS_XOR_JS_OK');
     res = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
     assert "MASTERS_XOR_JS_OK" in res.stdout
+
+
+def test_raids_clean_ui_and_outreach_criteria_panel_js_runtime():
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "Закрытый источник рейдов @pro_prison_bot" not in html
+    assert "raids-source-banner" not in html
+    assert "Закрытый источник рейдов @pro_prison_bot" not in app_js
+    assert "Источник ProPrisonBot" not in app_js
+    assert 'id="outreach-criteria-accordion"' in html
+    assert 'id="btn-save-outreach-criteria"' in html
+    assert 'id="btn-run-outreach-now"' in html
+
+    script = f"""
+const vm = require('vm');
+function makeEl(id) {{
+  const attrs = {{}};
+  const listeners = {{}};
+  return {{
+    id,
+    innerHTML: '',
+    textContent: '',
+    className: '',
+    value: '',
+    checked: false,
+    disabled: false,
+    dataset: {{}},
+    style: {{}},
+    children: [],
+    classList: {{
+      _set: new Set(['active']),
+      add(c) {{ this._set.add(c); }},
+      remove(c) {{ this._set.delete(c); }},
+      toggle(c, f) {{ if (f === undefined) {{ if (this._set.has(c)) this._set.delete(c); else this._set.add(c); }} else if (f) this._set.add(c); else this._set.delete(c); }},
+      contains(c) {{ return this._set.has(c); }},
+    }},
+    setAttribute(k, v) {{ attrs[k] = String(v); }},
+    getAttribute(k) {{ return attrs[k] ?? null; }},
+    addEventListener(ev, fn) {{ (listeners[ev] = listeners[ev] || []).push(fn); }},
+    dispatchEvent(ev) {{ for (const fn of (listeners[ev.type || ev] || [])) fn(ev); }},
+    querySelector() {{ return makeEl(); }},
+    querySelectorAll() {{ return []; }},
+    appendChild(ch) {{ this.children.push(ch); }},
+    remove() {{}},
+    closest() {{ return null; }},
+  }};
+}}
+const ids = [
+  'outreach-criteria-accordion', 'outreach-criteria-toggle', 'outreach-criteria-body',
+  'outreach-criteria-arrow', 'outreach-criteria-summary', 'outreach-telemetry-line',
+  'outreach-min-damage', 'outreach-max-damage', 'outreach-min-authority', 'outreach-max-authority',
+  'outreach-daily-limit', 'outreach-sort-by', 'outreach-exclude-keywords',
+  'raids-auto-invite-toggle', 'raids-auto-invite-status', 'unified-raids-players-list',
+  'btn-save-outreach-criteria', 'btn-run-outreach-now'
+];
+const elements = Object.fromEntries(ids.map(id => [id, makeEl(id)]));
+const sandbox = {{
+  console, Math, Date, JSON, Number, String, Boolean, Array, Object, Set, Map, URLSearchParams,
+  setTimeout: () => 0, clearTimeout: () => {{}}, setInterval: () => 0, clearInterval: () => {{}},
+  localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  sessionStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  location: {{ hash: '', search: '', pathname: '/', hostname: 'localhost' }},
+  navigator: {{}},
+  window: {{ addEventListener: () => {{}}, Telegram: {{ WebApp: {{ initData: '', ready: () => {{}}, expand: () => {{}} }} }} }},
+  document: {{
+    activeElement: null,
+    getElementById: (id) => elements[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => makeEl(),
+    addEventListener: () => {{}},
+  }},
+  fetch: async () => ({{ ok: true, status: 200, json: async () => ({{ success: true }}) }}),
+  apiFetch: async () => ({{ success: true }}),
+  showToast: () => {{}},
+  refreshState: () => {{}},
+  EventSource: function() {{ return {{ addEventListener: () => {{}}, close: () => {{}} }}; }},
+}};
+sandbox.globalThis = sandbox;
+vm.runInNewContext({json.dumps(app_js)}, sandbox);
+
+sandbox.toggleOutreachCriteriaAccordion(true);
+if (elements['outreach-criteria-body'].style.display !== 'flex') throw new Error('accordion did not open');
+
+sandbox.renderUnifiedRaidsPlayers({{
+  success: true,
+  sent_24h: 7,
+  daily_limit: 50,
+  matched_count: 12,
+  worker_status: 'Активен',
+  criteria: {{ enabled: true, daily_limit: 50, min_damage: 1000000, max_damage: 0, min_authority: 0, max_authority: 0, sort_by: 'damage', sources: ['weekly_top'], exclude_keywords: '' }},
+  players: [{{ userId: 101, nickname: 'Боец', damage: 2000000, authority: 500, source: 'weekly_top', status: 'none', matchesCriteria: true }}],
+}});
+
+if (!elements['raids-auto-invite-status'].textContent.includes('7/50')) throw new Error('status counter not rendered');
+if (!elements['raids-auto-invite-status'].textContent.includes('12')) throw new Error('matched_count not rendered');
+if (elements['outreach-criteria-body'].style.display !== 'flex') throw new Error('SSE re-render collapsed criteria accordion');
+console.log('OUTREACH_UI_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "OUTREACH_UI_OK" in res.stdout

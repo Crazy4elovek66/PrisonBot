@@ -24,75 +24,44 @@ def test_parse_damage_string():
 
 @pytest.mark.asyncio
 async def test_raids_api_get_raids_success():
-    api = RaidsAPI(external_token="fake_token")
-    mock_raids_data = [
-        {"id": 1, "brigadeName": "Синдикат", "bossName": "Бурят", "minDamage": 500_000_000, "participants": []}
-    ]
-
+    api = RaidsAPI()
     with patch("httpx.AsyncClient.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = mock_raids_data
-        mock_get.return_value = mock_resp
-
         res = await api.get_raids(force_refresh=True)
         assert res["sourceStatus"] == "ok"
         assert res["isPaywalled"] is False
-        assert len(res["raids"]) == 1
-        assert res["raids"][0]["brigadeName"] == "Синдикат"
+        assert res["raids"] == []
+        mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_raids_api_get_raids_paywall_403():
     api = RaidsAPI()
-
     with patch("httpx.AsyncClient.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
-        mock_resp.json.return_value = {"error": "Требуется активная подписка", "code": "SUBSCRIPTION_REQUIRED"}
-        mock_get.return_value = mock_resp
-
         res = await api.get_raids(force_refresh=True)
-        assert res["sourceStatus"] == "paywall"
-        assert res["isPaywalled"] is True
+        assert res["sourceStatus"] == "ok"
+        assert res["isPaywalled"] is False
         assert res["raids"] == []
-        assert "подписку" in res["sourceMessage"]
+        mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_raids_api_get_raids_unauthorized_401():
     api = RaidsAPI()
-
     with patch("httpx.AsyncClient.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 401
-        mock_get.return_value = mock_resp
-
         res = await api.get_raids(force_refresh=True)
-        assert res["sourceStatus"] == "unauthorized"
-        assert res["isPaywalled"] is True
+        assert res["sourceStatus"] == "ok"
+        assert res["isPaywalled"] is False
         assert res["raids"] == []
+        mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_raids_api_get_news_and_caching():
     api = RaidsAPI()
-    news_payload = {"posts": [{"id": 10, "title": "Рейд выходного дня", "text": "Набор в гильдию"}]}
-
     with patch("httpx.AsyncClient.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = news_payload
-        mock_get.return_value = mock_resp
-
         res1 = await api.get_news(limit=10, force_refresh=True)
-        assert res1 == news_payload
-        assert mock_get.call_count == 1
-
-        # Second call should use TTL cache without hitting network
-        res2 = await api.get_news(limit=10, force_refresh=False)
-        assert res2 == news_payload
-        assert mock_get.call_count == 1
+        assert res1 == {"posts": []}
+        mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -820,6 +820,18 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
 
         for k, v in updates.items():
             setattr(cfg, k, v)
+        if any(k in updates for k in ("auto_friend_outreach", "friend_outreach_daily_limit", "friend_outreach_min_damage", "friend_outreach_max_damage")):
+            from core.database import normalize_outreach_criteria
+            crit = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
+            if "auto_friend_outreach" in updates:
+                crit["enabled"] = bool(updates["auto_friend_outreach"])
+            if "friend_outreach_daily_limit" in updates:
+                crit["daily_limit"] = int(updates["friend_outreach_daily_limit"])
+            if "friend_outreach_min_damage" in updates:
+                crit["min_damage"] = int(updates["friend_outreach_min_damage"])
+            if "friend_outreach_max_damage" in updates:
+                crit["max_damage"] = int(updates["friend_outreach_max_damage"])
+            cfg.outreach_criteria = crit
         cfg.updated_at = datetime.utcnow()
         await session.commit()
         await session.refresh(cfg)
@@ -893,6 +905,10 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
                 ctrl.trigger_prison_now()
             elif bot_context.prison_worker is not None:
                 asyncio.create_task(bot_context.prison_worker.run_cycle())
+        if updates.get("auto_friend_outreach"):
+            ow = getattr(bot_context, "friend_outreach_worker", None)
+            if ow is not None:
+                asyncio.create_task(ow.run_cycle())
         if should_wake_routine:
             if ctrl is not None and hasattr(ctrl, "trigger_routine_now"):
                 ctrl.trigger_routine_now()
@@ -5627,24 +5643,37 @@ async def get_unified_raids_players(
     account_id: int = 1,
 ) -> Dict[str, Any]:
     """Единый дедуплицированный список активных игроков из всех источников с сортировкой и статусом Авто."""
-    from core.models import TrackedCandidate, SentFriendRequest, FriendStats
+    from client.http_client import get_game_now_ts
+    from core.database import count_outreach_sent_last_24h, get_outreach_excluded_ids, normalize_outreach_criteria
+    from core.models import FriendOutreachHistory, FriendStats, SentFriendRequest, TrackedCandidate
+    from workers.friend_outreach_worker import filter_outreach_candidates
 
+    now_ts = get_game_now_ts()
     engine = bot_context.db_engine
     if not engine:
-        return {"success": True, "players": [], "total": 0, "auto_invite": {"enabled": False, "sentLast24h": 0, "dailyLimit": 50}}
+        return {
+            "success": True,
+            "server_now_ts": round(now_ts, 3),
+            "players": [],
+            "total": 0,
+            "sent_24h": 0,
+            "daily_limit": 50,
+            "matched_count": 0,
+            "criteria": normalize_outreach_criteria(),
+            "outreach_status": {"worker_status": "Ожидание", "last_run_ts": 0, "last_error": "", "last_sent_player": None},
+            "auto_invite": {"enabled": False, "sentLast24h": 0, "dailyLimit": 50},
+        }
 
     cfg = await get_or_create_config(account_id, engine)
-    safety = await _raids_api.rate_guard.get_safety_status(
-        account_id=account_id,
-        daily_limit=getattr(cfg, "auto_friend_outreach_daily_limit", 50),
-        db_engine=engine,
-    )
+    criteria = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
+    daily_limit = int(criteria["daily_limit"])
+    sent_24h = await count_outreach_sent_last_24h(account_id, now_ts=now_ts, engine=engine)
+    excluded_ids = await get_outreach_excluded_ids(account_id, engine=engine)
 
     async with get_session(engine) as session:
-        stmt = select(TrackedCandidate).where(TrackedCandidate.account_id == account_id)
-        if source and source != "all":
-            stmt = stmt.where(TrackedCandidate.source == source)
-        rows = (await session.execute(stmt)).scalars().all()
+        all_rows = (
+            await session.execute(select(TrackedCandidate).where(TrackedCandidate.account_id == account_id))
+        ).scalars().all()
 
         sent_rows = (
             await session.execute(
@@ -5655,6 +5684,17 @@ async def get_unified_raids_players(
         ).all()
         sent_map = {int(uid): str(st or "sent") for uid, st in sent_rows if uid is not None}
 
+        hist_rows = (
+            await session.execute(
+                select(FriendOutreachHistory.target_id, FriendOutreachHistory.status).where(
+                    FriendOutreachHistory.account_id == account_id
+                )
+            )
+        ).all()
+        for uid, st in hist_rows:
+            if uid is not None and st:
+                sent_map[int(uid)] = str(st)
+
         friend_rows = (
             await session.execute(
                 select(FriendStats.user_id).where(
@@ -5664,6 +5704,13 @@ async def get_unified_raids_players(
             )
         ).scalars().all()
         friend_ids = {int(uid) for uid in friend_rows if uid is not None}
+
+    matched_all, skip_stats = filter_outreach_candidates(
+        all_rows, criteria=criteria, excluded_ids=excluded_ids, friend_ids=friend_ids
+    )
+    matched_ids = {int(m["userId"]) for m in matched_all}
+
+    rows = [r for r in all_rows if not (source and source != "all" and str(r.source or "") != source)]
 
     dedup: Dict[int, Dict[str, Any]] = {}
     for c in rows:
@@ -5695,6 +5742,7 @@ async def get_unified_raids_players(
                 "source": src_name,
                 "sources": [src_name],
                 "status": status,
+                "matchesCriteria": (uid in matched_ids),
                 "last_seen_at": ts,
             }
 
@@ -5709,24 +5757,185 @@ async def get_unified_raids_players(
     else:
         players.sort(key=lambda x: (x["last_seen_at"], x["damage"]), reverse=True)
 
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    telemetry = ow.get_telemetry() if ow is not None else {
+        "worker_status": "Активен" if criteria["enabled"] else "Выключен",
+        "last_run_ts": 0,
+        "last_error": "",
+        "last_sent_player": None,
+        "cooldown_until_ts": 0,
+        "skip_stats": skip_stats,
+    }
+    if not telemetry.get("skip_stats"):
+        telemetry["skip_stats"] = skip_stats
+
     return {
         "success": True,
+        "server_now_ts": round(now_ts, 3),
         "players": players[:limit],
         "total": len(players),
+        "sent_24h": sent_24h,
+        "daily_limit": daily_limit,
+        "matched_count": len(matched_all),
+        "criteria": criteria,
+        "outreach_status": telemetry,
+        **telemetry,
         "auto_invite": {
-            "enabled": bool(getattr(cfg, "auto_friend_outreach", False)),
-            "sentLast24h": int(safety.get("sentLast24h") or 0),
-            "dailyLimit": int(safety.get("dailyLimit") or 50),
+            "enabled": bool(criteria["enabled"]),
+            "sentLast24h": sent_24h,
+            "dailyLimit": daily_limit,
         },
     }
 
 
+async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
+    from client.http_client import get_game_now_ts
+    from core.database import count_outreach_sent_last_24h, get_outreach_excluded_ids, normalize_outreach_criteria
+    from core.models import FriendStats, TrackedCandidate
+    from workers.friend_outreach_worker import filter_outreach_candidates
+
+    now_ts = get_game_now_ts()
+    engine = bot_context.db_engine
+    if not engine:
+        crit = normalize_outreach_criteria()
+        return {
+            "success": True,
+            "server_now_ts": round(now_ts, 3),
+            "sent_24h": 0,
+            "daily_limit": crit["daily_limit"],
+            "matched_count": 0,
+            "total_candidates": 0,
+            "criteria": crit,
+            "worker_status": "БД недоступна",
+            "last_run_ts": 0,
+            "last_error": "",
+            "last_sent_player": None,
+            "skip_stats": {},
+        }
+
+    cfg = await get_or_create_config(account_id, engine)
+    criteria = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
+    sent_24h = await count_outreach_sent_last_24h(account_id, now_ts=now_ts, engine=engine)
+    excluded_ids = await get_outreach_excluded_ids(account_id, engine=engine)
+
+    async with get_session(engine) as session:
+        all_rows = (
+            await session.execute(select(TrackedCandidate).where(TrackedCandidate.account_id == account_id))
+        ).scalars().all()
+        f_rows = (
+            await session.execute(
+                select(FriendStats.user_id).where(
+                    FriendStats.account_id == account_id,
+                    FriendStats.is_current_friend == True,
+                )
+            )
+        ).scalars().all()
+        friend_ids = {int(uid) for uid in f_rows if uid is not None}
+
+    matched, skip_stats = filter_outreach_candidates(
+        all_rows, criteria=criteria, excluded_ids=excluded_ids, friend_ids=friend_ids
+    )
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    telemetry = ow.get_telemetry() if ow is not None else {
+        "worker_status": "Активен" if criteria["enabled"] else "Выключен",
+        "last_run_ts": 0,
+        "last_error": "",
+        "last_sent_player": None,
+        "cooldown_until_ts": 0,
+        "skip_stats": skip_stats,
+    }
+    if not telemetry.get("skip_stats"):
+        telemetry["skip_stats"] = skip_stats
+
+    return {
+        "success": True,
+        "server_now_ts": round(now_ts, 3),
+        "sent_24h": sent_24h,
+        "daily_limit": criteria["daily_limit"],
+        "matched_count": len(matched),
+        "total_candidates": len(all_rows),
+        "criteria": criteria,
+        **telemetry,
+    }
+
+
+@api_router.get("/outreach/status")
+async def get_outreach_status(account_id: int = 1) -> Dict[str, Any]:
+    """Текущий статус, критерии и телеметрия воркера авто-рассылки заявок в друзья."""
+    return await _build_outreach_status_payload(account_id=account_id)
+
+
+@api_router.patch("/outreach/criteria")
+async def patch_outreach_criteria(
+    payload: Dict[str, Any] = Body(...),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Валидация и сохранение критериев авто-рассылки + немедленный пересчет matched_count."""
+    engine = bot_context.db_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Database engine not available")
+
+    from core.database import normalize_outreach_criteria
+
+    async with get_session(engine) as session:
+        cfg = (await session.execute(select(BotConfig).where(BotConfig.account_id == account_id))).scalar_one_or_none()
+        if not cfg:
+            cfg = BotConfig(account_id=account_id)
+            session.add(cfg)
+
+        merged_raw = dict(getattr(cfg, "outreach_criteria", None) or {})
+        for k, v in (payload or {}).items():
+            if v is not None:
+                merged_raw[k] = v
+
+        criteria = normalize_outreach_criteria(merged_raw, cfg=cfg)
+        cfg.outreach_criteria = criteria
+        cfg.auto_friend_outreach = bool(criteria["enabled"])
+        cfg.friend_outreach_daily_limit = int(criteria["daily_limit"])
+        cfg.friend_outreach_min_damage = int(criteria["min_damage"])
+        cfg.friend_outreach_max_damage = int(criteria["max_damage"])
+        cfg.updated_at = datetime.utcnow()
+        await session.commit()
+
+    out_payload = await _build_outreach_status_payload(account_id=account_id)
+    hub = _get_hub()
+    hub.update_slice(account_id, "outreach", out_payload, source_tag=_hub_source_tag())
+    hub.emit_change(account_id, ["outreach", "config"], patch={"outreach": out_payload}, reason="outreach_criteria_update")
+
+    if criteria["enabled"] and not getattr(cfg, "is_paused", False):
+        ow = getattr(bot_context, "friend_outreach_worker", None)
+        if ow is not None:
+            asyncio.create_task(ow.run_cycle())
+
+    return out_payload
+
+
+@api_router.post("/outreach/run-now")
+async def run_outreach_now(account_id: int = 1) -> Dict[str, Any]:
+    """Ручной запуск одного безопасного цикла FriendOutreachWorker."""
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    if ow is None:
+        from workers.friend_outreach_worker import FriendOutreachWorker
+        if not bot_context.social_api:
+            raise HTTPException(status_code=503, detail="SocialAPI not available")
+        ow = FriendOutreachWorker(
+            account_id=account_id,
+            social_api=bot_context.social_api,
+            player_api=bot_context.player_api,
+            raids_api=_raids_api,
+            db_engine=bot_context.db_engine,
+            state_hub=_get_hub(),
+            enable_jitter=False,
+        )
+        bot_context.friend_outreach_worker = ow
+
+    res = await ow.run_cycle(manual=True)
+    return res
+
+
 @api_router.get("/raids")
 async def get_raids_overview(account_id: int = 1) -> Dict[str, Any]:
-    """Получение списка активных рейдов (включая кэшированные посты из TG-каналов)."""
-    res = await _raids_api.get_raids()
-
-    # Загрузка кэшированных рейдов из TG-каналов
+    """Получение списка активных рейдов из кэшированных постов TG-каналов (без внешнего ProPrisonBot)."""
     tg_raids = []
     engine = bot_context.db_engine
     if engine:
@@ -5758,9 +5967,14 @@ async def get_raids_overview(account_id: int = 1) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Ошибка получения CachedRaidPost: {e}")
 
-    res["telegramRaids"] = tg_raids
-    res["tgScanCooldownSec"] = _raids_api.rate_guard.can_scan_tg()[1]
-    return res
+    return {
+        "success": True,
+        "sourceStatus": "ok",
+        "isPaywalled": False,
+        "raids": [],
+        "telegramRaids": tg_raids,
+        "tgScanCooldownSec": _raids_api.rate_guard.can_scan_tg()[1],
+    }
 
 
 @api_router.get("/news")

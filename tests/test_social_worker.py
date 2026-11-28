@@ -427,17 +427,12 @@ async def test_social_worker_safe_auto_outreach(social_setup):
         enable_jitter=False,
     )
 
-    # 1. Запуск цикла: должно отправиться ровно 3 заявки (лимит цикла 3)
+    # Авто-рассылка вынесена в FriendOutreachWorker: SocialWorker больше не отправляет дублирующие заявки
     res = await worker.run_cycle()
-    assert res["outreach_sent"] == 3
-    assert mock_api.send_friend_request.call_count == 3
+    assert res.get("outreach_sent", 0) == 0
+    assert mock_api.send_friend_request.call_count == 0
 
-    # Проверяем, что в SentFriendRequest записались ровно 3 игрока
-    async with get_session(engine) as session:
-        sent_recs = (await session.execute(select(SentFriendRequest).where(SentFriendRequest.account_id == acc_id))).scalars().all()
-        assert len(sent_recs) == 3
-
-    # 2. Проверка при паузе (is_paused=True): социалка должна быть полностью пропущена
+    # Проверяем, что при паузе (is_paused=True) социалка полностью пропускается
     async with get_session(engine) as session:
         stmt = select(BotConfig).where(BotConfig.account_id == acc_id)
         cfg = (await session.execute(stmt)).scalar_one()
@@ -447,18 +442,6 @@ async def test_social_worker_safe_auto_outreach(social_setup):
     mock_api.send_friend_request.reset_mock()
     res_paused = await worker.run_cycle()
     assert res_paused["status"] == "skipped"
-    assert mock_api.send_friend_request.call_count == 0
-
-    # 3. Проверка при auto_friend_outreach=False
-    async with get_session(engine) as session:
-        stmt = select(BotConfig).where(BotConfig.account_id == acc_id)
-        cfg = (await session.execute(stmt)).scalar_one()
-        cfg.is_paused = False
-        cfg.auto_friend_outreach = False
-        await session.commit()
-
-    res_disabled = await worker.run_cycle()
-    assert res_disabled.get("outreach_sent", 0) == 0
     assert mock_api.send_friend_request.call_count == 0
 
 

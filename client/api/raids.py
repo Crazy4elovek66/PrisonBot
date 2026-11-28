@@ -295,15 +295,11 @@ class OutreachRateGuard:
 class RaidsAPI:
     """
     Клиент-агрегатор для раздела «Рейды и Новости»:
-    1. Получение рейдов и новостей из внешнего источника (@pro_prison_bot) с кэшированием.
-    2. Определение серверного Paywall (403 SUBSCRIPTION_REQUIRED) и выдача понятного статуса.
-    3. Игровой радар активных дамагеров из официального API игры (GET /api/weekly-top/top)
+    1. Игровой радар активных дамагеров из официального API игры (GET /api/weekly-top/top)
        и локальной базы TrackedCandidate с детектором роста за 6-24ч.
-    4. Сканер активных бригад (GET /api/guild/recruitment/list, GET /api/guild/{id}/members).
-    5. Парсер текстовых постов рейдов, скопированных из Telegram-чатов.
+    2. Сканер активных бригад (GET /api/guild/recruitment/list, GET /api/guild/{id}/members).
+    3. Парсер текстовых постов рейдов из Telegram-каналов и чатов.
     """
-
-    PRO_PRISON_BOT_URL = "https://pro-prison-bot.003220.xyz"
 
     def __init__(self, external_token: Optional[str] = None):
         self.external_token = external_token
@@ -315,90 +311,15 @@ class RaidsAPI:
         self._guild_cursor: int = 0
 
     async def get_news(self, limit: int = 20, force_refresh: bool = False) -> Dict[str, Any]:
-        """
-        Получение ленты новостей и объявлений (@pro_prison_bot /api/news).
-        Доступно без платной подписки.
-        """
-        now = time.time()
-        if not force_refresh and self._news_cache and (now - self._news_cache_time < 60):
-            return self._news_cache
-
-        headers = {"Accept": "application/json"}
-        if self.external_token:
-            headers["Authorization"] = f"Bearer {self.external_token}"
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{self.PRO_PRISON_BOT_URL}/api/news?limit={limit}", headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._news_cache = data
-                    self._news_cache_time = now
-                    return data
-                elif resp.status_code in (401, 403):
-                    logger.warning(f"Ошибка авторизации при запросе новостей: {resp.status_code}")
-                    return {"posts": [], "error": "Требуется авторизация"}
-        except Exception as e:
-            logger.debug(f"Не удалось загрузить новости из ProPrisonBot: {e}")
-
-        if self._news_cache:
-            return self._news_cache
+        """Возвращает пустую ленту (внешний ProPrisonBot удален; новости читаются через news_feed_service)."""
         return {"posts": []}
 
     async def get_raids(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """
-        Получение списка рейдов (@pro_prison_bot /api/raids).
-        При 403 Forbidden (SUBSCRIPTION_REQUIRED) возвращает статус paywall.
-        """
-        now = time.time()
-        if not force_refresh and self._raids_cache and (now - self._raids_cache_time < 30):
-            return self._raids_cache
-
-        headers = {"Accept": "application/json"}
-        if self.external_token:
-            headers["Authorization"] = f"Bearer {self.external_token}"
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{self.PRO_PRISON_BOT_URL}/api/raids", headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    result = {
-                        "sourceStatus": "ok",
-                        "sourceMessage": "Рейды успешно получены из ProPrisonBot API",
-                        "isPaywalled": False,
-                        "raids": data if isinstance(data, list) else data.get("raids", []),
-                    }
-                    self._raids_cache = result
-                    self._raids_cache_time = now
-                    return result
-                elif resp.status_code == 403:
-                    result = {
-                        "sourceStatus": "paywall",
-                        "sourceMessage": "Источник рейдов ProPrisonBot требует активную платную подписку (403 SUBSCRIPTION_REQUIRED). Задействован встроенный радар активных дамагеров Тюряги.",
-                        "isPaywalled": True,
-                        "raids": [],
-                    }
-                    self._raids_cache = result
-                    self._raids_cache_time = now
-                    return result
-                elif resp.status_code == 401:
-                    result = {
-                        "sourceStatus": "unauthorized",
-                        "sourceMessage": "Отсутствует авторизация в источнике ProPrisonBot (401 Unauthorized). Задействован радар активных игроков Тюряги.",
-                        "isPaywalled": True,
-                        "raids": [],
-                    }
-                    self._raids_cache = result
-                    self._raids_cache_time = now
-                    return result
-        except Exception as e:
-            logger.debug(f"Ошибка запроса рейдов к ProPrisonBot: {e}")
-
+        """Возвращает базовый локальный контейнер рейдов (без внешнего ProPrisonBot)."""
         return {
-            "sourceStatus": "offline",
-            "sourceMessage": "Сервис ProPrisonBot временно недоступен. Работает радар дамагеров Тюряги.",
-            "isPaywalled": True,
+            "sourceStatus": "ok",
+            "sourceMessage": "Рейды из Telegram-каналов и радар активных игроков",
+            "isPaywalled": False,
             "raids": [],
         }
 
@@ -1096,8 +1017,7 @@ class RaidsAPI:
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Автопарсинг открытой ленты новостей и объявлений (@pro_prison_bot /api/news и /api/news-ads).
-        Извлекает игроков через parse_raid_text() и сохраняет в TrackedCandidate с source='news_ad'.
+        Извлекает кандидатов из локально кэшированных TG-постов рейдов без обращений к внешнему ProPrisonBot.
         """
         can_run, rem_cd = self.rate_guard.can_scan_news(force=force)
         if not can_run:
@@ -1105,53 +1025,19 @@ class RaidsAPI:
                 "success": False,
                 "status": "cooldown",
                 "cooldownSeconds": rem_cd,
-                "message": f"Кулдаун сканирования новостей: подождите {rem_cd} сек.",
+                "message": f"Кулдаун сканирования: подождите {rem_cd} сек.",
             }
 
-        texts = []
-        # 1. /api/news
-        try:
-            news_res = await self.get_news(limit=30, force_refresh=force)
-            posts = (
-                news_res.get("posts") or news_res.get("items") or []
-                if isinstance(news_res, dict)
-                else news_res if isinstance(news_res, list) else []
-            )
-            for p in posts:
-                txt = (
-                    p.get("text") or p.get("message") or p.get("content") or ""
-                    if isinstance(p, dict)
-                    else str(p)
-                )
-                if txt:
-                    texts.append(txt)
-        except Exception as e:
-            logger.debug(f"Ошибка запроса /api/news: {e}")
-
-        # 2. /api/news-ads
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                headers = {"Accept": "application/json"}
-                if self.external_token:
-                    headers["Authorization"] = f"Bearer {self.external_token}"
-                resp = await client.get(f"{self.PRO_PRISON_BOT_URL}/api/news-ads", headers=headers)
-                if resp.status_code == 200:
-                    ads_data = resp.json()
-                    ads = (
-                        ads_data.get("ads") or ads_data.get("items") or ads_data.get("posts") or []
-                        if isinstance(ads_data, dict)
-                        else ads_data if isinstance(ads_data, list) else []
-                    )
-                    for a in ads:
-                        txt = (
-                            a.get("text") or a.get("message") or ""
-                            if isinstance(a, dict)
-                            else str(a)
-                        )
-                        if txt:
-                            texts.append(txt)
-        except Exception as e:
-            logger.debug(f"Ошибка запроса /api/news-ads: {e}")
+        texts: List[str] = []
+        if db_engine:
+            try:
+                async with get_session(db_engine) as session:
+                    rows = (await session.execute(
+                        select(CachedRaidPost.raw_preview).where(CachedRaidPost.account_id == account_id).limit(30)
+                    )).scalars().all()
+                    texts = [str(t) for t in rows if t]
+            except Exception as e:
+                logger.debug("Ошибка чтения CachedRaidPost для кандидатов: %s", e)
 
         if not texts or not db_engine:
             self.rate_guard.record_news_scan()

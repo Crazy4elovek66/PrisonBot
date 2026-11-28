@@ -30,6 +30,7 @@ from workers.routine_worker import RoutineWorker
 from workers.boss_worker import BossWorker
 from workers.prison_worker import PrisonWorker
 from workers.social_worker import SocialWorker
+from workers.friend_outreach_worker import FriendOutreachWorker
 from workers.poker_worker import PokerWorker
 from workers.fartovy_worker import FartovyWorker
 from workers.zaruby_worker import ZarubyWorker
@@ -125,6 +126,15 @@ async def run_bot(once_mode: bool = False) -> None:
         social_api=social_api,
         notifier=notifier,
     )
+    from client.api.raids import RaidsAPI
+    friend_outreach_worker = FriendOutreachWorker(
+        account_id=account.id,
+        social_api=social_api,
+        player_api=player_api,
+        raids_api=RaidsAPI(),
+        db_engine=get_engine(),
+        state_hub=state_hub,
+    )
     routine_worker.prison_worker = prison_worker
     poker_worker = PokerWorker(
         account_id=account.id,
@@ -155,6 +165,7 @@ async def run_bot(once_mode: bool = False) -> None:
         await boss_worker.run_cycle()
         await prison_worker.run_cycle()
         await social_worker.run_cycle()
+        await friend_outreach_worker.run_cycle()
         await http_client.aclose()
         if bot:
             await bot.session.close()
@@ -170,6 +181,7 @@ async def run_bot(once_mode: bool = False) -> None:
         poker_worker=poker_worker,
         fartovy_worker=fartovy_worker,
         zaruby_worker=zaruby_worker,
+        friend_outreach_worker=friend_outreach_worker,
         routine_interval_minutes=settings.ROUTINE_INTERVAL_MINUTES,
         boss_interval_minutes=settings.BOSS_INTERVAL_MINUTES,
         prison_interval_minutes=settings.PRISON_INTERVAL_MINUTES,
@@ -189,6 +201,7 @@ async def run_bot(once_mode: bool = False) -> None:
     bot_context.boss_worker = boss_worker
     bot_context.prison_worker = prison_worker
     bot_context.social_worker = social_worker
+    bot_context.friend_outreach_worker = friend_outreach_worker
     bot_context.poker_api = poker_api
     bot_context.fartovy_api = fartovy_api
     bot_context.wheel_api = wheel_api

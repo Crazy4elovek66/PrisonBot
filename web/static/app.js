@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_12";
+const ASSET_VERSION = "20261127_13";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -6758,6 +6758,7 @@ const liveSyncClient = (() => {
     else if (slice === "friend_requests") renderFriendRequestsData(data);
     else if (slice === "friends_stats") renderFriendsAuditData(data);
     else if (slice === "monthly") renderMonthlyStateData(data);
+    else if (slice === "outreach" && typeof applyOutreachStatusData === "function") applyOutreachStatusData(data);
     else if (slice === "collections") renderCollectionsData(data);
     else if (slice === "bauls") renderBaulsData(data);
     else if (slice === "radar" && typeof renderActivePlayersRadarFromData === "function") {
@@ -8499,10 +8500,6 @@ function initRaidsSection() {
   });
 
   // Action buttons
-  document.getElementById("btn-raids-goto-radar")?.addEventListener("click", () => {
-    switchRaidsTab("radar");
-  });
-
   document.getElementById("btn-refresh-raids")?.addEventListener("click", () => {
     loadRaids();
   });
@@ -9006,7 +9003,6 @@ let _raidsFetchSeq = 0;
 // --- Subview 1: Рейды ---
 async function loadRaids() {
   const container = document.getElementById("raids-list-container");
-  const banner = document.getElementById("raids-source-banner");
   if (!container) return;
 
   const seq = ++_raidsFetchSeq;
@@ -9039,50 +9035,14 @@ async function loadRaids() {
 
     raids.forEach(r => allRaidsToRender.push(r));
 
-    if (res.isPaywalled && allRaidsToRender.length === 0) {
-      if (banner) {
-        banner.style.display = "flex";
-        const titleEl = document.getElementById("raids-banner-title");
-        const descEl = document.getElementById("raids-banner-desc");
-        if (titleEl) titleEl.textContent = `Источник: ${res.sourceStatus || "403 Paywall"}`;
-        if (descEl) descEl.textContent = res.sourceMessage || "Требуется платная подписка. Доступны радар игроков из игры и TG-рейды.";
-      }
-      container.innerHTML = `
-        <div style="text-align: center; padding: 28px 16px; color: var(--muted-foreground);">
-          <div style="font-size: 32px; margin-bottom: 8px;">🔒</div>
-          <div style="font-weight: 700; color: #fff; font-size: 14px; margin-bottom: 6px;">Закрытый источник рейдов @pro_prison_bot</div>
-          <div style="font-size: 12px; max-width: 420px; margin: 0 auto 16px auto; line-height: 1.4;">
-            Эндпоинт ProPrisonBot требует подписку. Используйте кнопку «Проверить каналы» выше для чтения рейдов из публичных Telegram-сообществ или перейдите в Радар!
-          </div>
-          <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            <button class="btn btn-primary btn-sm" onclick="switchRaidsTab('radar')">🔥 Перейти к радару дамагеров</button>
-          </div>
-        </div>
-      `;
-      return;
-    }
-
-    if (banner) {
-      if (res.isPaywalled) {
-        banner.style.display = "flex";
-        const titleEl = document.getElementById("raids-banner-title");
-        const descEl = document.getElementById("raids-banner-desc");
-        if (titleEl) titleEl.textContent = `Источник ProPrisonBot: 403 Paywall (Отображаются рейды из Telegram)`;
-        if (descEl) descEl.textContent = "Показаны рейды, спарсенные из ваших открытых Telegram-каналов.";
-      } else {
-        banner.style.display = "none";
-      }
-    }
-
     if (allRaidsToRender.length === 0) {
       container.innerHTML = `
-        <div style="text-align: center; padding: 28px 16px; color: var(--muted-foreground);">
-          <div style="font-size: 32px; margin-bottom: 8px;">🚩</div>
-          <div style="font-weight: 700; color: #fff; font-size: 14px; margin-bottom: 6px;">Нет активных рейдов</div>
-          <div style="font-size: 12px; max-width: 420px; margin: 0 auto 16px auto; line-height: 1.4;">
-            В данный момент активных рейдов не найдено. Нажмите «Проверить каналы» или наберите друзей через радар!
+        <div style="text-align: center; padding: 20px 16px; color: var(--muted-foreground);">
+          <div style="font-size: 28px; margin-bottom: 6px;">🚩</div>
+          <div style="font-weight: 700; color: #fff; font-size: 13px; margin-bottom: 4px;">Нет свежих рейдов из TG-каналов</div>
+          <div style="font-size: 11px; max-width: 420px; margin: 0 auto; line-height: 1.4;">
+            Нажмите «Проверить каналы» выше для сканирования Telegram-каналов или используйте блок «Активные игроки (единый поиск)» ниже.
           </div>
-          <button class="btn btn-primary btn-sm" onclick="switchRaidsTab('radar')">🔥 Открыть радар дамагеров</button>
         </div>
       `;
       return;
@@ -9375,17 +9335,132 @@ async function loadUnifiedRaidsPlayers() {
   }
 }
 
+let _outreachCriteriaExpanded = false;
+
+function toggleOutreachCriteriaAccordion(forceState) {
+  const acc = document.getElementById("outreach-criteria-accordion");
+  const body = document.getElementById("outreach-criteria-body");
+  const arrow = document.getElementById("outreach-criteria-arrow");
+  const next = typeof forceState === "boolean" ? forceState : !_outreachCriteriaExpanded;
+  _outreachCriteriaExpanded = next;
+  if (acc) acc.setAttribute("data-expanded", next ? "true" : "false");
+  if (body) body.style.display = next ? "flex" : "none";
+  if (arrow) arrow.textContent = next ? "▴" : "▾";
+}
+
+function applyOutreachStatusData(res) {
+  if (!res || typeof res !== "object") return;
+  const crit = res.criteria || {};
+  const sent24 = Number(res.sent_24h ?? res.auto_invite?.sentLast24h ?? 0);
+  const dailyLim = Number(res.daily_limit ?? crit.daily_limit ?? res.auto_invite?.dailyLimit ?? 50);
+  const matchedCnt = Number(res.matched_count ?? 0);
+  const enabled = crit.enabled !== undefined ? Boolean(crit.enabled) : Boolean(res.auto_invite?.enabled);
+
+  const toggleEl = document.getElementById("raids-auto-invite-toggle");
+  if (toggleEl) toggleEl.checked = enabled;
+
+  const statusEl = document.getElementById("raids-auto-invite-status");
+  if (statusEl) {
+    const stWord = enabled ? "Вкл" : "Выкл";
+    statusEl.textContent = `Авто-рассылка: ${stWord} (${sent24}/${dailyLim} за 24ч) • Подходит: ${matchedCnt}`;
+  }
+
+  const summaryEl = document.getElementById("outreach-criteria-summary");
+  if (summaryEl) {
+    const minD = Number(crit.min_damage || 0);
+    const dmgLabel = minD > 0 ? `${formatNum(minD)}+` : "любой";
+    const srcCount = Array.isArray(crit.sources) ? crit.sources.length : 4;
+    summaryEl.textContent = `Лимит: ${dailyLim}/24ч • Урон: ${dmgLabel} • Источников: ${srcCount}`;
+  }
+
+  const telEl = document.getElementById("outreach-telemetry-line");
+  if (telEl) {
+    const wStatus = res.worker_status || res.outreach_status?.worker_status || (enabled ? "Активен" : "Выключен");
+    const lastTs = Number(res.last_run_ts || res.outreach_status?.last_run_ts || 0);
+    const timeStr = lastTs > 0 ? new Date(lastTs * 1000).toLocaleTimeString("ru-RU") : "--:--:--";
+    const errPart = (res.last_error || res.outreach_status?.last_error) ? ` • ${res.last_error || res.outreach_status?.last_error}` : "";
+    telEl.textContent = `Отправлено за 24ч: ${sent24}/${dailyLim} • Подходит сейчас: ${matchedCnt} • Цикл: ${timeStr} • ${wStatus}${errPart}`;
+  }
+
+  // Заполняем поля только если пользователь не редактирует их прямо сейчас
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el && v !== undefined) el.value = String(v);
+  };
+  if (crit.min_damage !== undefined) setVal("outreach-min-damage", crit.min_damage);
+  if (crit.max_damage !== undefined) setVal("outreach-max-damage", crit.max_damage);
+  if (crit.min_authority !== undefined) setVal("outreach-min-authority", crit.min_authority);
+  if (crit.max_authority !== undefined) setVal("outreach-max-authority", crit.max_authority);
+  if (crit.daily_limit !== undefined) setVal("outreach-daily-limit", crit.daily_limit);
+  if (crit.sort_by !== undefined) setVal("outreach-sort-by", crit.sort_by);
+  if (crit.exclude_keywords !== undefined) setVal("outreach-exclude-keywords", crit.exclude_keywords);
+
+  if (Array.isArray(crit.sources)) {
+    const srcSet = new Set(crit.sources);
+    document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip => {
+      const s = chip.getAttribute("data-source");
+      if (s) chip.classList.toggle("active", srcSet.has(s));
+    });
+  }
+
+  // Сохраняем состояние раскрытия аккордеона при SSE
+  toggleOutreachCriteriaAccordion(_outreachCriteriaExpanded);
+}
+
+async function saveOutreachCriteria() {
+  const minDmg = Math.max(0, parseInt(document.getElementById("outreach-min-damage")?.value || "0", 10) || 0);
+  const maxDmg = Math.max(0, parseInt(document.getElementById("outreach-max-damage")?.value || "0", 10) || 0);
+  const minAuth = Math.max(0, parseInt(document.getElementById("outreach-min-authority")?.value || "0", 10) || 0);
+  const maxAuth = Math.max(0, parseInt(document.getElementById("outreach-max-authority")?.value || "0", 10) || 0);
+  const dailyLim = Math.max(1, Math.min(100, parseInt(document.getElementById("outreach-daily-limit")?.value || "50", 10) || 50));
+  const sortBy = document.getElementById("outreach-sort-by")?.value || "fresh";
+  const keywords = document.getElementById("outreach-exclude-keywords")?.value || "";
+  const sources = [];
+  document.querySelectorAll("#outreach-sources-chips .outreach-chip.active").forEach(ch => {
+    const s = ch.getAttribute("data-source");
+    if (s) sources.push(s);
+  });
+
+  try {
+    const res = await apiFetch("/outreach/criteria", {
+      method: "PATCH",
+      body: JSON.stringify({
+        daily_limit: dailyLim,
+        min_damage: minDmg,
+        max_damage: maxDmg,
+        min_authority: minAuth,
+        max_authority: maxAuth,
+        sort_by: sortBy,
+        sources,
+        exclude_keywords: keywords,
+      }),
+    });
+    applyOutreachStatusData(res);
+    showToast(`Критерии сохранены (подходит сейчас: ${res.matched_count || 0})`, "success");
+    loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка сохранения критериев: ${err.message}`, "error");
+  }
+}
+
+async function runOutreachNow() {
+  const btn = document.getElementById("btn-run-outreach-now");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch("/outreach/run-now", { method: "POST" });
+    applyOutreachStatusData(res);
+    showToast(`Цикл рассылки завершён: отправлено ${res.sent_count || 0}`, "success");
+    loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка запуска рассылки: ${err.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function renderUnifiedRaidsPlayers(res) {
   const container = document.getElementById("unified-raids-players-list");
-  const toggleEl = document.getElementById("raids-auto-invite-toggle");
-  const statusEl = document.getElementById("raids-auto-invite-status");
-  const autoInfo = (res && res.auto_invite) || {};
-
-  if (toggleEl) toggleEl.checked = Boolean(autoInfo.enabled);
-  if (statusEl) {
-    const st = autoInfo.enabled ? "Вкл" : "Выкл";
-    statusEl.textContent = `Авто-рассылка: ${st} (${autoInfo.sentLast24h || 0}/${autoInfo.dailyLimit || 50} за 24ч)`;
-  }
+  applyOutreachStatusData(res);
 
   if (!container) return;
   const players = (res && res.players) || [];
@@ -9395,12 +9470,26 @@ function renderUnifiedRaidsPlayers(res) {
   }
 
   container.innerHTML = players.map(p => {
-    const stLabel = p.status === "friend" ? "Друг" : (p.status === "sent" ? "Отправлена" : "Новый");
-    const stColor = p.status === "friend" ? "#34d399" : (p.status === "sent" ? "#fbbf24" : "#93c5fd");
+    let stLabel = "Новый";
+    let stColor = "#93c5fd";
+    if (p.status === "friend") {
+      stLabel = "Друг";
+      stColor = "#34d399";
+    } else if (p.status === "sent" || p.status === "already_pending") {
+      stLabel = "Заявка отправлена";
+      stColor = "#fbbf24";
+    } else if (p.status === "privacy_blocked") {
+      stLabel = "Закрыты заявки";
+      stColor = "var(--muted-foreground)";
+    } else if (p.matchesCriteria === false) {
+      stLabel = "Не подходит";
+      stColor = "var(--muted-foreground)";
+    }
     const sourcesTxt = (p.sources || [p.source]).join(", ");
     const canInvite = p.status === "none";
+    const rowOpacity = (p.status === "none" && p.matchesCriteria === false) ? "opacity: 0.7;" : "";
     return `
-      <div class="friend-card" data-user-id="${p.userId}" style="padding: 8px 10px;">
+      <div class="friend-card" data-user-id="${p.userId}" style="padding: 8px 10px; ${rowOpacity}">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <div style="min-width: 0;">
             <div style="font-weight: 700; font-size: 12px; color: #fff;">${escapeHtml(p.nickname || `Игрок #${p.userId}`)}</div>
@@ -9431,6 +9520,20 @@ function renderUnifiedRaidsPlayers(res) {
     });
   });
 }
+
+document.getElementById("outreach-criteria-toggle")?.addEventListener("click", () => toggleOutreachCriteriaAccordion());
+document.querySelectorAll(".outreach-dmg-preset").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const val = btn.getAttribute("data-dmg");
+    const inp = document.getElementById("outreach-min-damage");
+    if (inp && val !== null) inp.value = val;
+  });
+});
+document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip => {
+  chip.addEventListener("click", () => chip.classList.toggle("active"));
+});
+document.getElementById("btn-save-outreach-criteria")?.addEventListener("click", saveOutreachCriteria);
+document.getElementById("btn-run-outreach-now")?.addEventListener("click", runOutreachNow);
 
 document.getElementById("raids-players-sort")?.addEventListener("change", loadUnifiedRaidsPlayers);
 document.getElementById("raids-players-source")?.addEventListener("change", loadUnifiedRaidsPlayers);

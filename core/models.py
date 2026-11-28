@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -169,6 +170,7 @@ class BotConfig(Base):
     friends_parser_max_authority = Column(BigInteger, default=0, nullable=False)
     raid_tg_channels = Column(JSON, default=list, nullable=False)
     guild_scan_cursor = Column(Integer, default=0, nullable=False)
+    outreach_criteria = Column(JSON, default=dict, nullable=False)
 
     # Friend Cleanup
     auto_friend_cleanup = Column(Boolean, default=False, nullable=False)
@@ -434,5 +436,27 @@ class GameGuardState(Base):
 
     __table_args__ = (
         UniqueConstraint("account_id", "game_key", name="uq_game_guard_account_key"),
+    )
+
+
+class FriendOutreachHistory(Base):
+    """
+    Персистентная история авто-рассылки заявок в друзья со скользящим окном 24ч (sent_at Unix ts).
+    """
+    __tablename__ = "friend_outreach_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True, default=1)
+    target_id = Column(BigInteger, nullable=False, index=True)
+    nickname = Column(String(128), nullable=True)
+    source = Column(String(50), default="radar", nullable=False)
+    damage = Column(BigInteger, default=0, nullable=False)
+    authority = Column(BigInteger, default=0, nullable=False)
+    status = Column(String(32), default="sent", nullable=False, index=True)
+    error_message = Column(String(255), nullable=True)
+    sent_at = Column(Float, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "target_id", name="uq_friend_outreach_account_target"),
     )
 
