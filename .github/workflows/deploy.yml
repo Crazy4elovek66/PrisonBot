@@ -78,7 +78,7 @@ jobs:
             systemctl restart prisonbot.service
             ok=0
             for i in $(seq 1 15); do
-              if systemctl is-active --quiet prisonbot.service && curl -fsS http://127.0.0.1:8085/prison/ > /dev/null 2>&1; then
+              if systemctl is-active --quiet prisonbot.service && curl -fsS http://127.0.0.1:8085/ > /dev/null 2>&1; then
                 ok=1
                 break
               fi
