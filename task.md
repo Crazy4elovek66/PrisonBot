@@ -1,189 +1,149 @@
-# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: АВТОМАТИЧЕСКИЙ ПАРСИНГ НАЛИЧИЯ И ТИПА ОБЩАКА ПРИ СБОРЕ ДАННЫХ ПЕРСОНАЖА, ФОНОВОЕ ПОЛНОЕ ПОКРЫТИЕ БАЗЫ И УДАЛЕНИЕ ЛИШНЕГО БЛОКА ЛИМИТА ЗА 24Ч + ДЕПЛОЙ НА VPS
+# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: НАСТРОЙКА АВТОМАТИЧЕСКОГО CI/CD ДЕПЛОЯ PRISONBOT ЧЕРЕЗ GITHUB ACTIONS (ТЕСТЫ + АВТООБНОВЛЕНИЕ VPS)
 
-Ты выступаешь в роли Senior Full-Stack разработчика (Python / FastAPI / Asyncio / SQLite + Vanilla JS / HTML / CSS) и реверс-инженера игровых API-контрактов на проекте PrisonBot.
+Ты выступаешь в роли Senior DevOps / Full-Stack разработчика (Python / FastAPI / GitHub Actions / Linux systemd / SSH) на проекте PrisonBot.
 
-**Анализ текущего состояния проекта и выявленные проблемы:**
-- Актуальный прод работает на VPS `178.17.60.16:/opt/prisonbot` (`prisonbot.service`, статика `20261127_15`, SW `prisonbot-assets-v36`, 314 тестов зеленые).
-- В релизе v15 в БД и UI были добавлены поля общака (`has_obshak`, `obshak_type`, `obshak_checked_at`) и ручная кнопка `Проверить общак` (`POST /api/v1/raids/players/check-obshak`), но на текущий момент остаются следующие проблемы:
-  1. Проверка общака выполняется **отдельно и вручную** (малыми порциями по клику), а не автоматически вместе со сбором остальных данных персонажа (авторитет, урон, ник и др.).
-  2. При сборе кандидатов из всех источников (`weekly_top`, `achievements`, `tg_raids`, `brigades`) и при обогащении профилей игроков (`client/api/raids.py`, `client/api/player.py`, `client/api/social.py`) общак не парсится единым проходом из того же ответа профиля и не догружается автоматически для всей таблицы.
-  3. В результате у большинства пользователей в таблице «Активные игроки (единый поиск)» статус общака остается `unknown` («Не проверен»), пока пользователь не нажмет кнопку вручную, из-за чего фильтр по общаку (`Пацанский`, `Блатной`, `Воровской`, `Есть общак`, `Без общака`) и критерии `FriendOutreachWorker` работают по неполным данным.
-  4. В интерфейсе остался лишний бесполезный блок со строкой `Лимит за 24ч: 0 / 50 (осталось 50)`, бейджем `Защита: Активна (ОК)` и кнопкой обновления - он дублирует живую телеметрию `FriendOutreachWorker` в блоке «Активные игроки», не несет практической пользы и только занимает место на экране.
+**Анализ текущего состояния проекта:**
+- Боевой сервис работает на VPS `178.17.60.16` в директории `/opt/prisonbot` (`prisonbot.service`, статика `20261127_16`, SW `prisonbot-assets-v37`, 317 тестов зеленые).
+- Локальный репозиторий подключен к GitHub (ветка `main`), данные подключения к VPS находятся в `.env_server` и `vps_audit.md`.
+- Сейчас деплой выполняется вручную через одноразовые скрипты `deploy_*.py`, которые копируют отдельные файлы на сервер. Владелец хочет перейти на полноценный автоматический цикл: при каждом `git push` в `main` GitHub Actions сначала прогоняет все проверки и тесты в чистом Linux, и только если они прошли - сам подключается к VPS по SSH, делает резервную копию БД, обновляет код через `git pull`, при необходимости обновляет зависимости и перезапускает `prisonbot.service` с проверкой работоспособности.
 
-**Доступные источники правды:**
-- Живой код парсинга профилей и общака: `client/api/player.py`, `client/api/raids.py`, `client/api/social.py`, `core/database.py`, `workers/friend_outreach_worker.py`, `web/routes.py`.
-- Фронтенд: `web/static/index.html`, `web/static/styles.css`, `web/static/app.js`.
-- Открытое живое игровое приложение Тюряги в Telegram WebApp (`--remote-debugging-port=9222`, MCP DevTools) и исходники `parsed_js/bundle.js`, `reference_archive/pro_prison_bot/`.
-- Живой VPS (`178.17.60.16:/opt/prisonbot`, `/opt/prisonbot/storage/prison_bot.db`).
-
-Твоя задача - объединить парсинг наличия и типа общака (`pacan`, `blat`, `vor`, `avtoritet`, `none`) с основным сбором данных персонажа (вместе с авторитетом, уроном и ником), обеспечить автоматическое полное покрытие проверкой общака для **всех** пользователей в базе (и новых, и уже собранных) без ручного вмешательства с защитой от `429`, полностью удалить бесполезный UI-блок `Лимит за 24ч: 0 / 50 (осталось 50)` / `Защита: Активна (ОК)`, динамически обновлять таблицу в UI по SSE, покрыть все тестами и развернуть релиз на VPS с живой проверкой.
+**Твоя задача:**
+1. Безопасно подготовить репозиторий (`.gitignore`, аудит трекинга секретов/БД) и создать готовый workflow `.github/workflows/deploy.yml`.
+2. Полностью подготовить VPS `178.17.60.16:/opt/prisonbot` к работе через Git и SSH-деплой (бэкап БД и `.env`, генерация отдельных SSH-ключей для чтения репозитория и для входа GitHub Actions, безопасная привязка `/opt/prisonbot` к GitHub без остановки/потери данных).
+3. Сохранить все готовые ключи и значения для ручного добавления на GitHub в локальный игнорируемый файл `github_setup_keys.txt` (который НИКОГДА не попадет в Git), покрыть конфигурацию автотестом и проверить, что боевой `prisonbot.service` продолжает стабильно работать.
 
 ---
 
 ## 1. ЦЕЛЬ И БИЗНЕС-ТРЕБОВАНИЯ
 
-### 1.1. Единый парсинг общака прямо при сборе данных персонажа (0 лишних запросов там, где профиль уже читается)
-- Провести аудит всех точек сбора и обогащения данных игроков в проекте:
-  - `client/api/player.py` (получение профиля игрока / просмотр чужого игрока);
-  - `client/api/raids.py` (сбор `weekly_top`, `achievements`, `brigades`, обогащение профилей авторитетом/уроном);
-  - `telegram/raid_channel_scanner.py` (кандидаты из `tg_raids`);
-  - `client/api/social.py` (проверка профилей друзей/входящих заявок, если запрашивается профиль).
-- Вынести единую каноническую функцию парсинга общака из любого payload персонажа/профиля `extract_obshak_from_payload(payload: dict) -> tuple[bool | None, str]`:
-  - возвращает `(has_obshak, obshak_type)`:
-    - `(True, "pacan")` - Пацанский
-    - `(True, "blat")` - Блатной
-    - `(True, "vor")` - Воровской
-    - `(True, "avtoritet")` - Авторитетный (если встречается в API игры)
-    - `(False, "none")` - профиль успешно получен и в нем явно отсутствует общак
-    - `(None, "unknown")` - в этом ответе вообще нет блока общака (например, сокращенная строка лидерборда без профильных данных)
-  - перепроверить на живом VPS / через `localhost:9222` точный формат полей общака в ответе просмотра игрока (и убедиться, что кейс «общака нет» корректно распознается как `none`, а не остается `unknown`).
-- Встроить `extract_obshak_from_payload()` непосредственно в общий парсер статистики персонажа:
-  - везде, где бот запрашивает данные персонажа (авторитет, урон, ник, бригада), он **в том же самом запросе** обязан распарсить `has_obshak`, `obshak_type`, выставить `obshak_checked_at = time.time()` и сохранить все поля в `tracked_candidates` одной транзакцией;
-  - при повторном сборе списков (`weekly_top`, `achievements`, `brigades`, `tg_raids`), если в сокращенном списке общака нет (`unknown`), `upsert` в БД **НИКОГДА не должен затирать** уже известные `has_obshak`, `obshak_type`, `obshak_checked_at` на `unknown`.
+### 1.1. Безопасность секретов и данных БД (КРИТИЧНО)
+- Провести аудит `.gitignore` и `git ls-files` в локальном репозитории:
+  - убедиться, что `.env`, `.env_server`, `github_setup_keys.txt`, `storage/*.db`, `storage/*.db-wal`, `storage/*.db-shm`, `storage/*.session*`, `storage/asset_cache/`, `repomix-output*.xml`, `__pycache__/`, `.pytest_cache/` и временные отладочные скрипты/логи надежно закрыты в `.gitignore`;
+  - проверить через `git ls-files`, не отслеживаются ли сейчас в Git файлы `.env`, `.env_server`, `storage/prison_bot.db`, `storage/prison.db`, `storage/user_session.session` (если какой-то из них случайно отслеживается - аккуратно убрать из индекса через `git rm --cached`, не удаляя сам файл с диска, чтобы при `git reset --hard` на VPS боевые данные никогда не затерлись).
+- Ни один приватный SSH-ключ, пароль или токен не должен попадать в `.github/workflows/deploy.yml` или в коммит.
 
-### 1.2. Автоматическое полное покрытие общаком всех пользователей в базе (без ручных кликов)
-- Обеспечить, чтобы у **всех** пользователей в `tracked_candidates` (как у свежесобранных, так и у уже существующих в БД записей с `obshak_type == "unknown"` или устаревшим `obshak_checked_at > 24ч`) наличие и тип общака проверялись **автоматически**:
-  1. **Сразу при сборе новых кандидатов** (после скана `weekly_top`, `achievements`, `brigades`, `tg_raids` или ручного обновления радара):
-     - если у части собранных игроков профиль еще не запрашивался (`obshak_type == "unknown"` или не заполнена статистика вроде `authority`), автоматически ставить их в фоновую задачу обогащения профиля (статы + общак за один запрос на игрока), не блокируя HTTP-ответ на долгие секунды.
-  2. **Автоматический фоновый добор 100% базы в воркере (`FriendOutreachWorker` / выделенный фоновый цикл обогащения)**:
-     - ввести независимый легковесный цикл/очередь фонового обогащения профилей (внутри `FriendOutreachWorker` или отдельным фоновым таском в `core/scheduler.py`), который работает автоматически (независимо от того, включена ли сама отправка заявок `auto_friend_outreach`, лишь бы бот был авторизован и активен);
-     - за один проход (например, каждые 30-60 секунд, пока в БД остаются непроверенные игроки `obshak_type == "unknown"`) берет пачку непроверенных игроков (например, `20-30` пользователей за тик с безопасной паузой `0.25-0.4с` между запросами и мгновенным backoff при `429`), за один запрос профиля обновляет одновременно **авторитет, урон, ник, бригаду и общак** и сохраняет в БД;
-     - как только все пользователи в базе проверены (`unknown == 0`), цикл переходит в спящий режим и проверяет только новых кандидатов или записи старше `24ч` (TTL кэша);
-     - после каждой обработанной пачки мгновенно пушит обновленные данные и прогресс покрытия в `StateHub` / SSE, чтобы таблица «Активные игроки» заполнялась на глазах без перезагрузки страницы.
-  3. **Приоритет обогащения**:
-     - в первую очередь проверять игроков, которые подходят под текущие базовые критерии (`min_damage`, выбранные `sources`, не в `excluded_ids`) и тех, кто сейчас выше в списке;
-     - далее автоматически допроверять всех остальных пользователей до 100% покрытия базы.
+### 1.2. Автоматический пайплайн `.github/workflows/deploy.yml`
+- Создать рабочий пайплайн GitHub Actions `.github/workflows/deploy.yml`, состоящий из двух последовательных джоб:
+  1. **`test` (Проверка кода и автотесты на `ubuntu-latest`)**:
+     - запуск при `push` в ветку `main` и по ручной кнопке `workflow_dispatch`;
+     - настроить `paths-ignore`, чтобы правки только в `task.md`, `docs/**`, `screenshots/**`, `inf/**`, `ref/**`, `reference_archive/**`, `scratch/**`, `*.md` не запускали лишние перезапуски боевого сервера;
+     - настроить `concurrency` (`group: deploy-prisonbot-main`, `cancel-in-progress: false`), чтобы два параллельных пуша не перебивали друг друга на сервере;
+     - установить Python (версия как на VPS, например `3.11` / `3.12`) с кэшированием `pip`, установить Node.js (`20`), установить зависимости из `requirements.txt` (и `pytest`, если его нет в `requirements.txt`);
+     - выполнить проверки:
+       - `node --check web/static/app.js`
+       - `node --check web/static/sw.js`
+       - `python -m pytest -q tests/`
+     - если хотя бы один тест упал - пайплайн немедленно завершается с ошибкой, шаг `deploy` НЕ запускается, боевой сервер остается на предыдущей стабильной версии.
+  2. **`deploy` (Автоматическое обновление VPS, `needs: test`)**:
+     - запускается строго после успешного прохождения `test`;
+     - подключается к VPS через `appleboy/ssh-action@v1` с использованием секретов GitHub:
+       - `host: ${{ secrets.VPS_HOST }}`
+       - `username: ${{ secrets.VPS_USER }}`
+       - `key: ${{ secrets.VPS_SSH_KEY }}`
+     - выполняет на сервере в `/opt/prisonbot` безопасный и идемпотентный скрипт обновления (с `set -euo pipefail`):
+       1. создает бэкап SQLite базы `/opt/prisonbot/storage/prison_bot.db` в `/opt/prisonbot/backups/` с датой и оставляет последние 5 бэкапов;
+       2. забирает свежий код с GitHub (`git fetch origin main` и `git reset --hard origin/main`, не трогая неотслеживаемые `.env`, `storage/`, `venv/`, `backups/`);
+       3. устанавливает/обновляет пакеты из `requirements.txt` в фактический `venv`, который использует `prisonbot.service` (определить точный путь к python/pip из `systemctl cat prisonbot.service`);
+       4. перезапускает `prisonbot.service` (`systemctl restart prisonbot.service`);
+       5. ждет 4 секунды и выполняет живой health-check (`systemctl is-active --quiet prisonbot.service` + HTTP-проверка локального порта `127.0.0.1:8085` и отсутствия падения процесса); если сервис не поднялся - выводит последние 40 строк `journalctl -u prisonbot.service` и завершает шаг с ненулевым кодом ошибки.
 
-### 1.3. Интеграция с `FriendOutreachWorker` и UI
-- В `FriendOutreachWorker`:
-  - если у пользователя настроен строгий фильтр по общаку (`obshak_filter != "any"`, например `vor` или `has_any`), воркер не должен пропускать «свежих» непроверенных кандидатов навсегда - он сначала подтягивает их профиль (статы + общак), и только потом оценивает по критериям.
-- В UI блока «Активные игроки (единый поиск)» (`web/static/index.html`, `styles.css`, `app.js`):
-  - отображать наглядный индикатор автоматического покрытия общака (например, в тулбаре или строке телеметрии: `Общак проверен: X/Y` или `Общак: все Y проверены`, а пока идет фоновый сбор - аккуратный статус `Авто-проверка общака: X/Y...`);
-  - при получении SSE-обновлений мгновенно обновлять бейджи общака (`Пацанский`, `Блатной`, `Воровской`, `Нет общака`) и счетчик `Подходит сейчас: M` в таблице без сброса фильтров, поиска и несохраненных критериев;
-  - кнопку `Проверить общак` сохранить как ускоренный триггер (перепроверить текущую выборку или запустить внеочередной проход прямо сейчас), но вся основная работа должна происходить полностью автоматически.
+### 1.3. Полная подготовка VPS (`178.17.60.16:/opt/prisonbot`) агентом
+- Проверить конфигурацию `prisonbot.service` (`systemctl cat prisonbot.service`) и текущий статус папки `/opt/prisonbot`.
+- Сделать полную резервную копию `.env` и всей папки `/opt/prisonbot/storage` (`prison_bot.db*`, `user_session.session` и др.) в `/opt/prisonbot/backups/pre_cicd_backup_<timestamp>/`.
+- Сгенерировать на VPS две отдельные SSH-пары (`ed25519`, без парольной фразы):
+  1. **Ключ для чтения GitHub с VPS (Deploy Key)**: `/root/.ssh/prisonbot_github_deploy` (и `.pub`):
+     - добавить `github.com` в `/root/.ssh/known_hosts` через `ssh-keyscan -H github.com`;
+     - настроить для репозитория `/opt/prisonbot` явную команду `git config core.sshCommand "ssh -i /root/.ssh/prisonbot_github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"`.
+  2. **Ключ для входа GitHub Actions на VPS**: `/root/.ssh/prisonbot_gha_access` (и `.pub`):
+     - аккуратно дописать публичную часть (`/root/.ssh/prisonbot_gha_access.pub`) в `/root/.ssh/authorized_keys` (проверив права `700` на `/root/.ssh` и `600` на `authorized_keys`, НЕ удаляя существующие ключи!).
+- Подготовить директорию `/opt/prisonbot` как Git-репозиторий:
+  - узнать точный URL репозитория из локального `git remote -v` и преобразовать в SSH-формат `git@github.com:<owner>/<repo>.git`;
+  - если `/opt/prisonbot/.git` еще не существует - аккуратно выполнить `git init -b main` и `git remote add origin git@github.com:<owner>/<repo>.git` + настроить `core.sshCommand` (при этом НЕ удалять `.env`, `storage/`, `venv/` и не ломать работающий сервис).
+  - проверить, что `prisonbot.service` активен (`active`) и соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) не затронуты.
 
-### 1.4. Полное удаление лишнего UI-блока «Лимит за 24ч / Защита: Активна (ОК)»
-- Найти в `web/static/index.html`, `web/static/app.js` и `web/static/styles.css` плашку со щитом, текстом `Лимит за 24ч: 0 / 50 (осталось 50)`, бейджем `Защита: Активна (ОК)` и кнопкой обновления справа.
-- Полностью удалить этот DOM-блок из `web/static/index.html`, удалить его рендер, обработчики клика и привязки обновлений из `web/static/app.js` (убедившись, что ни один другой метод/SSE-хэндлер не падает с ошибкой обращения к удаленным элементам), и зачистить неиспользуемые CSS-классы в `web/static/styles.css`.
-- **ВАЖНО:** саму серверную защиту от `429` и соблюдение суточного лимита в `FriendOutreachWorker` / `SocialWorker` НЕ трогать - удаляется исключительно бесполезная визуальная плашка в интерфейсе.
+### 1.4. Удобная выдача ключей владельцу (`github_setup_keys.txt`)
+- Создать локально в корне проекта временный файл `github_setup_keys.txt` (строго добавленный в `.gitignore`!) с аккуратно отформатированными и готовыми к копированию блоками:
+  - `DEPLOY_KEY_PUB` - содержимое `/root/.ssh/prisonbot_github_deploy.pub` (для GitHub -> Settings -> Deploy keys);
+  - `VPS_HOST` - IP сервера `178.17.60.16`;
+  - `VPS_USER` - имя пользователя SSH (из `.env_server`, например `root`);
+  - `VPS_SSH_KEY` - полное содержимое приватного ключа `/root/.ssh/prisonbot_gha_access` (от `-----BEGIN OPENSSH PRIVATE KEY-----` до `-----END OPENSSH PRIVATE KEY-----`).
+- Проверить через `git status --ignored`, что `github_setup_keys.txt` точно игнорируется Git и не попадет в коммит.
 
 ---
 
 ## 2. КОНФИГУРАЦИЯ
 
-### 2.1. Модули и файлы для аудита и изменений
-- **Единый парсер профиля и общака**:
-  - `client/api/player.py` - единая чистая функция `extract_obshak_from_payload(payload)` и ее использование в методах получения/просмотра профиля игрока.
-  - `client/api/raids.py` - интеграция `extract_obshak_from_payload()` в сбор всех источников (`weekly_top`, `achievements`, `brigades`, `tg_raids`) и метод пакетного обогащения профиля `enrich_candidates_profiles_and_obshak(candidates, ...)` (собирает в одном запросе на игрока `nickname`, `authority`, `total_damage`, `brigade_name`, `has_obshak`, `obshak_type`, `obshak_checked_at` с паузой и защитой от `429`).
-- **БД и статистика покрытия**:
-  - `core/database.py`:
-    - гарантировать в `upsert_tracked_candidate()` / bulk upsert сохранение уже проверенного `obshak_type` (не перезаписывать известное значение значением `unknown`);
-    - добавить методы:
-      - `get_candidates_needing_profile_enrichment(limit: int, ttl_sec: int = 86400, prioritized_sources: list[str] | None = None)` - возвращает игроков с `obshak_type = 'unknown'` (приоритет) или устаревшим `obshak_checked_at`, с приоритетом свежих/подходящих источников;
-      - `get_obshak_coverage_stats()` - возвращает `{"total": N, "checked": C, "unknown": U, "by_type": {"pacan": ..., "blat": ..., "vor": ..., "avtoritet": ..., "none": ..., "unknown": ...}}`.
-- **Фоновый цикл автоматического обогащения и воркеры**:
-  - `workers/friend_outreach_worker.py` - добавить автоматический неблокирующий метод `run_profile_enrichment_pass(batch_size=25)` (запускается автоматически по расписанию и при пробуждении после сканов, пока `unknown > 0`, с защитой от параллельного запуска через `asyncio.Lock` и backoff при `429`), а также авто-допроверку кандидатов перед отправкой заявки при активном `obshak_filter != "any"`.
-  - `core/scheduler.py`, `main.py` - зарегистрировать фоновую задачу/интервал авто-обогащения профилей и общака (быстрый цикл, например каждые `45с`, который засыпает/мгновенно выходит, если `unknown == 0` и нет устаревших записей), плюс триггер `wake_enrichment()` сразу после любого скана источников (`weekly_top`, `achievements`, `brigades`, `tg_raids`).
-- **Web API**:
-  - `web/routes.py`:
-    - в `GET /api/v1/raids/players` и `GET /api/v1/outreach/status` добавить блок `obshak_coverage` (`total`, `checked`, `unknown`, `in_progress`, `by_type`);
-    - в `POST /api/v1/raids/brigades/scan`, `POST /api/v1/raids/channels/scan` и при обновлении радара автоматически запускать/будить фоновую проверку профилей и общака (`asyncio.create_task` / `wake_enrichment()`) для новых игроков;
-    - обновить `POST /api/v1/raids/players/check-obshak` так, чтобы он использовал ту же единую функцию обогащения (статы + общак) и не конфликтовал с фоновым циклом (общий lock).
-- **Фронтенд**:
-  - `web/static/index.html`, `web/static/styles.css`, `web/static/app.js` - отображение прогресса `Общак проверен: X/Y`, авто-обновление бейджей общака и счетчиков по SSE, обновление счетчиков по типам общака, а также **полное удаление плашки `Лимит за 24ч: ... (осталось ...)` / `Защита: Активна (ОК)`** и очистка ее JS/CSS-привязок.
-  - `web/static/sw.js` - обновление версии кэша.
-- **Тесты и VPS**:
-  - `tests/test_raids_api.py`, `tests/test_friend_outreach_worker.py`, `tests/test_web_api.py`, `tests/test_web_endpoints.py`, `tests/test_asset_cache.py`, `tests/test_improvements_v2.py`.
-  - `.env_server`, `vps_audit.md` (`178.17.60.16`, `/opt/prisonbot`, `prisonbot.service`).
+### 2.1. Файлы для создания и изменения
+- `.gitignore` - убедиться в защите `.env`, `.env_server`, `github_setup_keys.txt`, `storage/*.db*`, `storage/*.session*`, `storage/asset_cache/`, `repomix-output*.xml`, `__pycache__/`, `.pytest_cache/`.
+- `.github/workflows/deploy.yml` (новый файл) - CI/CD пайплайн тестирования и автодеплоя на VPS.
+- `tests/test_ci_workflow.py` (новый файл) - автотесты валидности `.github/workflows/deploy.yml` и правил `.gitignore`.
+- `github_setup_keys.txt` (локальный временный игнорируемый файл) - ключи для разовой вставки на сайте GitHub.
+- `requirements.txt` - проверить, все ли пакеты, нужные для запуска приложения и `pytest` в чистом Linux, присутствуют (при необходимости указать установку `pytest` / `pytest-asyncio` / `httpx` прямо в шаге CI, если они dev-зависимости).
 
-### 2.2. Версионирование статики и кэша
-- Поднять версию статики с `20261127_15` до `20261127_16` в `web/static/index.html` и `web/static/app.js`.
-- Поднять версию кэша Service Worker с `prisonbot-assets-v36` до `prisonbot-assets-v37` в `web/static/sw.js`.
-- Синхронизировать версии в `tests/test_asset_cache.py`, `tests/test_improvements_v2.py`, `tests/test_web_endpoints.py`.
-
-### 2.3. Ограничения сохранности файлов и сервисов
-- **НЕ удалять** `reference_archive/pro_prison_bot/` и `tests/test_reference_archive.py`.
-- **НЕ удалять** скрипты `deploy_*.py` из корня локального репозитория.
-- На VPS **не затрагивать** соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`).
+### 2.2. Ограничения сохранности файлов и сервисов
+- **НЕ удалять** `reference_archive/pro_prison_bot/`, `tests/test_reference_archive.py` и существующие скрипты `deploy_*.py`.
+- **НЕ коммитить** и не выводить в публичные логи содержимое `.env` или `.env_server`.
+- На VPS **НЕ затрагивать** соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) и не удалять файлы из `/opt/prisonbot/storage/`.
 
 ---
 
 ## 3. ЛОГИКА / АРХИТЕКТУРА
 
-### 3.1. Единый парсер `extract_obshak_from_payload(payload)` (`client/api/player.py`)
-1. Проверить реальные ответы `/api/player/view` (или используемого эндпоинта просмотра чужого персонажа) на VPS на выборке из 10-15 разных игроков (включая новичков без общака и топов с разными общаками), чтобы гарантировать 100% точность всех веток:
-   - наличие вложенного объекта `obshak` / `guildObshak` / `commonFund` / поля типа `obshakType` / `type` / `level` / числовых кодов или строковых названий (`pacan`, `blat`, `vor`, `avtoritet`, русские названия);
-   - случай явного отсутствия общака в полном ответе профиля -> строго `(False, "none")` (и `obshak_checked_at = now`), чтобы игрок считался проверенным и не опрашивался по кругу;
-   - случай неполного объекта (например, строка из списка рейтинга без полей профиля) -> `(None, "unknown")`.
-2. Все функции, которые уже получают полный профиль игрока (для сбора `authority`, `total_damage`, `nickname`, `brigade_name`), обязаны вызывать `extract_obshak_from_payload(profile_data)` и записывать результат вместе со статистикой персонажа.
+### 3.1. Проверка совместимости тестов с чистой средой Linux (GitHub Actions)
+- Перед завершением проанализировать тесты в `tests/`: убедиться, что ни один тест не зависит от:
+  - жестких Windows-путей (`d:\...` или `\` вместо `Path`);
+  - наличия локального `.env`, `.env_server`, `storage/prison_bot.db` или `storage/user_session.session`;
+  - реального сетевого доступа к VPS или игровому серверу.
+- Если найдется тест, который в чистой среде Linux без `.env` / локальной БД может упасть - аккуратно поправить его (добавить мок/временную фикстуру), чтобы в GitHub Actions гарантированно проходили 100% тестов.
 
-### 3.2. Безопасное автоматическое обогащение всей базы (`client/api/raids.py` + `workers/friend_outreach_worker.py`)
-1. **Защита от перезаписи в БД (`core/database.py`)**:
-   - В `upsert_tracked_candidate`: если в новом объекте `obshak_type == "unknown"`, а в БД уже сохранено `obshak_type != "unknown"`, сохранять существующие `has_obshak`, `obshak_type`, `obshak_checked_at` из БД.
-2. **Единый цикл автоматического обогащения (`run_profile_enrichment_pass`)**:
-   - Защищен общим `asyncio.Lock` (чтобы фоновый цикл и ручной `check-obshak` не дублировали запросы).
-   - Учитывает `cooldown_until_ts` при `429 Too Many Requests` (если сервер игры вернул `429`, немедленно останавливает текущую пачку, ставит мягкий backoff, например `120с`, и продолжает со следующего непроверенного игрока после паузы).
-   - За один тик обрабатывает `batch_size = 25` игроков из `get_candidates_needing_profile_enrichment()` с паузой `0.3с` между запросами (итого ~8 секунд на 25 игроков, ~400 игроков полностью прочекаются автоматически примерно за 10-15 минут без риска `429`).
-   - Для каждого игрока из одного ответа профиля обновляет **все поля сразу**: `nickname`, `authority`, `total_damage`, `brigade_name`, `has_obshak`, `obshak_type`, `obshak_checked_at`.
-   - По завершении пачки публикует обновленные `obshak_coverage` и срез активных игроков в `StateHub` / SSE.
-3. **Запуск сразу при сборе данных**:
-   - При любом обновлении источников (`collect_top_brigades_candidates`, `RaidChannelScanner`, сбор `weekly_top` / `achievements`) немедленно будит фоновое обогащение (`wake_enrichment()`), чтобы у новых игроков общак и статы появлялись автоматически в ближайшие секунды, а не висели в `unknown`.
-   - При старте `prisonbot.service` первый проход авто-обогащения стартует автоматически через `15с` после запуска сервиса.
-
-### 3.3. Динамический UI и удаление лишнего блока лимита (`web/static/index.html`, `styles.css`, `app.js`)
-- В блоке «Активные игроки (единый поиск)»:
-  - показывать компактную живую метку покрытия: `Общак проверен: 185/405` (и статус `Авто-проверка...`, если `unknown > 0` и воркер активен; либо `Общак: все 405 проверены`, когда `unknown == 0`);
-  - в выпадающем/чиповом фильтре по общаку показывать актуальное количество игроков по каждому типу (`Пацанский (N)`, `Блатной (M)`, `Воровской (K)`, `Без общака (Z)`);
-  - при получении SSE-обновлений от фонового обогащения бесшовно обновлять бейджи общака и счетчик `Подходит сейчас` в таблице без сброса `outreachCriteriaDirty` и без скачков скролла.
-- **Удаление плашки `Лимит за 24ч: 0 / 50 (осталось 50)` / `Защита: Активна (ОК)`**:
-  - найти точный HTML-контейнер этой плашки в `web/static/index.html` и полностью удалить его;
-  - в `web/static/app.js` удалить функции/участки кода, обновляющие DOM этой плашки и ее кнопку обновления (либо заменить на чистый no-op, если вызов разделяется с другими виджетами), проверить отсутствие `null` dereference при инициализации вкладки и SSE-событиях;
-  - в `web/static/styles.css` удалить ставшие неиспользуемыми стили этой плашки;
-  - обновить существующие тесты, если какие-то старые проверки ожидали наличие удаленных ID этой плашки в `index.html`.
+### 3.2. Идемпотентность скрипта деплоя на VPS
+- Внутри `.github/workflows/deploy.yml` шаг деплоя должен корректно работать при каждом последующем пуше:
+  ```bash
+  set -euo pipefail
+  cd /opt/prisonbot
+  mkdir -p /opt/prisonbot/backups
+  if [ -f /opt/prisonbot/storage/prison_bot.db ]; then
+    cp /opt/prisonbot/storage/prison_bot.db "/opt/prisonbot/backups/prison_bot_$(date +%Y%m%d_%H%M%S).db"
+    ls -1t /opt/prisonbot/backups/prison_bot_*.db | tail -n +6 | xargs -r rm -f
+  fi
+  git fetch origin main
+  git reset --hard origin/main
+  <ACTUAL_VENV_PIP> install -q -r requirements.txt
+  systemctl restart prisonbot.service
+  sleep 4
+  systemctl is-active --quiet prisonbot.service
+  curl -fsS [http://127.0.0.1:8085/prison/](http://127.0.0.1:8085/prison/) > /dev/null
+  ```
+- Заменить `<ACTUAL_VENV_PIP>` на реальный путь к `pip` из `systemctl cat prisonbot.service` (и проверить точный URL локального health-check эндпоинта на VPS).
+- Убедиться, что если в `/opt/prisonbot` лежат старые локальные файлы-конфликты (например, неотслеживаемые файлы, которые теперь есть в Git), первый `git reset --hard` пройдет без ошибки `untracked working tree files would be overwritten by checkout` (для этого на этапе подготовки VPS аккуратно проверить пересечения или сделать бэкап и синхронизировать).
 
 ---
 
 ## 4. ТЕСТИРОВАНИЕ
 
-Добавить и обновить тесты в `tests/test_raids_api.py`, `tests/test_friend_outreach_worker.py`, `tests/test_web_api.py`, `tests/test_web_endpoints.py`:
-1. **Тесты единого парсера `extract_obshak_from_payload` и защиты от затирания в БД (`tests/test_raids_api.py`)**:
-   - Распознавание всех типов (`pacan`, `blat`, `vor`, `avtoritet`, явное отсутствие `none`, неполный объект `unknown`).
-   - Проверка, что при сборе статистики персонажа (`authority`, `total_damage`) общак парсится и сохраняется из того же ответа профиля без дополнительных HTTP-запросов.
-   - Проверка, что повторный `upsert` из лидерборда с `obshak_type="unknown"` НЕ затирает уже сохраненный `obshak_type="vor"` или `"none"` в БД.
-2. **Тесты автоматического фонового обогащения (`tests/test_friend_outreach_worker.py`)**:
-   - Проход `run_profile_enrichment_pass` автоматически берет `unknown`-кандидатов, обновляет одновременно `authority` + `obshak_type` + `obshak_checked_at`, корректно учитывает TTL `24ч` и не трогает свежие `none`/`vor`.
-   - Защита от `429`: при получении `429` пачка немедленно останавливается и выставляется backoff, без потери уже сохраненных игроков пачки.
-   - Интеграция с `obshak_filter != "any"`: воркер перед фильтрацией допроверяет непроверенных кандидатов.
-   - Расчет `get_obshak_coverage_stats()` (`total`, `checked`, `unknown`, `by_type`).
-3. **API и JS Runtime Smoke-тесты (`tests/test_web_api.py`, `tests/test_web_endpoints.py`)**:
-   - `GET /api/v1/raids/players` и `GET /api/v1/outreach/status` возвращают актуальный `obshak_coverage`.
-   - Проверка, что удаленная плашка `Лимит за 24ч:` / `Защита: Активна` полностью отсутствует в `web/static/index.html`, и при инициализации/SSE в Node.js smoke-тесте нет ошибок.
-   - В Node.js smoke-тесте проверить рендер индикатора `Общак проверен: X/Y`, счетчиков по типам общака и динамическое обновление бейджей общака в строках таблицы по SSE без сброса `dirty`-критериев.
-4. Синхронизировать версии `20261127_16` / `prisonbot-assets-v37` в `tests/test_asset_cache.py`, `tests/test_improvements_v2.py`, `tests/test_web_endpoints.py` и прогнать весь пакет `python -m pytest -q tests/`.
+Создать `tests/test_ci_workflow.py` и прогнать весь пакет тестов:
+1. Проверка наличия и синтаксической валидности `.github/workflows/deploy.yml` (парсинг YAML, наличие джоб `test` и `deploy`, `needs: test`, триггер `push` в `main`, `workflow_dispatch`, игнорирование `task.md`, использование `secrets.VPS_HOST`, `secrets.VPS_USER`, `secrets.VPS_SSH_KEY`, отсутствие захардкоженных IP/паролей/приватных ключей).
+2. Проверка `.gitignore`: содержит правила для `.env`, `.env_server`, `github_setup_keys.txt`, `*.db`, `*.session`.
+3. Полный прогон `node --check web/static/app.js`, `node --check web/static/sw.js` и `python -m pytest -q tests/` (проверить, что все тесты проходят даже при запуске без локальных секретов).
 
 ---
 
 ## 5. ПОРЯДОК РЕАЛИЗАЦИИ ДЛЯ АГЕНТА
 
 ### Чеклист выполнения
-- [ ] 1. Провести аудит `client/api/player.py`, `client/api/raids.py`, `core/database.py`, `workers/friend_outreach_worker.py`, `core/scheduler.py`, `web/routes.py`, `web/static/index.html`, `web/static/app.js` и проверить живые ответы профиля на VPS (`178.17.60.16`) для нескольких игроков с общаком и без общака, а также локализовать HTML/JS/CSS плашки `Лимит за 24ч: ... (осталось ...)` / `Защита: Активна (ОК)`.
-- [ ] 2. Реализовать единую функцию `extract_obshak_from_payload()` и встроить автоматический парсинг общака прямо в сбор данных персонажа (вместе с `authority` / `total_damage` / `nickname`), а также защитить `upsert_tracked_candidate` от затирания уже проверенного общака значением `unknown`.
-- [ ] 3. Реализовать в `core/database.py`, `client/api/raids.py`, `workers/friend_outreach_worker.py` и `core/scheduler.py` автоматическое фоновое обогащение всех непроверенных пользователей (`unknown` / старше 24ч) безопасными пачками с общим `asyncio.Lock`, backoff при `429`, авто-пробуждением после сканов и публикацией `obshak_coverage` в `StateHub` / SSE.
-- [ ] 4. Обновить `web/routes.py` и фронтенд (`web/static/index.html`, `web/static/styles.css`, `web/static/app.js`): добавить отображение живого покрытия `Общак проверен: X/Y`, счетчики по типам общака, бесшовное SSE-обновление таблицы и полностью удалить бесполезную плашку `Лимит за 24ч: ... (осталось ...)` / `Защита: Активна (ОК)` вместе с ее мертвыми JS-привязками и CSS.
-- [ ] 5. Поднять версии статики и кэша Service Worker до `20261127_16` / `prisonbot-assets-v37` в `web/static/index.html`, `web/static/app.js`, `web/static/sw.js` и синхронизировать тесты ассетов.
-- [ ] 6. Написать и прогнать все unit/API тесты и JS runtime smoke-тесты (`node --check`, `python -m pytest -q tests/`), очистить `.pytest_cache` / `__pycache__`, но **НЕ удалять** `reference_archive/` и скрипты `deploy_*.py` из корня проекта.
-- [ ] 7. **ОБЯЗАТЕЛЬНЫЙ ДЕПЛОЙ НА VPS И ЖИВАЯ ПРОВЕРКА**:
-  - выгрузить все измененные файлы на `178.17.60.16` (`/opt/prisonbot`), перезапустить `prisonbot.service`, не затрагивая `crayfish_omni_hub` и `autoclip_service`;
-  - проверить `systemctl is-active prisonbot.service` и отсутствие traceback в `journalctl -u prisonbot.service -n 100`;
-  - проверить публичный HTTPS: `https://zvezdoed.space/prison/` (`20261127_16`, подтвердить отсутствие удаленной плашки `Защита: Активна` в HTML), `app.js?v=20261127_16`, `styles.css?v=20261127_16`, `sw.js` (`prisonbot-assets-v37`);
-  - подождать 20-40 секунд после старта сервиса и проверить живые логи `journalctl` + `GET /api/v1/raids/players` и `GET /api/v1/outreach/status`:
-    - подтвердить, что автоматический фоновый проход обогащения запустился сам (без нажатия ручной кнопки) и число проверенных общаков (`obshak_coverage.checked`) реально выросло;
-    - привести в финальном отчете живой снимок `obshak_coverage` (`total`, `checked`, `unknown`, распределение `by_type`: `pacan`, `blat`, `vor`, `avtoritet`, `none`) и 3-5 примеров игроков с автоматически определенным общаком и авторитетом.
+- [ ] 1. Проверить локальный `git remote -v`, `git ls-files` и `.gitignore` (убрать из индекса любые случайно отслеживаемые секреты/БД через `git rm --cached`, добавить `github_setup_keys.txt` в `.gitignore`).
+- [ ] 2. Проинспектировать на VPS (`178.17.60.16`) `systemctl cat prisonbot.service` (точный путь к Python/venv и локальный порт), сделать бэкап `.env` и `storage/` в `/opt/prisonbot/backups/`.
+- [ ] 3. Сгенерировать на VPS две SSH-пары (`prisonbot_github_deploy` для GitHub Deploy Key и `prisonbot_gha_access` для GitHub Actions), добавить `prisonbot_gha_access.pub` в `/root/.ssh/authorized_keys`, добавить `github.com` в `/root/.ssh/known_hosts`, привязать `/opt/prisonbot` к GitHub remote `origin` (`git@github.com:...`) с настроенным `core.sshCommand`.
+- [ ] 4. Записать готовые значения (`DEPLOY_KEY_PUB`, `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`) в локальный игнорируемый файл `github_setup_keys.txt` и проверить через `git status`, что он не попадает в отслеживаемые файлы.
+- [ ] 5. Создать `.github/workflows/deploy.yml` с джобами `test` и `deploy`, настроенным `paths-ignore`, автобэкапом БД на VPS и health-check после рестарта `prisonbot.service`.
+- [ ] 6. Проверить совместимость всех тестов в `tests/` с чистым Linux (GitHub Actions), написать `tests/test_ci_workflow.py` и прогнать `node --check` + `python -m pytest -q tests/`.
+- [ ] 7. Проверить состояние VPS после подготовки: `systemctl is-active prisonbot.service` (`active`), отсутствие ошибок в `journalctl -u prisonbot.service -n 50`, соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`) не затронуты. В финальном отчете кратко подтвердить готовность и сообщить пользователю, что файл `github_setup_keys.txt` создан локально и готов для переноса ключей в GitHub.
 
 ### Команды проверки
 ```bash
 node --check web/static/app.js
 node --check web/static/sw.js
-python -m pytest tests/test_raids_api.py tests/test_friend_outreach_worker.py tests/test_web_api.py tests/test_web_endpoints.py tests/test_asset_cache.py tests/test_improvements_v2.py -v
+python -m pytest tests/test_ci_workflow.py -v
 python -m pytest -q tests/
+git status
 ```
