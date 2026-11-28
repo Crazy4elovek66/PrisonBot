@@ -1685,7 +1685,7 @@ async def get_candidates_needing_profile_enrichment(
             await session.execute(
                 select(TrackedCandidate)
                 .where(TrackedCandidate.account_id == account_id)
-                .order_by(TrackedCandidate.last_seen_at.desc())
+                .order_by(TrackedCandidate.last_seen_at.desc(), TrackedCandidate.user_id.asc())
             )
         ).scalars().all()
 

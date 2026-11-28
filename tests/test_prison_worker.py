@@ -44,7 +44,7 @@ async def test_select_highest_unlocked_prison(prison_setup):
     engine, acc_id = prison_setup
 
     client = httpx.AsyncClient()
-    auth_mock = AuthProvider(account_id=acc_id)
+    auth_mock = AuthProvider(account_id=acc_id, db_engine=engine)
     http_mock = GameHttpClient(auth_provider=auth_mock)
     prison_api = PrisonAPI(http_client=http_mock)
     worker = PrisonWorker(
@@ -125,7 +125,7 @@ async def test_prison_worker_energy_drain_cycle(prison_setup, monkeypatch):
         base_url=settings.API_BASE_URL,
     )
 
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
 
@@ -181,7 +181,7 @@ async def test_prison_worker_skip_low_energy(prison_setup):
         base_url=settings.API_BASE_URL,
     )
 
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
 
@@ -242,7 +242,7 @@ async def test_prison_worker_night_mode(prison_setup):
         base_url=settings.API_BASE_URL,
     )
 
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
 
@@ -296,7 +296,7 @@ async def test_prison_worker_single_hit_energy_drain(prison_setup):
         base_url=settings.API_BASE_URL,
     )
 
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
 
@@ -368,7 +368,7 @@ async def test_prison_worker_checkpoint_claim(prison_setup, monkeypatch):
         base_url=settings.API_BASE_URL,
     )
 
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
 
@@ -445,7 +445,7 @@ async def test_prison_drain_all_energy_across_circle_completion(prison_setup):
         return httpx.Response(404)
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler), base_url=settings.API_BASE_URL)
-    auth = AuthProvider(account_id=acc_id)
+    auth = AuthProvider(account_id=acc_id, db_engine=engine)
     auth._access_token = "mock_tok"
     auth._access_exp = 9999999999
     game_http = GameHttpClient(auth_provider=auth)

@@ -33,7 +33,11 @@ ENV/
 htmlcov/
 
 # Sensitive data & local storage
-storage/
+!storage/
+storage/*
+!storage/bosses_catalog.json
+!storage/collections_catalog.json
+!storage/tattoo_clothing_cache.json
 storage/asset_cache/
 storage/*.db
 storage/*.db-wal
