@@ -3447,6 +3447,8 @@ async def test_energy_target_xor_mutex_and_master_drain(web_setup):
         assert r_drain.status_code == 200
         assert r_drain.json()["success"] is True
         assert r_drain.json()["works_done"] == 2
+        import asyncio
+        await asyncio.sleep(0.05)
     finally:
         bot_context.player_api = orig_player
         bot_context.prison_api = orig_prison
@@ -3495,3 +3497,60 @@ async def test_outreach_criteria_status_run_now_and_no_proprisonbot(web_setup):
     finally:
         bot_context.social_api = orig_social
         bot_context.friend_outreach_worker = orig_ow
+
+
+@pytest.mark.asyncio
+async def test_raids_players_server_filtering_source_counts_and_reasons(web_setup):
+    from core.database import get_session
+    from core.models import SentFriendRequest, TrackedCandidate
+
+    client, engine = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    async with get_session(engine) as session:
+        # Добавляем 50 игроков weekly_top с огромным уроном и 2 игроков из tg_raids с малым уроном
+        for i in range(1, 51):
+            session.add(TrackedCandidate(
+                account_id=1,
+                user_id=700000 + i,
+                nickname=f"TopWeekly_{i}",
+                total_damage=10_000_000_000 + i,
+                authority=500_000,
+                source="weekly_top",
+            ))
+        session.add(TrackedCandidate(
+            account_id=1, user_id=800001, nickname="TG_Raider_1", total_damage=200_000, authority=1000, source="tg_channel"
+        ))
+        session.add(TrackedCandidate(
+            account_id=1, user_id=800002, nickname="ОПГ_TG_2", total_damage=300_000, authority=2000, source="tg_raids"
+        ))
+        session.add(TrackedCandidate(
+            account_id=1, user_id=800003, nickname="Guild_Fighter", total_damage=5_000_000, authority=3000, source="guild"
+        ))
+        # Игрок с ignored заявкой не должен получать ложное "Не подходит" без причины
+        session.add(SentFriendRequest(
+            account_id=1, target_user_id=700001, target_nickname="TopWeekly_1", source="radar", status="ignored"
+        ))
+        await session.commit()
+
+    # 1. Фильтр строго ?sources=tg_raids возвращает TG-игроков, не вытесненных weekly_top
+    r_tg = await client.get("/api/v1/raids/players?sources=tg_raids&limit=10", headers=headers)
+    assert r_tg.status_code == 200
+    d_tg = r_tg.json()
+    assert d_tg["source_counts"]["weekly_top"] >= 50
+    assert d_tg["source_counts"]["tg_raids"] == 2
+    assert d_tg["source_counts"]["brigades"] >= 1
+    assert [p["userId"] for p in d_tg["players"]] == [800002, 800001] or {p["userId"] for p in d_tg["players"]} == {800001, 800002}
+    assert all(p["source"] == "tg_raids" and p["source_label"] == "TG-каналы" for p in d_tg["players"])
+
+    # 2. Исключение по слову + min_damage + поиск
+    r_kw = await client.get("/api/v1/raids/players?sources=tg_raids&exclude_keywords=ОПГ", headers=headers)
+    assert r_kw.status_code == 200
+    assert [p["userId"] for p in r_kw.json()["players"]] == [800001]
+
+    # 3. Статус ignored и точная причина filter_reason
+    r_ign = await client.get("/api/v1/raids/players?search=700001", headers=headers)
+    assert r_ign.status_code == 200
+    p1 = r_ign.json()["players"][0]
+    assert p1["outreach_status"] == "ignored"
+    assert "проигнорирована" in p1["filter_reason"].lower()

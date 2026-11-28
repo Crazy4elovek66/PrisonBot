@@ -7,7 +7,7 @@ from sqlalchemy import select, delete
 
 from telegram.session_manager import get_telegram_client
 from core.database import get_session
-from core.models import CachedRaidPost
+from core.models import CachedRaidPost, TrackedCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,51 @@ class RaidChannelScanner:
                             else:
                                 existing.participants = participants
                                 existing.raw_preview = text[:300]
+
+                            # Сохраняем участников рейда в TrackedCandidate с каноническим source='tg_raids'
+                            for part in participants:
+                                if not isinstance(part, dict) or not part.get("userId"):
+                                    continue
+                                uid_p = int(part["userId"])
+                                cand = (
+                                    await session.execute(
+                                        select(TrackedCandidate).where(
+                                            TrackedCandidate.account_id == account_id,
+                                            TrackedCandidate.user_id == uid_p,
+                                        )
+                                    )
+                                ).scalar_one_or_none()
+                                p_dmg = int(part.get("claimedDamage") or 0)
+                                p_auth = int(part.get("authority") or 0)
+                                p_lvl = int(part.get("level") or 0)
+                                p_nick = part.get("nickname") or f"Игрок {uid_p}"
+                                if not cand:
+                                    session.add(
+                                        TrackedCandidate(
+                                            account_id=account_id,
+                                            user_id=uid_p,
+                                            nickname=p_nick,
+                                            photo_url=part.get("photoUrl"),
+                                            level=p_lvl,
+                                            authority=p_auth,
+                                            total_damage=p_dmg,
+                                            source="tg_raids",
+                                            is_active_recently=True,
+                                            first_seen_at=now,
+                                            last_seen_at=now,
+                                            last_snapshot_at=now,
+                                        )
+                                    )
+                                else:
+                                    cand.last_seen_at = now
+                                    cand.is_active_recently = True
+                                    if p_dmg > int(cand.total_damage or 0):
+                                        cand.total_damage = p_dmg
+                                    if p_auth > int(cand.authority or 0):
+                                        cand.authority = p_auth
+                                    if not cand.source:
+                                        cand.source = "tg_raids"
+                            await session.commit()
 
                         found_count += 1
 

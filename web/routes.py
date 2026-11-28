@@ -5638,24 +5638,45 @@ async def get_official_news_media(media_id: str, request: Request):
 @api_router.get("/raids/players")
 async def get_unified_raids_players(
     sort: str = Query("fresh"),
+    sort_by: Optional[str] = Query(None),
     source: str = Query("all"),
-    limit: int = Query(80, ge=1, le=200),
+    sources: Optional[str] = Query(None),
+    min_damage: Optional[int] = Query(None, ge=0),
+    max_damage: Optional[int] = Query(None, ge=0),
+    min_authority: Optional[int] = Query(None, ge=0),
+    max_authority: Optional[int] = Query(None, ge=0),
+    exclude_keywords: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    status_filter: str = Query("all"),
+    apply_criteria: bool = Query(True),
+    limit: int = Query(200, ge=1, le=500),
     account_id: int = 1,
 ) -> Dict[str, Any]:
-    """Единый дедуплицированный список активных игроков из всех источников с сортировкой и статусом Авто."""
+    """Единый дедуплицированный список активных игроков с каноническими источниками и серверной фильтрацией."""
     from client.http_client import get_game_now_ts
-    from core.database import count_outreach_sent_last_24h, get_outreach_excluded_ids, normalize_outreach_criteria
+    from core.database import (
+        DEFAULT_OUTREACH_SOURCES,
+        OUTREACH_SOURCE_LABELS,
+        count_outreach_sent_last_24h,
+        get_outreach_excluded_ids,
+        normalize_outreach_criteria,
+        normalize_outreach_source,
+    )
     from core.models import FriendOutreachHistory, FriendStats, SentFriendRequest, TrackedCandidate
-    from workers.friend_outreach_worker import filter_outreach_candidates
+    from workers.friend_outreach_worker import evaluate_outreach_candidate
 
     now_ts = get_game_now_ts()
     engine = bot_context.db_engine
+    empty_counts = {k: 0 for k in DEFAULT_OUTREACH_SOURCES}
     if not engine:
         return {
             "success": True,
             "server_now_ts": round(now_ts, 3),
             "players": [],
             "total": 0,
+            "filtered_total": 0,
+            "total_candidates": 0,
+            "source_counts": empty_counts,
             "sent_24h": 0,
             "daily_limit": 50,
             "matched_count": 0,
@@ -5665,10 +5686,32 @@ async def get_unified_raids_players(
         }
 
     cfg = await get_or_create_config(account_id, engine)
-    criteria = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
-    daily_limit = int(criteria["daily_limit"])
+    saved_criteria = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
+    daily_limit = int(saved_criteria["daily_limit"])
     sent_24h = await count_outreach_sent_last_24h(account_id, now_ts=now_ts, engine=engine)
     excluded_ids = await get_outreach_excluded_ids(account_id, engine=engine)
+
+    # Формируем эффективные критерии из query-параметров (если переданы) или из сохранённых
+    eff_criteria = dict(saved_criteria)
+    explicit_sources: Optional[List[str]] = None
+    if sources is not None:
+        explicit_sources = [normalize_outreach_source(s) for s in sources.split(",") if s.strip()]
+        eff_criteria["sources"] = explicit_sources
+    elif source and source != "all":
+        explicit_sources = [normalize_outreach_source(source)]
+        eff_criteria["sources"] = explicit_sources
+    if min_damage is not None:
+        eff_criteria["min_damage"] = int(min_damage)
+    if max_damage is not None:
+        eff_criteria["max_damage"] = int(max_damage)
+    if min_authority is not None:
+        eff_criteria["min_authority"] = int(min_authority)
+    if max_authority is not None:
+        eff_criteria["max_authority"] = int(max_authority)
+    if exclude_keywords is not None:
+        eff_criteria["exclude_keywords"] = str(exclude_keywords)
+    eff_sort = str(sort_by or sort or eff_criteria.get("sort_by") or "fresh").lower()
+    eff_criteria["sort_by"] = eff_sort if eff_sort in ("fresh", "damage", "authority", "source") else "fresh"
 
     async with get_session(engine) as session:
         all_rows = (
@@ -5705,25 +5748,20 @@ async def get_unified_raids_players(
         ).scalars().all()
         friend_ids = {int(uid) for uid in friend_rows if uid is not None}
 
-    matched_all, skip_stats = filter_outreach_candidates(
-        all_rows, criteria=criteria, excluded_ids=excluded_ids, friend_ids=friend_ids
-    )
-    matched_ids = {int(m["userId"]) for m in matched_all}
-
-    rows = [r for r in all_rows if not (source and source != "all" and str(r.source or "") != source)]
-
+    # Дедупликация всех кандидатов и точный подсчет source_counts по всей БД
     dedup: Dict[int, Dict[str, Any]] = {}
-    for c in rows:
+    source_counts: Dict[str, int] = {k: 0 for k in DEFAULT_OUTREACH_SOURCES}
+    for c in all_rows:
         uid = int(c.user_id)
         dmg = max(int(c.poison_damage or 0), int(c.total_damage or 0))
         auth = int(c.authority or 0)
-        status = "friend" if uid in friend_ids else sent_map.get(uid, "none")
         ts = c.last_seen_at.isoformat() if c.last_seen_at else ""
-        src_name = str(c.source or "radar")
+        canon_src = normalize_outreach_source(c.source)
         if uid in dedup:
             existing = dedup[uid]
-            if src_name not in existing["sources"]:
-                existing["sources"].append(src_name)
+            if canon_src not in existing["sources"]:
+                existing["sources"].append(canon_src)
+                source_counts[canon_src] = source_counts.get(canon_src, 0) + 1
             if dmg > existing["damage"]:
                 existing["damage"] = dmg
             if auth > existing["authority"]:
@@ -5731,6 +5769,7 @@ async def get_unified_raids_players(
             if ts > existing["last_seen_at"]:
                 existing["last_seen_at"] = ts
         else:
+            source_counts[canon_src] = source_counts.get(canon_src, 0) + 1
             dedup[uid] = {
                 "userId": uid,
                 "nickname": c.nickname or f"Игрок #{uid}",
@@ -5739,27 +5778,113 @@ async def get_unified_raids_players(
                 "poisonDamage": int(c.poison_damage or 0),
                 "totalDamage": int(c.total_damage or 0),
                 "biceps": int(getattr(c, "biceps", 0) or 0),
-                "source": src_name,
-                "sources": [src_name],
-                "status": status,
-                "matchesCriteria": (uid in matched_ids),
+                "source": canon_src,
+                "source_label": OUTREACH_SOURCE_LABELS.get(canon_src, canon_src),
+                "sources": [canon_src],
                 "last_seen_at": ts,
             }
 
-    players = list(dedup.values())
-    sort_key = str(sort or "fresh").lower()
-    if sort_key == "damage":
-        players.sort(key=lambda x: (x["damage"], x["authority"]), reverse=True)
-    elif sort_key == "authority":
-        players.sort(key=lambda x: (x["authority"], x["damage"]), reverse=True)
-    elif sort_key == "source":
-        players.sort(key=lambda x: (x["source"], -x["damage"]))
+    # Оценка каждого игрока по эффективным критериям
+    evaluated: List[Dict[str, Any]] = []
+    matched_count = 0
+    skip_stats = {
+        "self_skipped": 0,
+        "already_friend": 0,
+        "already_sent": 0,
+        "damage_out_of_range": 0,
+        "authority_out_of_range": 0,
+        "source_filtered": 0,
+        "keyword_excluded": 0,
+    }
+    for item in dedup.values():
+        ev = evaluate_outreach_candidate(
+            item,
+            criteria=eff_criteria,
+            excluded_ids=excluded_ids,
+            friend_ids=friend_ids,
+            sent_status_map=sent_map,
+        )
+        sk = ev.pop("_skip_key", None)
+        if ev["matches_criteria"]:
+            matched_count += 1
+        elif sk and sk in skip_stats:
+            skip_stats[sk] += 1
+
+        # Совместимость поля status для старых клиентов/тестов
+        ost = ev["outreach_status"]
+        legacy_status = "friend" if ost == "already_friend" else ("none" if ost in ("matched", "filtered_out") else ost)
+        enriched_item = {
+            **item,
+            "source": ev["source"],
+            "source_label": ev["source_label"],
+            "sources": ev["sources"],
+            "status": legacy_status,
+            "outreach_status": ost,
+            "filter_reason": ev["filter_reason"],
+            "matches_criteria": ev["matches_criteria"],
+            "matchesCriteria": ev["matches_criteria"],
+        }
+        evaluated.append(enriched_item)
+
+    # Применяем серверные фильтры до LIMIT
+    filtered: List[Dict[str, Any]] = []
+    search_q = str(search or "").strip().lower()
+    st_flt = str(status_filter or "all").lower()
+    allowed_src_set = set(eff_criteria["sources"]) if eff_criteria.get("sources") is not None else set(DEFAULT_OUTREACH_SOURCES)
+    kw_list = [kw.strip().lower() for kw in str(eff_criteria.get("exclude_keywords") or "").split(",") if kw.strip()]
+
+    for p in evaluated:
+        # 1. Фильтр источника (обязательно при explicit_sources или при apply_criteria)
+        if explicit_sources is not None:
+            if not (set(p["sources"]) & set(explicit_sources)):
+                continue
+        elif apply_criteria:
+            if not (set(p["sources"]) & allowed_src_set):
+                continue
+
+        # 2. Фильтры диапазонов / стоп-слов при apply_criteria
+        if apply_criteria:
+            if p["damage"] < eff_criteria["min_damage"]:
+                continue
+            if eff_criteria["max_damage"] > 0 and p["damage"] > eff_criteria["max_damage"]:
+                continue
+            if p["authority"] < eff_criteria["min_authority"]:
+                continue
+            if eff_criteria["max_authority"] > 0 and p["authority"] > eff_criteria["max_authority"]:
+                continue
+            if kw_list and any(kw in p["nickname"].lower() for kw in kw_list):
+                continue
+
+        # 3. Быстрый поиск по нику / ID
+        if search_q:
+            if search_q not in p["nickname"].lower() and search_q not in str(p["userId"]):
+                continue
+
+        # 4. Фильтр по статусу
+        ost = p["outreach_status"]
+        if st_flt == "matched" and ost != "matched":
+            continue
+        elif st_flt == "sent" and ost not in ("sent", "already_pending", "ignored"):
+            continue
+        elif st_flt == "already_friend" and ost != "already_friend":
+            continue
+        elif st_flt == "excluded" and ost not in ("filtered_out", "privacy_blocked", "ignored"):
+            continue
+
+        filtered.append(p)
+
+    if eff_sort == "damage":
+        filtered.sort(key=lambda x: (x["damage"], x["authority"]), reverse=True)
+    elif eff_sort == "authority":
+        filtered.sort(key=lambda x: (x["authority"], x["damage"]), reverse=True)
+    elif eff_sort == "source":
+        filtered.sort(key=lambda x: (x["source"], -x["damage"]))
     else:
-        players.sort(key=lambda x: (x["last_seen_at"], x["damage"]), reverse=True)
+        filtered.sort(key=lambda x: (x["last_seen_at"], x["damage"]), reverse=True)
 
     ow = getattr(bot_context, "friend_outreach_worker", None)
     telemetry = ow.get_telemetry() if ow is not None else {
-        "worker_status": "Активен" if criteria["enabled"] else "Выключен",
+        "worker_status": "Активен" if saved_criteria["enabled"] else "Выключен",
         "last_run_ts": 0,
         "last_error": "",
         "last_sent_player": None,
@@ -5772,16 +5897,19 @@ async def get_unified_raids_players(
     return {
         "success": True,
         "server_now_ts": round(now_ts, 3),
-        "players": players[:limit],
-        "total": len(players),
+        "players": filtered[:limit],
+        "total": len(filtered),
+        "filtered_total": len(filtered),
+        "total_candidates": len(dedup),
+        "source_counts": source_counts,
         "sent_24h": sent_24h,
         "daily_limit": daily_limit,
-        "matched_count": len(matched_all),
-        "criteria": criteria,
+        "matched_count": matched_count,
+        "criteria": saved_criteria,
         "outreach_status": telemetry,
         **telemetry,
         "auto_invite": {
-            "enabled": bool(criteria["enabled"]),
+            "enabled": bool(saved_criteria["enabled"]),
             "sentLast24h": sent_24h,
             "dailyLimit": daily_limit,
         },
@@ -5790,7 +5918,13 @@ async def get_unified_raids_players(
 
 async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
     from client.http_client import get_game_now_ts
-    from core.database import count_outreach_sent_last_24h, get_outreach_excluded_ids, normalize_outreach_criteria
+    from core.database import (
+        DEFAULT_OUTREACH_SOURCES,
+        count_outreach_sent_last_24h,
+        get_outreach_excluded_ids,
+        normalize_outreach_criteria,
+        normalize_outreach_source,
+    )
     from core.models import FriendStats, TrackedCandidate
     from workers.friend_outreach_worker import filter_outreach_candidates
 
@@ -5805,6 +5939,7 @@ async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
             "daily_limit": crit["daily_limit"],
             "matched_count": 0,
             "total_candidates": 0,
+            "source_counts": {k: 0 for k in DEFAULT_OUTREACH_SOURCES},
             "criteria": crit,
             "worker_status": "БД недоступна",
             "last_run_ts": 0,
@@ -5832,6 +5967,11 @@ async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
         ).scalars().all()
         friend_ids = {int(uid) for uid in f_rows if uid is not None}
 
+    source_counts = {k: 0 for k in DEFAULT_OUTREACH_SOURCES}
+    for r in all_rows:
+        cs = normalize_outreach_source(r.source)
+        source_counts[cs] = source_counts.get(cs, 0) + 1
+
     matched, skip_stats = filter_outreach_candidates(
         all_rows, criteria=criteria, excluded_ids=excluded_ids, friend_ids=friend_ids
     )
@@ -5854,6 +5994,7 @@ async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
         "daily_limit": criteria["daily_limit"],
         "matched_count": len(matched),
         "total_candidates": len(all_rows),
+        "source_counts": source_counts,
         "criteria": criteria,
         **telemetry,
     }

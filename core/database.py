@@ -1019,7 +1019,45 @@ async def reset_game_guard(account_id: int, game_key: str, engine: Optional[Asyn
             await session.commit()
 
 
-DEFAULT_OUTREACH_SOURCES = ["weekly_top", "achievements", "tg_channel", "guild"]
+DEFAULT_OUTREACH_SOURCES = ["weekly_top", "achievements", "tg_raids", "brigades"]
+
+OUTREACH_SOURCE_LABELS = {
+    "weekly_top": "Топ недели",
+    "achievements": "Топ ачивок",
+    "tg_raids": "TG-каналы",
+    "brigades": "Бригады",
+}
+
+_OUTREACH_SOURCE_ALIAS_MAP = {
+    "weekly_top": "weekly_top",
+    "weekly": "weekly_top",
+    "top_weekly": "weekly_top",
+    "radar": "weekly_top",
+    "achievements": "achievements",
+    "ach": "achievements",
+    "top_achievements": "achievements",
+    "boss_top": "achievements",
+    "tg_raids": "tg_raids",
+    "tg": "tg_raids",
+    "tg_channel": "tg_raids",
+    "tg_channels": "tg_raids",
+    "telegram": "tg_raids",
+    "telegram_raid": "tg_raids",
+    "raid_channel": "tg_raids",
+    "channel": "tg_raids",
+    "brigades": "brigades",
+    "brigade": "brigades",
+    "guild": "brigades",
+    "guilds": "brigades",
+    "guild_scan": "brigades",
+    "clan": "brigades",
+}
+
+
+def normalize_outreach_source(raw_source: Any) -> str:
+    """Приводит ключ источника кандидатов к единому каноническому виду."""
+    raw = str(raw_source or "weekly_top").strip().lower()
+    return _OUTREACH_SOURCE_ALIAS_MAP.get(raw, raw or "weekly_top")
 
 
 def normalize_outreach_criteria(raw: Any = None, cfg: Any = None) -> dict:
@@ -1064,8 +1102,12 @@ def normalize_outreach_criteria(raw: Any = None, cfg: Any = None) -> dict:
 
     raw_sources = base.get("sources")
     if isinstance(raw_sources, list):
-        clean_sources = [str(s).strip() for s in raw_sources if str(s).strip()]
-        base["sources"] = clean_sources if clean_sources else list(DEFAULT_OUTREACH_SOURCES)
+        seen_s = []
+        for s in raw_sources:
+            ns = normalize_outreach_source(s)
+            if ns and ns not in seen_s:
+                seen_s.append(ns)
+        base["sources"] = seen_s if raw_sources == [] else (seen_s if seen_s else list(DEFAULT_OUTREACH_SOURCES))
     else:
         base["sources"] = list(DEFAULT_OUTREACH_SOURCES)
 

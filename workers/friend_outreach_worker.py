@@ -9,35 +9,142 @@ from sqlalchemy import select
 
 from client.http_client import get_game_now_ts
 from core.database import (
+    OUTREACH_SOURCE_LABELS,
     count_outreach_sent_last_24h,
     get_or_create_config,
     get_outreach_excluded_ids,
     get_session,
     is_worker_active,
     normalize_outreach_criteria,
+    normalize_outreach_source,
     record_outreach_history,
 )
 from core.models import FriendStats, TrackedCandidate
 
 logger = logging.getLogger(__name__)
 
-_SOURCE_ALIASES = {
-    "tg_raids": "tg_channel",
-    "tg_channel": "tg_channel",
-    "channel": "tg_channel",
-    "guild_scan": "guild",
-    "guild": "guild",
-    "boss_top": "achievements",
-    "achievements": "achievements",
-    "weekly_top": "weekly_top",
-    "news_ad": "news_ad",
-    "radar": "radar",
-}
 
+def evaluate_outreach_candidate(
+    cand: Any,
+    criteria: Dict[str, Any],
+    excluded_ids: Optional[Set[int]] = None,
+    friend_ids: Optional[Set[int]] = None,
+    sent_status_map: Optional[Dict[int, str]] = None,
+    self_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Вычисляет канонический источник, точный `outreach_status` и человекочитаемую причину отсева `filter_reason`.
+    """
+    excluded = excluded_ids or set()
+    friends = friend_ids or set()
+    status_map = sent_status_map or {}
+    crit = normalize_outreach_criteria(criteria)
 
-def _canonical_source(src: Any) -> str:
-    raw = str(src or "radar").strip().lower()
-    return _SOURCE_ALIASES.get(raw, raw)
+    min_dmg = crit["min_damage"]
+    max_dmg = crit["max_damage"]
+    min_auth = crit["min_authority"]
+    max_auth = crit["max_authority"]
+    allowed_sources = {normalize_outreach_source(s) for s in (crit.get("sources") or [])}
+    keywords = [kw.strip().lower() for kw in str(crit.get("exclude_keywords") or "").split(",") if kw.strip()]
+
+    if isinstance(cand, dict):
+        uid = int(cand.get("userId") or cand.get("user_id") or cand.get("id") or 0)
+        nick = str(cand.get("nickname") or cand.get("name") or f"Игрок #{uid}")
+        dmg = int(cand.get("damage") or max(int(cand.get("poisonDamage") or cand.get("poison_damage") or 0), int(cand.get("totalDamage") or cand.get("total_damage") or 0)))
+        auth = int(cand.get("authority") or 0)
+        src_raw = cand.get("source") or "weekly_top"
+        sources_list = cand.get("sources") if isinstance(cand.get("sources"), list) else [src_raw]
+        last_seen = str(cand.get("last_seen_at") or cand.get("lastSeenAt") or "")
+    else:
+        uid = int(getattr(cand, "user_id", 0) or 0)
+        nick = str(getattr(cand, "nickname", None) or f"Игрок #{uid}")
+        dmg = int(max(int(getattr(cand, "poison_damage", 0) or 0), int(getattr(cand, "total_damage", 0) or 0)))
+        auth = int(getattr(cand, "authority", 0) or 0)
+        src_raw = getattr(cand, "source", "weekly_top") or "weekly_top"
+        sources_list = [src_raw]
+        ls_dt = getattr(cand, "last_seen_at", None)
+        last_seen = ls_dt.isoformat() if ls_dt else ""
+
+    canon_sources = []
+    for s in sources_list:
+        cs = normalize_outreach_source(s)
+        if cs and cs not in canon_sources:
+            canon_sources.append(cs)
+    canon_src = canon_sources[0] if canon_sources else normalize_outreach_source(src_raw)
+    src_label = OUTREACH_SOURCE_LABELS.get(canon_src, canon_src)
+
+    outreach_status = "matched"
+    filter_reason = ""
+    skip_reason_key = None
+
+    if self_id is not None and uid == int(self_id):
+        outreach_status = "filtered_out"
+        filter_reason = "Собственный аккаунт"
+        skip_reason_key = "self_skipped"
+    elif uid in friends:
+        outreach_status = "already_friend"
+        filter_reason = "Уже в друзьях"
+        skip_reason_key = "already_friend"
+    elif uid in excluded or uid in status_map:
+        raw_st = str(status_map.get(uid) or "sent").lower()
+        if raw_st == "already_friend":
+            outreach_status = "already_friend"
+            filter_reason = "Уже в друзьях"
+            skip_reason_key = "already_friend"
+        elif raw_st == "already_pending":
+            outreach_status = "already_pending"
+            filter_reason = "Заявка уже отправлена"
+            skip_reason_key = "already_sent"
+        elif raw_st == "privacy_blocked":
+            outreach_status = "privacy_blocked"
+            filter_reason = "Закрыты заявки в друзья"
+            skip_reason_key = "already_sent"
+        elif raw_st == "ignored":
+            outreach_status = "ignored"
+            filter_reason = "Заявка проигнорирована (ранее отправлялась)"
+            skip_reason_key = "already_sent"
+        else:
+            outreach_status = "sent"
+            filter_reason = "Заявка отправлена"
+            skip_reason_key = "already_sent"
+    elif not (set(canon_sources) & allowed_sources):
+        outreach_status = "filtered_out"
+        filter_reason = "Источник отключен"
+        skip_reason_key = "source_filtered"
+    elif dmg < min_dmg:
+        outreach_status = "filtered_out"
+        filter_reason = "Урон ниже порога"
+        skip_reason_key = "damage_out_of_range"
+    elif max_dmg > 0 and dmg > max_dmg:
+        outreach_status = "filtered_out"
+        filter_reason = "Урон выше порога"
+        skip_reason_key = "damage_out_of_range"
+    elif auth < min_auth or (max_auth > 0 and auth > max_auth):
+        outreach_status = "filtered_out"
+        filter_reason = "Авторитет вне диапазона"
+        skip_reason_key = "authority_out_of_range"
+    elif keywords:
+        low_nick = nick.lower()
+        hit_kw = next((kw for kw in keywords if kw in low_nick), None)
+        if hit_kw:
+            outreach_status = "filtered_out"
+            filter_reason = f"Исключен по слову «{hit_kw}»"
+            skip_reason_key = "keyword_excluded"
+
+    return {
+        "userId": uid,
+        "nickname": nick,
+        "damage": dmg,
+        "authority": auth,
+        "source": canon_src,
+        "sources": canon_sources,
+        "source_label": src_label,
+        "last_seen_at": last_seen,
+        "outreach_status": outreach_status,
+        "filter_reason": filter_reason,
+        "matches_criteria": outreach_status == "matched",
+        "_skip_key": skip_reason_key,
+    }
 
 
 def filter_outreach_candidates(
@@ -51,16 +158,7 @@ def filter_outreach_candidates(
     Чистая детерминированная фильтрация и сортировка кандидатов для авто-рассылки.
     Возвращает `(matched_candidates, skip_stats)`.
     """
-    excluded = set(excluded_ids or ())
-    friends = set(friend_ids or ())
     crit = normalize_outreach_criteria(criteria)
-
-    min_dmg = crit["min_damage"]
-    max_dmg = crit["max_damage"]
-    min_auth = crit["min_authority"]
-    max_auth = crit["max_authority"]
-    allowed_sources = {_canonical_source(s) for s in (crit.get("sources") or [])}
-    keywords = [kw.strip().lower() for kw in str(crit.get("exclude_keywords") or "").split(",") if kw.strip()]
     sort_by = crit["sort_by"]
 
     skip_stats = {
@@ -76,65 +174,23 @@ def filter_outreach_candidates(
     seen_uids: Set[int] = set()
 
     for c in candidates:
-        if isinstance(c, dict):
-            uid = int(c.get("userId") or c.get("user_id") or c.get("id") or 0)
-            nick = str(c.get("nickname") or c.get("name") or f"Игрок #{uid}")
-            dmg = int(c.get("damage") or max(int(c.get("poisonDamage") or c.get("poison_damage") or 0), int(c.get("totalDamage") or c.get("total_damage") or 0)))
-            auth = int(c.get("authority") or 0)
-            src_raw = c.get("source") or "radar"
-            sources_list = c.get("sources") if isinstance(c.get("sources"), list) else [src_raw]
-            last_seen = str(c.get("last_seen_at") or c.get("lastSeenAt") or "")
-        else:
-            uid = int(getattr(c, "user_id", 0) or 0)
-            nick = str(getattr(c, "nickname", None) or f"Игрок #{uid}")
-            dmg = int(max(int(getattr(c, "poison_damage", 0) or 0), int(getattr(c, "total_damage", 0) or 0)))
-            auth = int(getattr(c, "authority", 0) or 0)
-            src_raw = getattr(c, "source", "radar") or "radar"
-            sources_list = [src_raw]
-            ls_dt = getattr(c, "last_seen_at", None)
-            last_seen = ls_dt.isoformat() if ls_dt else ""
-
+        ev = evaluate_outreach_candidate(
+            c,
+            criteria=crit,
+            excluded_ids=excluded_ids,
+            friend_ids=friend_ids,
+            self_id=self_id,
+        )
+        uid = ev["userId"]
         if uid <= 0 or uid in seen_uids:
             continue
         seen_uids.add(uid)
 
-        if self_id is not None and uid == int(self_id):
-            skip_stats["self_skipped"] += 1
-            continue
-        if uid in friends:
-            skip_stats["already_friend"] += 1
-            continue
-        if uid in excluded:
-            skip_stats["already_sent"] += 1
-            continue
-
-        if allowed_sources:
-            cand_sources = {_canonical_source(s) for s in sources_list if s}
-            if not (cand_sources & allowed_sources):
-                skip_stats["source_filtered"] += 1
-                continue
-
-        if dmg < min_dmg or (max_dmg > 0 and dmg > max_dmg):
-            skip_stats["damage_out_of_range"] += 1
-            continue
-        if auth < min_auth or (max_auth > 0 and auth > max_auth):
-            skip_stats["authority_out_of_range"] += 1
-            continue
-
-        if keywords:
-            low_nick = nick.lower()
-            if any(kw in low_nick for kw in keywords):
-                skip_stats["keyword_excluded"] += 1
-                continue
-
-        matched.append({
-            "userId": uid,
-            "nickname": nick,
-            "damage": dmg,
-            "authority": auth,
-            "source": str(src_raw),
-            "last_seen_at": last_seen,
-        })
+        sk = ev.pop("_skip_key", None)
+        if ev["matches_criteria"]:
+            matched.append(ev)
+        elif sk and sk in skip_stats:
+            skip_stats[sk] += 1
 
     if sort_by == "damage":
         matched.sort(key=lambda x: (x["damage"], x["authority"]), reverse=True)

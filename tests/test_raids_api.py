@@ -854,3 +854,19 @@ def test_news_filter_dedup_and_media_css():
     css = Path("web/static/styles.css").read_text(encoding="utf-8")
     assert "object-fit: contain;" in css
     assert ".news-media-wrap.is-gif {\n  aspect-ratio: 16 / 9;" not in css
+
+
+def test_normalize_outreach_source_aliases():
+    from core.database import normalize_outreach_source
+
+    assert normalize_outreach_source("weekly_top") == "weekly_top"
+    assert normalize_outreach_source("top_weekly") == "weekly_top"
+    assert normalize_outreach_source("achievements") == "achievements"
+    assert normalize_outreach_source("boss_top") == "achievements"
+    assert normalize_outreach_source("tg_raids") == "tg_raids"
+    assert normalize_outreach_source("tg_channel") == "tg_raids"
+    assert normalize_outreach_source("telegram") == "tg_raids"
+    assert normalize_outreach_source("channel") == "tg_raids"
+    assert normalize_outreach_source("brigades") == "brigades"
+    assert normalize_outreach_source("guild") == "brigades"
+    assert normalize_outreach_source("guild_scan") == "brigades"

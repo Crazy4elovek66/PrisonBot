@@ -5532,3 +5532,89 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   background: rgba(217, 165, 20, 0.14);
   color: #fff;
 }
+
+/* Dark theme inputs & selects for outreach criteria & unified search */
+#outreach-criteria-accordion input[type="number"],
+#outreach-criteria-accordion input[type="text"],
+#outreach-criteria-accordion select,
+#raids-players-toolbar input[type="text"],
+#raids-players-toolbar select {
+  width: 100%;
+  box-sizing: border-box;
+  background-color: #161822;
+  color: #f3f4f6;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#outreach-criteria-accordion input::placeholder,
+#raids-players-toolbar input::placeholder {
+  color: #6b7280;
+}
+
+#outreach-criteria-accordion input:focus,
+#outreach-criteria-accordion select:focus,
+#raids-players-toolbar input:focus,
+#raids-players-toolbar select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(217, 165, 20, 0.2);
+}
+
+.chip-count {
+  opacity: 0.78;
+  font-size: 10px;
+  margin-left: 2px;
+}
+
+.outreach-dirty-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.22);
+  color: #fde68a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.btn-save-dirty {
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45);
+}
+
+.raids-status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.raids-status-tab {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.raids-status-tab.active {
+  border-color: var(--primary);
+  background: rgba(217, 165, 20, 0.15);
+  color: #fff;
+}
+
+.source-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(147, 197, 253, 0.12);
+  color: #93c5fd;
+  border: 1px solid rgba(147, 197, 253, 0.22);
+}

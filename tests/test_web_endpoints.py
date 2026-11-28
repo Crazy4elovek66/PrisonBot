@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v34" in sw
+    assert "prisonbot-assets-v35" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_13";' in js
+    assert 'const ASSET_VERSION = "20261127_14";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_13" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_14" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_13"',
-        'src="assets/icons/room_reward.webp?v=20261127_13"',
-        'src="assets/icons/complect.webp?v=20261127_13"',
-        'src="assets/icons/podogrev.webp?v=20261127_13"',
-        'src="assets/icons/authority.webp?v=20261127_13"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_13"',
+        'src="assets/icons/boss.webp?v=20261127_14"',
+        'src="assets/icons/room_reward.webp?v=20261127_14"',
+        'src="assets/icons/complect.webp?v=20261127_14"',
+        'src="assets/icons/podogrev.webp?v=20261127_14"',
+        'src="assets/icons/authority.webp?v=20261127_14"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_14"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1463,7 +1463,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_13',
+  ASSET_VERSION: '20261127_14',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -2145,7 +2145,7 @@ function makeEl(id) {{
     setAttribute(k, v) {{ attrs[k] = String(v); }},
     getAttribute(k) {{ return attrs[k] ?? null; }},
     addEventListener(ev, fn) {{ (listeners[ev] = listeners[ev] || []).push(fn); }},
-    dispatchEvent(ev) {{ for (const fn of (listeners[ev.type || ev] || [])) fn(ev); }},
+    dispatchEvent(ev) {{ const evtObj = {{ target: this, ...ev }}; for (const fn of (listeners[ev.type || ev] || [])) fn(evtObj); }},
     querySelector() {{ return makeEl(); }},
     querySelectorAll() {{ return []; }},
     appendChild(ch) {{ this.children.push(ch); }},
@@ -2208,3 +2208,147 @@ console.log('OUTREACH_UI_OK');
     res = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
     assert "OUTREACH_UI_OK" in res.stdout
+
+
+def test_outreach_reactive_filtering_dirty_state_and_dark_inputs_js():
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    css = (root / "web" / "static" / "styles.css").read_text(encoding="utf-8")
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+
+    # Проверка темных стилей инпутов (без белого фона)
+    assert "#outreach-criteria-accordion input[type=\"number\"]" in css
+    assert "background-color: #161822;" in css
+
+    script = f"""
+const vm = require('vm');
+function makeEl(id) {{
+  const attrs = {{}};
+  const listeners = {{}};
+  return {{
+    id,
+    innerHTML: '',
+    textContent: '',
+    className: '',
+    value: '',
+    checked: false,
+    disabled: false,
+    dataset: {{}},
+    style: {{}},
+    children: [],
+    classList: {{
+      _set: new Set(['active']),
+      add(c) {{ this._set.add(c); }},
+      remove(c) {{ this._set.delete(c); }},
+      toggle(c, f) {{ if (f === undefined) {{ if (this._set.has(c)) this._set.delete(c); else this._set.add(c); }} else if (f) this._set.add(c); else this._set.delete(c); }},
+      contains(c) {{ return this._set.has(c); }},
+    }},
+    setAttribute(k, v) {{ attrs[k] = String(v); }},
+    getAttribute(k) {{ return attrs[k] ?? null; }},
+    addEventListener(ev, fn) {{ (listeners[ev] = listeners[ev] || []).push(fn); }},
+    dispatchEvent(ev) {{ const evtObj = {{ target: this, ...ev }}; for (const fn of (listeners[ev.type || ev] || [])) fn(evtObj); }},
+    querySelector() {{ return makeEl(); }},
+    querySelectorAll() {{ return []; }},
+    appendChild(ch) {{ this.children.push(ch); }},
+    remove() {{}},
+    closest() {{ return null; }},
+  }};
+}}
+const ids = [
+  'outreach-criteria-accordion', 'outreach-criteria-toggle', 'outreach-criteria-body',
+  'outreach-criteria-arrow', 'outreach-criteria-summary', 'outreach-telemetry-line',
+  'outreach-min-damage', 'outreach-max-damage', 'outreach-min-authority', 'outreach-max-authority',
+  'outreach-daily-limit', 'outreach-sort-by', 'outreach-exclude-keywords',
+  'outreach-dirty-badge', 'btn-save-outreach-criteria', 'btn-run-outreach-now',
+  'raids-auto-invite-toggle', 'raids-auto-invite-status', 'unified-raids-players-list',
+  'raids-players-search', 'raids-players-sort', 'raids-players-source', 'raids-apply-criteria'
+];
+const elements = Object.fromEntries(ids.map(id => [id, makeEl(id)]));
+elements['raids-apply-criteria'].checked = true;
+
+const chipEls = ['weekly_top', 'achievements', 'tg_raids', 'brigades'].map(s => {{
+  const c = makeEl('chip-' + s);
+  c.setAttribute('data-source', s);
+  return c;
+}});
+
+const sandbox = {{
+  console, Math, Date, JSON, Number, String, Boolean, Array, Object, Set, Map, URLSearchParams,
+  setTimeout: () => 0, clearTimeout: () => {{}}, setInterval: () => 0, clearInterval: () => {{}},
+  localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  sessionStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  location: {{ hash: '', search: '', pathname: '/', hostname: 'localhost' }},
+  navigator: {{}},
+  window: {{ addEventListener: () => {{}}, Telegram: {{ WebApp: {{ initData: '', ready: () => {{}}, expand: () => {{}} }} }} }},
+  document: {{
+    activeElement: null,
+    getElementById: (id) => elements[id] || null,
+    querySelector: () => null,
+    querySelectorAll: (sel) => {{
+      if (sel === '#outreach-sources-chips .outreach-chip') return chipEls;
+      if (sel === '#outreach-sources-chips .outreach-chip.active') return chipEls.filter(c => c.classList.contains('active'));
+      return [];
+    }},
+    createElement: () => makeEl(),
+    addEventListener: () => {{}},
+  }},
+  fetch: async () => ({{ ok: true, status: 200, json: async () => ({{ success: true }}) }}),
+  apiFetch: async () => ({{ success: true, players: [] }}),
+  showToast: () => {{}},
+  refreshState: () => {{}},
+  EventSource: function() {{ return {{ addEventListener: () => {{}}, close: () => {{}} }}; }},
+}};
+sandbox.globalThis = sandbox;
+vm.runInNewContext({json.dumps(app_js)}, sandbox);
+
+sandbox.toggleOutreachCriteriaAccordion(true);
+sandbox.renderUnifiedRaidsPlayers({{
+  success: true,
+  sent_24h: 15,
+  daily_limit: 50,
+  matched_count: 3,
+  source_counts: {{ weekly_top: 10, achievements: 5, tg_raids: 2, brigades: 1 }},
+  criteria: {{ enabled: true, daily_limit: 50, min_damage: 0, max_damage: 0, min_authority: 0, max_authority: 0, sort_by: 'fresh', sources: ['weekly_top', 'achievements', 'tg_raids', 'brigades'], exclude_keywords: '' }},
+  players: [
+    {{ userId: 1, nickname: 'WeeklyUser', damage: 50000000, authority: 1000, source: 'weekly_top', source_label: 'Топ недели', sources: ['weekly_top'], outreach_status: 'matched', matches_criteria: true }},
+    {{ userId: 2, nickname: 'TgUser', damage: 200000, authority: 500, source: 'tg_raids', source_label: 'TG-каналы', sources: ['tg_raids'], outreach_status: 'matched', matches_criteria: true }},
+    {{ userId: 3, nickname: 'ОПГ Bad', damage: 30000000, authority: 900, source: 'tg_raids', source_label: 'TG-каналы', sources: ['tg_raids'], outreach_status: 'matched', matches_criteria: true }},
+  ],
+}});
+
+// 1. Оставляем только чип tg_raids -> таблица мгновенно фильтруется, аккордеон показывает Источников: 1, dirty=true
+chipEls[0].dispatchEvent({{ type: 'click' }}); // off weekly_top
+chipEls[1].dispatchEvent({{ type: 'click' }}); // off achievements
+chipEls[3].dispatchEvent({{ type: 'click' }}); // off brigades
+const htmlTg = elements['unified-raids-players-list'].innerHTML;
+if (htmlTg.includes('WeeklyUser') || !htmlTg.includes('TgUser')) throw new Error('source chip did not filter table');
+if (!elements['outreach-criteria-summary'].textContent.includes('Источников: 1')) throw new Error('summary not updated');
+if (elements['outreach-dirty-badge'].style.display !== 'inline-block') throw new Error('dirty badge not shown');
+
+// 2. Ввод исключения ОПГ скрывает ОПГ Bad мгновенно
+elements['outreach-exclude-keywords'].value = 'ОПГ';
+elements['outreach-exclude-keywords'].dispatchEvent({{ type: 'input' }});
+if (elements['unified-raids-players-list'].innerHTML.includes('ОПГ Bad')) throw new Error('exclude_keywords did not filter');
+
+// 3. Поиск по нику/ID
+elements['raids-players-search'].value = 'TgUser';
+elements['raids-players-search'].dispatchEvent({{ type: 'input' }});
+if (!elements['unified-raids-players-list'].innerHTML.includes('TgUser')) throw new Error('search filtered out valid user');
+
+// 4. SSE-апдейт при outreachCriteriaDirty=true не сбрасывает выбранный чип tg_raids и открытый аккордеон
+sandbox.applyOutreachStatusData({{
+  sent_24h: 16,
+  daily_limit: 50,
+  criteria: {{ enabled: true, daily_limit: 50, min_damage: 0, max_damage: 0, min_authority: 0, max_authority: 0, sort_by: 'fresh', sources: ['weekly_top', 'achievements', 'tg_raids', 'brigades'], exclude_keywords: '' }},
+}});
+if (!elements['outreach-criteria-summary'].textContent.includes('Источников: 1')) throw new Error('SSE wiped dirty draft criteria');
+if (elements['outreach-criteria-body'].style.display !== 'flex') throw new Error('SSE closed accordion');
+
+console.log('REACTIVE_OUTREACH_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "REACTIVE_OUTREACH_OK" in res.stdout

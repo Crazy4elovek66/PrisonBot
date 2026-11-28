@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_13";
+const ASSET_VERSION = "20261127_14";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -9335,7 +9335,80 @@ async function loadUnifiedRaidsPlayers() {
   }
 }
 
+const OUTREACH_ALL_SOURCES = ["weekly_top", "achievements", "tg_raids", "brigades"];
+const OUTREACH_SOURCE_LABELS = {
+  weekly_top: "Топ недели",
+  achievements: "Топ ачивок",
+  tg_raids: "TG-каналы",
+  brigades: "Бригады",
+};
+const _OUTREACH_SOURCE_ALIASES = {
+  weekly_top: "weekly_top",
+  weekly: "weekly_top",
+  achievements: "achievements",
+  ach: "achievements",
+  boss_top: "achievements",
+  tg_raids: "tg_raids",
+  tg_channel: "tg_raids",
+  tg_channels: "tg_raids",
+  telegram: "tg_raids",
+  channel: "tg_raids",
+  brigades: "brigades",
+  brigade: "brigades",
+  guild: "brigades",
+  guild_scan: "brigades",
+  clan: "brigades",
+};
+
+function normalizeOutreachSourceJs(raw) {
+  const s = String(raw || "weekly_top").trim().toLowerCase();
+  return _OUTREACH_SOURCE_ALIASES[s] || s;
+}
+
 let _outreachCriteriaExpanded = false;
+let savedCriteria = {
+  enabled: false,
+  daily_limit: 50,
+  min_damage: 0,
+  max_damage: 0,
+  min_authority: 0,
+  max_authority: 0,
+  sources: [...OUTREACH_ALL_SOURCES],
+  sort_by: "fresh",
+  exclude_keywords: "",
+};
+let draftCriteria = { ...savedCriteria, sources: [...savedCriteria.sources] };
+let outreachCriteriaDirty = false;
+let _outreachAllPlayersCache = [];
+let _outreachSourceCounts = { weekly_top: 0, achievements: 0, tg_raids: 0, brigades: 0 };
+let _outreachLastServerPayload = null;
+let _outreachViewState = { search: "", statusFilter: "all", applyCriteria: true };
+let _outreachReqSeq = 0;
+let _outreachDebounceTimer = null;
+
+function _criteriaEqual(a, b) {
+  if (!a || !b) return false;
+  const sa = [...(a.sources || [])].map(normalizeOutreachSourceJs).sort().join(",");
+  const sb = [...(b.sources || [])].map(normalizeOutreachSourceJs).sort().join(",");
+  return (
+    Number(a.daily_limit || 50) === Number(b.daily_limit || 50) &&
+    Number(a.min_damage || 0) === Number(b.min_damage || 0) &&
+    Number(a.max_damage || 0) === Number(b.max_damage || 0) &&
+    Number(a.min_authority || 0) === Number(b.min_authority || 0) &&
+    Number(a.max_authority || 0) === Number(b.max_authority || 0) &&
+    String(a.sort_by || "fresh") === String(b.sort_by || "fresh") &&
+    String(a.exclude_keywords || "").trim() === String(b.exclude_keywords || "").trim() &&
+    sa === sb
+  );
+}
+
+function updateOutreachDirtyUI() {
+  outreachCriteriaDirty = !_criteriaEqual(draftCriteria, savedCriteria);
+  const badge = document.getElementById("outreach-dirty-badge");
+  const saveBtn = document.getElementById("btn-save-outreach-criteria");
+  if (badge) badge.style.display = outreachCriteriaDirty ? "inline-block" : "none";
+  if (saveBtn) saveBtn.classList.toggle("btn-save-dirty", outreachCriteriaDirty);
+}
 
 function toggleOutreachCriteriaAccordion(forceState) {
   const acc = document.getElementById("outreach-criteria-accordion");
@@ -9348,16 +9421,81 @@ function toggleOutreachCriteriaAccordion(forceState) {
   if (arrow) arrow.textContent = next ? "▴" : "▾";
 }
 
-function applyOutreachStatusData(res) {
-  if (!res || typeof res !== "object") return;
-  const crit = res.criteria || {};
-  const sent24 = Number(res.sent_24h ?? res.auto_invite?.sentLast24h ?? 0);
-  const dailyLim = Number(res.daily_limit ?? crit.daily_limit ?? res.auto_invite?.dailyLimit ?? 50);
-  const matchedCnt = Number(res.matched_count ?? 0);
-  const enabled = crit.enabled !== undefined ? Boolean(crit.enabled) : Boolean(res.auto_invite?.enabled);
+function _evaluatePlayerLocally(p, crit) {
+  const ost = String(p.outreach_status || p.status || "none").toLowerCase();
+  if (ost === "already_friend" || ost === "friend") {
+    return { outreach_status: "already_friend", filter_reason: p.filter_reason || "Уже в друзьях", matches_criteria: false };
+  }
+  if (ost === "sent" || ost === "already_pending" || ost === "privacy_blocked" || ost === "ignored") {
+    return {
+      outreach_status: ost,
+      filter_reason: p.filter_reason || (ost === "ignored" ? "Заявка проигнорирована (ранее отправлялась)" : (ost === "privacy_blocked" ? "Закрыты заявки" : "Заявка отправлена")),
+      matches_criteria: false,
+    };
+  }
+  const allowedSet = new Set((crit.sources || []).map(normalizeOutreachSourceJs));
+  const pSources = (Array.isArray(p.sources) && p.sources.length ? p.sources : [p.source]).map(normalizeOutreachSourceJs);
+  if (!pSources.some(s => allowedSet.has(s))) {
+    return { outreach_status: "filtered_out", filter_reason: "Источник отключен", matches_criteria: false };
+  }
+  const dmg = Number(p.damage || 0);
+  if (dmg < Number(crit.min_damage || 0)) {
+    return { outreach_status: "filtered_out", filter_reason: "Урон ниже порога", matches_criteria: false };
+  }
+  if (Number(crit.max_damage || 0) > 0 && dmg > Number(crit.max_damage)) {
+    return { outreach_status: "filtered_out", filter_reason: "Урон выше порога", matches_criteria: false };
+  }
+  const auth = Number(p.authority || 0);
+  if (auth < Number(crit.min_authority || 0) || (Number(crit.max_authority || 0) > 0 && auth > Number(crit.max_authority))) {
+    return { outreach_status: "filtered_out", filter_reason: "Авторитет вне диапазона", matches_criteria: false };
+  }
+  const kws = String(crit.exclude_keywords || "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+  if (kws.length > 0) {
+    const lowNick = String(p.nickname || "").toLowerCase();
+    const hit = kws.find(k => lowNick.includes(k));
+    if (hit) {
+      return { outreach_status: "filtered_out", filter_reason: `Исключен по слову «${hit}»`, matches_criteria: false };
+    }
+  }
+  return { outreach_status: "matched", filter_reason: "", matches_criteria: true };
+}
 
-  const toggleEl = document.getElementById("raids-auto-invite-toggle");
-  if (toggleEl) toggleEl.checked = enabled;
+function updateOutreachSourceChipsCounts() {
+  document.querySelectorAll("#outreach-sources-chips .chip-count").forEach(span => {
+    const key = span.getAttribute("data-count-for");
+    if (key && _outreachSourceCounts[key] !== undefined) {
+      span.textContent = `(${_outreachSourceCounts[key]})`;
+    }
+  });
+}
+
+function syncToolbarWithDraftCriteria() {
+  const sortSel = document.getElementById("raids-players-sort");
+  if (sortSel && draftCriteria.sort_by) {
+    sortSel.value = draftCriteria.sort_by;
+  }
+  const srcSel = document.getElementById("raids-players-source");
+  if (srcSel) {
+    const srcs = (draftCriteria.sources || []).map(normalizeOutreachSourceJs);
+    if (srcs.length === 1 && OUTREACH_ALL_SOURCES.includes(srcs[0])) {
+      srcSel.value = srcs[0];
+    } else {
+      srcSel.value = "all";
+    }
+  }
+  const srcSet = new Set((draftCriteria.sources || []).map(normalizeOutreachSourceJs));
+  document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip => {
+    const s = chip.getAttribute("data-source");
+    if (s) chip.classList.toggle("active", srcSet.has(s));
+  });
+}
+
+function updateOutreachSummaryAndTelemetry(matchedCountOverride) {
+  const res = _outreachLastServerPayload || {};
+  const sent24 = Number(res.sent_24h ?? res.auto_invite?.sentLast24h ?? 0);
+  const dailyLim = Number(draftCriteria.daily_limit ?? res.daily_limit ?? 50);
+  const enabled = Boolean(savedCriteria.enabled);
+  const matchedCnt = matchedCountOverride !== undefined ? matchedCountOverride : Number(res.matched_count ?? 0);
 
   const statusEl = document.getElementById("raids-auto-invite-status");
   if (statusEl) {
@@ -9367,9 +9505,9 @@ function applyOutreachStatusData(res) {
 
   const summaryEl = document.getElementById("outreach-criteria-summary");
   if (summaryEl) {
-    const minD = Number(crit.min_damage || 0);
+    const minD = Number(draftCriteria.min_damage || 0);
     const dmgLabel = minD > 0 ? `${formatNum(minD)}+` : "любой";
-    const srcCount = Array.isArray(crit.sources) ? crit.sources.length : 4;
+    const srcCount = Array.isArray(draftCriteria.sources) ? draftCriteria.sources.length : 0;
     summaryEl.textContent = `Лимит: ${dailyLim}/24ч • Урон: ${dmgLabel} • Источников: ${srcCount}`;
   }
 
@@ -9381,122 +9519,166 @@ function applyOutreachStatusData(res) {
     const errPart = (res.last_error || res.outreach_status?.last_error) ? ` • ${res.last_error || res.outreach_status?.last_error}` : "";
     telEl.textContent = `Отправлено за 24ч: ${sent24}/${dailyLim} • Подходит сейчас: ${matchedCnt} • Цикл: ${timeStr} • ${wStatus}${errPart}`;
   }
+}
 
-  // Заполняем поля только если пользователь не редактирует их прямо сейчас
-  const setVal = (id, v) => {
-    const el = document.getElementById(id);
-    if (el && document.activeElement !== el && v !== undefined) el.value = String(v);
+function applyOutreachStatusData(res) {
+  if (!res || typeof res !== "object") return;
+  _outreachLastServerPayload = res;
+  if (res.source_counts && typeof res.source_counts === "object") {
+    _outreachSourceCounts = { ..._outreachSourceCounts, ...res.source_counts };
+    updateOutreachSourceChipsCounts();
+  }
+  const crit = res.criteria || {};
+  const normalizedCrit = {
+    enabled: crit.enabled !== undefined ? Boolean(crit.enabled) : Boolean(res.auto_invite?.enabled),
+    daily_limit: Number(crit.daily_limit ?? res.daily_limit ?? res.auto_invite?.dailyLimit ?? 50),
+    min_damage: Number(crit.min_damage ?? 0),
+    max_damage: Number(crit.max_damage ?? 0),
+    min_authority: Number(crit.min_authority ?? 0),
+    max_authority: Number(crit.max_authority ?? 0),
+    sources: Array.isArray(crit.sources) ? crit.sources.map(normalizeOutreachSourceJs) : [...OUTREACH_ALL_SOURCES],
+    sort_by: String(crit.sort_by || "fresh"),
+    exclude_keywords: String(crit.exclude_keywords || ""),
   };
-  if (crit.min_damage !== undefined) setVal("outreach-min-damage", crit.min_damage);
-  if (crit.max_damage !== undefined) setVal("outreach-max-damage", crit.max_damage);
-  if (crit.min_authority !== undefined) setVal("outreach-min-authority", crit.min_authority);
-  if (crit.max_authority !== undefined) setVal("outreach-max-authority", crit.max_authority);
-  if (crit.daily_limit !== undefined) setVal("outreach-daily-limit", crit.daily_limit);
-  if (crit.sort_by !== undefined) setVal("outreach-sort-by", crit.sort_by);
-  if (crit.exclude_keywords !== undefined) setVal("outreach-exclude-keywords", crit.exclude_keywords);
+  savedCriteria = { ...normalizedCrit, sources: [...normalizedCrit.sources] };
 
-  if (Array.isArray(crit.sources)) {
-    const srcSet = new Set(crit.sources);
-    document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip => {
-      const s = chip.getAttribute("data-source");
-      if (s) chip.classList.toggle("active", srcSet.has(s));
-    });
+  const toggleEl = document.getElementById("raids-auto-invite-toggle");
+  if (toggleEl) toggleEl.checked = savedCriteria.enabled;
+
+  // При SSE не затираем несохраненные правки пользователя
+  if (!outreachCriteriaDirty) {
+    draftCriteria = { ...normalizedCrit, sources: [...normalizedCrit.sources] };
+    const setVal = (id, v) => {
+      const el = document.getElementById(id);
+      if (el && document.activeElement !== el && v !== undefined) el.value = String(v);
+    };
+    setVal("outreach-min-damage", draftCriteria.min_damage);
+    setVal("outreach-max-damage", draftCriteria.max_damage);
+    setVal("outreach-min-authority", draftCriteria.min_authority);
+    setVal("outreach-max-authority", draftCriteria.max_authority);
+    setVal("outreach-daily-limit", draftCriteria.daily_limit);
+    setVal("outreach-sort-by", draftCriteria.sort_by);
+    setVal("outreach-exclude-keywords", draftCriteria.exclude_keywords);
+    syncToolbarWithDraftCriteria();
   }
 
-  // Сохраняем состояние раскрытия аккордеона при SSE
+  updateOutreachDirtyUI();
+  updateOutreachSummaryAndTelemetry(res.matched_count);
   toggleOutreachCriteriaAccordion(_outreachCriteriaExpanded);
 }
 
-async function saveOutreachCriteria() {
-  const minDmg = Math.max(0, parseInt(document.getElementById("outreach-min-damage")?.value || "0", 10) || 0);
-  const maxDmg = Math.max(0, parseInt(document.getElementById("outreach-max-damage")?.value || "0", 10) || 0);
-  const minAuth = Math.max(0, parseInt(document.getElementById("outreach-min-authority")?.value || "0", 10) || 0);
-  const maxAuth = Math.max(0, parseInt(document.getElementById("outreach-max-authority")?.value || "0", 10) || 0);
-  const dailyLim = Math.max(1, Math.min(100, parseInt(document.getElementById("outreach-daily-limit")?.value || "50", 10) || 50));
-  const sortBy = document.getElementById("outreach-sort-by")?.value || "fresh";
-  const keywords = document.getElementById("outreach-exclude-keywords")?.value || "";
-  const sources = [];
-  document.querySelectorAll("#outreach-sources-chips .outreach-chip.active").forEach(ch => {
-    const s = ch.getAttribute("data-source");
-    if (s) sources.push(s);
+function renderOutreachPlayersTableFromCache() {
+  const container = document.getElementById("unified-raids-players-list");
+  const evaluated = (_outreachAllPlayersCache || []).map(p => {
+    const ev = _evaluatePlayerLocally(p, draftCriteria);
+    return { ...p, ...ev };
   });
 
-  try {
-    const res = await apiFetch("/outreach/criteria", {
-      method: "PATCH",
-      body: JSON.stringify({
-        daily_limit: dailyLim,
-        min_damage: minDmg,
-        max_damage: maxDmg,
-        min_authority: minAuth,
-        max_authority: maxAuth,
-        sort_by: sortBy,
-        sources,
-        exclude_keywords: keywords,
-      }),
-    });
-    applyOutreachStatusData(res);
-    showToast(`Критерии сохранены (подходит сейчас: ${res.matched_count || 0})`, "success");
-    loadUnifiedRaidsPlayers();
-  } catch (err) {
-    showToast(`Ошибка сохранения критериев: ${err.message}`, "error");
-  }
-}
-
-async function runOutreachNow() {
-  const btn = document.getElementById("btn-run-outreach-now");
-  if (btn) btn.disabled = true;
-  try {
-    const res = await apiFetch("/outreach/run-now", { method: "POST" });
-    applyOutreachStatusData(res);
-    showToast(`Цикл рассылки завершён: отправлено ${res.sent_count || 0}`, "success");
-    loadUnifiedRaidsPlayers();
-  } catch (err) {
-    showToast(`Ошибка запуска рассылки: ${err.message}`, "error");
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-function renderUnifiedRaidsPlayers(res) {
-  const container = document.getElementById("unified-raids-players-list");
-  applyOutreachStatusData(res);
-
+  const matchedCount = (!outreachCriteriaDirty && _outreachLastServerPayload && _outreachLastServerPayload.matched_count !== undefined)
+    ? Number(_outreachLastServerPayload.matched_count)
+    : evaluated.filter(p => p.matches_criteria).length;
+  updateOutreachSummaryAndTelemetry(matchedCount);
   if (!container) return;
-  const players = (res && res.players) || [];
-  if (players.length === 0) {
-    container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 12px;">Активные игроки не найдены</div>';
+
+  const allowedSet = new Set((draftCriteria.sources || []).map(normalizeOutreachSourceJs));
+  const kwList = String(draftCriteria.exclude_keywords || "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+  const searchQ = String(_outreachViewState.search || "").trim().toLowerCase();
+  const stFilter = String(_outreachViewState.statusFilter || "all");
+  const applyCrit = Boolean(_outreachViewState.applyCriteria);
+
+  let list = evaluated.filter(p => {
+    const pSources = (Array.isArray(p.sources) && p.sources.length ? p.sources : [p.source]).map(normalizeOutreachSourceJs);
+    if (!pSources.some(s => allowedSet.has(s))) return false;
+
+    if (applyCrit) {
+      if (Number(p.damage || 0) < Number(draftCriteria.min_damage || 0)) return false;
+      if (Number(draftCriteria.max_damage || 0) > 0 && Number(p.damage || 0) > Number(draftCriteria.max_damage)) return false;
+      if (Number(p.authority || 0) < Number(draftCriteria.min_authority || 0)) return false;
+      if (Number(draftCriteria.max_authority || 0) > 0 && Number(p.authority || 0) > Number(draftCriteria.max_authority)) return false;
+      if (kwList.length > 0 && kwList.some(k => String(p.nickname || "").toLowerCase().includes(k))) return false;
+    }
+
+    if (searchQ) {
+      if (!String(p.nickname || "").toLowerCase().includes(searchQ) && !String(p.userId).includes(searchQ)) return false;
+    }
+
+    const ost = p.outreach_status;
+    if (stFilter === "matched" && ost !== "matched") return false;
+    if (stFilter === "sent" && !["sent", "already_pending", "ignored"].includes(ost)) return false;
+    if (stFilter === "already_friend" && ost !== "already_friend") return false;
+    if (stFilter === "excluded" && !["filtered_out", "privacy_blocked", "ignored"].includes(ost)) return false;
+    return true;
+  });
+
+  const sortBy = String(draftCriteria.sort_by || "fresh");
+  list.sort((a, b) => {
+    if (sortBy === "damage") return (b.damage - a.damage) || (b.authority - a.authority);
+    if (sortBy === "authority") return (b.authority - a.authority) || (b.damage - a.damage);
+    return String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || "")) || (b.damage - a.damage);
+  });
+
+  if (list.length === 0) {
+    const onlyTg = allowedSet.size === 1 && allowedSet.has("tg_raids");
+    if (onlyTg && Number(_outreachSourceCounts.tg_raids || 0) === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 16px; color: var(--muted-foreground); font-size: 12px;">
+          <div style="margin-bottom: 8px;">В источнике «TG-каналы» пока нет игроков</div>
+          <button type="button" id="btn-empty-scan-tg" class="btn btn-primary btn-sm">🔍 Проверить TG-каналы сейчас</button>
+        </div>
+      `;
+      document.getElementById("btn-empty-scan-tg")?.addEventListener("click", async () => {
+        const b = document.getElementById("btn-empty-scan-tg");
+        if (b) { b.disabled = true; b.textContent = "Сканирование..."; }
+        try {
+          await apiFetch("/raids/scan-channels", { method: "POST", body: JSON.stringify({ force: true }) });
+          await loadUnifiedRaidsPlayers();
+        } catch (err) {
+          showToast(`Ошибка сканирования TG: ${err.message}`, "error");
+        }
+      });
+      return;
+    }
+    container.innerHTML = '<div style="color: var(--muted-foreground); font-size: 12px; text-align: center; padding: 12px;">По текущим фильтрам игроки не найдены</div>';
     return;
   }
 
-  container.innerHTML = players.map(p => {
-    let stLabel = "Новый";
+  container.innerHTML = list.map(p => {
+    const ost = p.outreach_status;
+    let stLabel = "Подходит";
     let stColor = "#93c5fd";
-    if (p.status === "friend") {
-      stLabel = "Друг";
+    if (ost === "already_friend") {
+      stLabel = "В друзьях";
       stColor = "#34d399";
-    } else if (p.status === "sent" || p.status === "already_pending") {
+    } else if (ost === "sent" || ost === "already_pending") {
       stLabel = "Заявка отправлена";
       stColor = "#fbbf24";
-    } else if (p.status === "privacy_blocked") {
+    } else if (ost === "ignored") {
+      stLabel = "Проигнорирована";
+      stColor = "var(--muted-foreground)";
+    } else if (ost === "privacy_blocked") {
       stLabel = "Закрыты заявки";
       stColor = "var(--muted-foreground)";
-    } else if (p.matchesCriteria === false) {
-      stLabel = "Не подходит";
-      stColor = "var(--muted-foreground)";
+    } else if (ost === "filtered_out") {
+      stLabel = p.filter_reason || "Не подходит";
+      stColor = "#f87171";
     }
-    const sourcesTxt = (p.sources || [p.source]).join(", ");
-    const canInvite = p.status === "none";
-    const rowOpacity = (p.status === "none" && p.matchesCriteria === false) ? "opacity: 0.7;" : "";
+
+    const canonSrc = normalizeOutreachSourceJs(p.source);
+    const srcLabel = p.source_label || OUTREACH_SOURCE_LABELS[canonSrc] || canonSrc;
+    const canInvite = ost === "matched" || ost === "filtered_out";
+    const rowOpacity = ost === "filtered_out" ? "opacity: 0.72;" : "";
     return `
       <div class="friend-card" data-user-id="${p.userId}" style="padding: 8px 10px; ${rowOpacity}">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <div style="min-width: 0;">
-            <div style="font-weight: 700; font-size: 12px; color: #fff;">${escapeHtml(p.nickname || `Игрок #${p.userId}`)}</div>
-            <div style="font-size: 10px; color: var(--muted-foreground);">Урон: ${formatNum(p.damage || 0)} · Авторитет: ${formatNum(p.authority || 0)} · ${escapeHtml(sourcesTxt)}</div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <span style="font-weight: 700; font-size: 12px; color: #fff;">${escapeHtml(p.nickname || `Игрок #${p.userId}`)}</span>
+              <span class="source-badge">${escapeHtml(srcLabel)}</span>
+            </div>
+            <div style="font-size: 10px; color: var(--muted-foreground);">Урон: ${formatNum(p.damage || 0)} · Авторитет: ${formatNum(p.authority || 0)}</div>
           </div>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <span style="font-size: 10px; font-weight: 700; color: ${stColor};">${stLabel}</span>
+          <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+            <span style="font-size: 10px; font-weight: 700; color: ${stColor};" title="${escapeHtml(p.filter_reason || '')}">${escapeHtml(stLabel)}</span>
             ${canInvite ? `<button type="button" class="btn btn-primary btn-sm btn-unified-invite" data-user-id="${p.userId}">+ В друзья</button>` : ""}
           </div>
         </div>
@@ -9521,22 +9703,171 @@ function renderUnifiedRaidsPlayers(res) {
   });
 }
 
+async function loadUnifiedRaidsPlayers() {
+  const container = document.getElementById("unified-raids-players-list");
+  if (!container) return;
+  const seq = ++_outreachReqSeq;
+  const params = new URLSearchParams({
+    sources: (draftCriteria.sources || []).join(","),
+    min_damage: String(draftCriteria.min_damage || 0),
+    max_damage: String(draftCriteria.max_damage || 0),
+    min_authority: String(draftCriteria.min_authority || 0),
+    max_authority: String(draftCriteria.max_authority || 0),
+    exclude_keywords: String(draftCriteria.exclude_keywords || ""),
+    sort_by: String(draftCriteria.sort_by || "fresh"),
+    search: String(_outreachViewState.search || ""),
+    status_filter: String(_outreachViewState.statusFilter || "all"),
+    apply_criteria: _outreachViewState.applyCriteria ? "true" : "false",
+    limit: "200",
+  });
+
+  try {
+    const res = await apiFetch(`/raids/players?${params.toString()}`);
+    if (seq !== _outreachReqSeq) return;
+    renderUnifiedRaidsPlayers(res);
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--destructive); font-size: 12px; padding: 8px;">Ошибка загрузки игроков: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderUnifiedRaidsPlayers(res) {
+  if (!res || typeof res !== "object") return;
+  _outreachAllPlayersCache = Array.isArray(res.players) ? res.players : [];
+  applyOutreachStatusData(res);
+  renderOutreachPlayersTableFromCache();
+}
+
+function onDraftCriteriaChanged(opts = { fetchServer: true, debounce: false }) {
+  draftCriteria = {
+    ...draftCriteria,
+    daily_limit: Math.max(1, Math.min(100, parseInt(document.getElementById("outreach-daily-limit")?.value || "50", 10) || 50)),
+    min_damage: Math.max(0, parseInt(document.getElementById("outreach-min-damage")?.value || "0", 10) || 0),
+    max_damage: Math.max(0, parseInt(document.getElementById("outreach-max-damage")?.value || "0", 10) || 0),
+    min_authority: Math.max(0, parseInt(document.getElementById("outreach-min-authority")?.value || "0", 10) || 0),
+    max_authority: Math.max(0, parseInt(document.getElementById("outreach-max-authority")?.value || "0", 10) || 0),
+    sort_by: document.getElementById("outreach-sort-by")?.value || draftCriteria.sort_by || "fresh",
+    exclude_keywords: document.getElementById("outreach-exclude-keywords")?.value || "",
+  };
+  syncToolbarWithDraftCriteria();
+  updateOutreachDirtyUI();
+  renderOutreachPlayersTableFromCache();
+
+  if (opts.fetchServer) {
+    if (_outreachDebounceTimer) clearTimeout(_outreachDebounceTimer);
+    if (opts.debounce) {
+      _outreachDebounceTimer = setTimeout(() => loadUnifiedRaidsPlayers(), 150);
+    } else {
+      loadUnifiedRaidsPlayers();
+    }
+  }
+}
+
+async function saveOutreachCriteria() {
+  onDraftCriteriaChanged({ fetchServer: false });
+  try {
+    const res = await apiFetch("/outreach/criteria", {
+      method: "PATCH",
+      body: JSON.stringify({
+        daily_limit: draftCriteria.daily_limit,
+        min_damage: draftCriteria.min_damage,
+        max_damage: draftCriteria.max_damage,
+        min_authority: draftCriteria.min_authority,
+        max_authority: draftCriteria.max_authority,
+        sort_by: draftCriteria.sort_by,
+        sources: draftCriteria.sources,
+        exclude_keywords: draftCriteria.exclude_keywords,
+      }),
+    });
+    outreachCriteriaDirty = false;
+    applyOutreachStatusData(res);
+    showToast(`Критерии сохранены (подходит сейчас: ${res.matched_count || 0})`, "success");
+    loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка сохранения критериев: ${err.message}`, "error");
+  }
+}
+
+async function runOutreachNow() {
+  const btn = document.getElementById("btn-run-outreach-now");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch("/outreach/run-now", { method: "POST" });
+    applyOutreachStatusData(res);
+    showToast(`Цикл рассылки завершён: отправлено ${res.sent_count || 0}`, "success");
+    loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка запуска рассылки: ${err.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 document.getElementById("outreach-criteria-toggle")?.addEventListener("click", () => toggleOutreachCriteriaAccordion());
 document.querySelectorAll(".outreach-dmg-preset").forEach(btn => {
   btn.addEventListener("click", () => {
     const val = btn.getAttribute("data-dmg");
     const inp = document.getElementById("outreach-min-damage");
-    if (inp && val !== null) inp.value = val;
+    if (inp && val !== null) {
+      inp.value = val;
+      onDraftCriteriaChanged({ fetchServer: true, debounce: false });
+    }
   });
 });
 document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip => {
-  chip.addEventListener("click", () => chip.classList.toggle("active"));
+  chip.addEventListener("click", () => {
+    chip.classList.toggle("active");
+    const nextSources = [];
+    document.querySelectorAll("#outreach-sources-chips .outreach-chip.active").forEach(ch => {
+      const s = ch.getAttribute("data-source");
+      if (s) nextSources.push(normalizeOutreachSourceJs(s));
+    });
+    draftCriteria.sources = nextSources;
+    syncToolbarWithDraftCriteria();
+    updateOutreachDirtyUI();
+    renderOutreachPlayersTableFromCache();
+    loadUnifiedRaidsPlayers();
+  });
 });
+["outreach-min-damage", "outreach-max-damage", "outreach-min-authority", "outreach-max-authority", "outreach-daily-limit", "outreach-exclude-keywords"].forEach(id => {
+  document.getElementById(id)?.addEventListener("input", () => onDraftCriteriaChanged({ fetchServer: true, debounce: true }));
+});
+document.getElementById("outreach-sort-by")?.addEventListener("change", () => onDraftCriteriaChanged({ fetchServer: true, debounce: false }));
 document.getElementById("btn-save-outreach-criteria")?.addEventListener("click", saveOutreachCriteria);
 document.getElementById("btn-run-outreach-now")?.addEventListener("click", runOutreachNow);
 
-document.getElementById("raids-players-sort")?.addEventListener("change", loadUnifiedRaidsPlayers);
-document.getElementById("raids-players-source")?.addEventListener("change", loadUnifiedRaidsPlayers);
+document.getElementById("raids-players-sort")?.addEventListener("change", (e) => {
+  draftCriteria.sort_by = String(e.target.value || "fresh");
+  const topSort = document.getElementById("outreach-sort-by");
+  if (topSort) topSort.value = draftCriteria.sort_by;
+  updateOutreachDirtyUI();
+  renderOutreachPlayersTableFromCache();
+  loadUnifiedRaidsPlayers();
+});
+document.getElementById("raids-players-source")?.addEventListener("change", (e) => {
+  const val = String(e.target.value || "all");
+  draftCriteria.sources = val === "all" ? [...OUTREACH_ALL_SOURCES] : [normalizeOutreachSourceJs(val)];
+  syncToolbarWithDraftCriteria();
+  updateOutreachDirtyUI();
+  renderOutreachPlayersTableFromCache();
+  loadUnifiedRaidsPlayers();
+});
+document.getElementById("raids-players-search")?.addEventListener("input", (e) => {
+  _outreachViewState.search = String(e.target.value || "");
+  renderOutreachPlayersTableFromCache();
+});
+document.getElementById("raids-apply-criteria")?.addEventListener("change", (e) => {
+  _outreachViewState.applyCriteria = Boolean(e.target.checked);
+  renderOutreachPlayersTableFromCache();
+  loadUnifiedRaidsPlayers();
+});
+document.querySelectorAll("#raids-status-tabs .raids-status-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#raids-status-tabs .raids-status-tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    _outreachViewState.statusFilter = String(tab.getAttribute("data-status-filter") || "all");
+    renderOutreachPlayersTableFromCache();
+  });
+});
 document.getElementById("btn-refresh-unified-players")?.addEventListener("click", loadUnifiedRaidsPlayers);
 document.getElementById("raids-auto-invite-toggle")?.addEventListener("change", async (e) => {
   const checked = Boolean(e.target.checked);
