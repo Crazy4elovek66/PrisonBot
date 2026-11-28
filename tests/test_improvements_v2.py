@@ -313,7 +313,7 @@ async def test_podogrev_send_includes_type_1_and_respects_toggle():
 
 
 @pytest.mark.asyncio
-async def test_boss_victory_notification_web_and_telegram_formatting():
+async def test_boss_victory_notification_web_and_telegram_formatting(tmp_path):
     claim_payload = {
         "bossId": 39,
         "mode": "pacansky",
@@ -332,28 +332,47 @@ async def test_boss_victory_notification_web_and_telegram_formatting():
     assert curs["cigarettes"] == 1000
     assert curs["keys"] == 2
 
-    sent_msgs = []
-    notifier = SimpleNamespace(notify=AsyncMock(side_effect=lambda msg: sent_msgs.append(msg)))
-    boss_api = SimpleNamespace(
-        get_bootstrap=AsyncMock(return_value={
-            "state": "reward",
-            "session": {"bossId": 39, "title": "Воркута", "mode": "pacansky", "currentHp": 0, "maxHp": 400000000, "sessionId": "sess_39"},
-            "unclaimedRewards": [{"claimId": "c39", "bossId": 39}],
-        }),
-        claim_reward=AsyncMock(return_value=claim_payload),
-        get_friend_damage=AsyncMock(return_value={"friends": []}),
-    )
-    prison_api = SimpleNamespace(get_prisons=AsyncMock(return_value={"prisons": []}))
-    worker = BossWorker(account_id=1, boss_api=boss_api, notifier=notifier, prison_api=prison_api, enable_jitter=False)
-    cfg = SimpleNamespace(is_paused=False, sleep_mode_enabled=False, auto_boss_enabled=False, auto_boss_summon=False, boss_auto_melee=False)
-    await worker._claim_pending_rewards(
-        bootstrap=await boss_api.get_bootstrap(),
-        results={"rewards_claimed": 0, "hits_performed": [], "summoned_bosses": [], "boss_hp_remaining": 0, "victories": [], "errors": []},
-        active_preset=None,
-        preset_steps=[],
-        claimed_keys_in_cycle=set(),
-    )
-    assert "boss_claim_sess_39" in worker._notified_victory_keys
+    db_path = tmp_path / "boss_victory_notif.db"
+    engine = get_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    await init_db(engine)
+    try:
+        async with get_session(engine) as session:
+            session.add(Account(id=1, phone="79000000000", game_user_id=1000, nickname="Test"))
+            await session.commit()
+
+        sent_msgs = []
+        notifier = SimpleNamespace(notify=AsyncMock(side_effect=lambda msg: sent_msgs.append(msg)))
+        boss_api = SimpleNamespace(
+            get_bootstrap=AsyncMock(return_value={
+                "state": "reward",
+                "session": {"bossId": 39, "title": "Воркута", "mode": "pacansky", "currentHp": 0, "maxHp": 400000000, "sessionId": "sess_39"},
+                "unclaimedRewards": [{"claimId": "c39", "bossId": 39}],
+            }),
+            claim_reward=AsyncMock(return_value=claim_payload),
+            get_friend_damage=AsyncMock(return_value={"friends": []}),
+        )
+        prison_api = SimpleNamespace(get_prisons=AsyncMock(return_value={"prisons": []}))
+        worker = BossWorker(
+            account_id=1,
+            boss_api=boss_api,
+            notifier=notifier,
+            prison_api=prison_api,
+            db_engine=engine,
+            enable_jitter=False,
+        )
+        results = {"rewards_claimed": 0, "hits_performed": [], "summoned_bosses": [], "boss_hp_remaining": 0, "victories": [], "errors": []}
+        await worker._claim_pending_rewards(
+            bootstrap=await boss_api.get_bootstrap(),
+            results=results,
+            active_preset=None,
+            preset_steps=[],
+            claimed_keys_in_cycle=set(),
+        )
+        assert "boss_claim_sess_39" in worker._notified_victory_keys
+        assert len(results["victories"]) == 1
+        assert "Воркута" in results["victories"][0]["boss_name"]
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

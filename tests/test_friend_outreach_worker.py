@@ -180,9 +180,10 @@ async def test_run_profile_enrichment_pass_and_429_backoff_and_coverage(tmp_path
     await init_db(engine)
     await get_or_create_config(1, engine)
 
+    now_dt = datetime.utcnow()
     async with get_session(engine) as session:
-        session.add(TrackedCandidate(account_id=1, user_id=6001, nickname="Unk1", source="weekly_top", obshak_type="unknown"))
-        session.add(TrackedCandidate(account_id=1, user_id=6002, nickname="Unk2", source="weekly_top", obshak_type="unknown"))
+        session.add(TrackedCandidate(account_id=1, user_id=6001, nickname="Unk1", source="weekly_top", obshak_type="unknown", last_seen_at=now_dt, total_damage=100))
+        session.add(TrackedCandidate(account_id=1, user_id=6002, nickname="Unk2", source="weekly_top", obshak_type="unknown", last_seen_at=now_dt - timedelta(seconds=10), total_damage=50))
         session.add(TrackedCandidate(account_id=1, user_id=6003, nickname="FreshNone", source="weekly_top", has_obshak=False, obshak_type="none", obshak_checked_at=time.time()))
         await session.commit()
 
