@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v35" in sw
+    assert "prisonbot-assets-v37" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_14";' in js
+    assert 'const ASSET_VERSION = "20261127_16";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_14" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_16" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_14"',
-        'src="assets/icons/room_reward.webp?v=20261127_14"',
-        'src="assets/icons/complect.webp?v=20261127_14"',
-        'src="assets/icons/podogrev.webp?v=20261127_14"',
-        'src="assets/icons/authority.webp?v=20261127_14"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_14"',
+        'src="assets/icons/boss.webp?v=20261127_16"',
+        'src="assets/icons/room_reward.webp?v=20261127_16"',
+        'src="assets/icons/complect.webp?v=20261127_16"',
+        'src="assets/icons/podogrev.webp?v=20261127_16"',
+        'src="assets/icons/authority.webp?v=20261127_16"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_16"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1463,7 +1463,7 @@ for (const id of [
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_14',
+  ASSET_VERSION: '20261127_16',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -2352,3 +2352,157 @@ console.log('REACTIVE_OUTREACH_OK');
     res = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
     assert "REACTIVE_OUTREACH_OK" in res.stdout
+
+
+@pytest.mark.asyncio
+async def test_friends_audit_sort_conversion_and_raids_obshak_brigades_api(tmp_path):
+    """Проверка sort_by=conversion_desc/asc, /raids/brigades/scan, /raids/players/check-obshak и общак-фильтра."""
+    from datetime import datetime
+    from unittest.mock import AsyncMock, MagicMock
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from core.database import get_session, init_db
+    from core.models import FriendStats
+    from web.app import app
+    from web.routes import _flight_cache, bot_context, _get_hub
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'audit_brigades.db'}")
+    await init_db(engine)
+    _flight_cache.invalidate()
+
+    async with get_session(engine) as session:
+        session.add(FriendStats(
+            account_id=1, user_id=101, nickname="OlegTop", photo_url="assets/avatars/default.png",
+            level=20, authority=5000, total_damage_to_my_bosses=500000, boss_hits_count=10,
+            is_current_friend=True, first_seen_at=datetime.utcnow(), last_active_at=datetime.utcnow(),
+        ))
+        session.add(FriendStats(
+            account_id=1, user_id=102, nickname="AlexZero", photo_url="assets/avatars/default.png",
+            level=10, authority=1000, total_damage_to_my_bosses=0, boss_hits_count=0,
+            is_current_friend=True, first_seen_at=datetime.utcnow(), last_active_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    mock_social = MagicMock()
+    mock_social.get_recruitment_list = AsyncMock(return_value=[{"guildId": 348, "name": "LEPREKON_ZM"}])
+    mock_social.get_guild_members = AsyncMock(return_value=[
+        {"userId": 8801, "nickname": "VorRaider", "activityRating": 12000, "campActivity": {"damage": 90000}},
+        {"userId": 8802, "nickname": "NoObRaider", "activityRating": 3000, "campActivity": {"damage": 10000}},
+    ])
+    mock_player = MagicMock()
+    mock_player.get_me = AsyncMock(return_value={"id": 999999})
+    mock_player.get_player_view = AsyncMock(side_effect=[
+        {"userId": 8801, "vpiTier": "vorovskoy"},
+        {"userId": 8802, "vpiTier": None},
+    ])
+
+    old_engine = bot_context.db_engine
+    old_social = bot_context.social_api
+    old_player = bot_context.player_api
+    try:
+        bot_context.db_engine = engine
+        bot_context.social_api = mock_social
+        bot_context.player_api = mock_player
+        _get_hub().invalidate_slice(1, "friends_stats")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            r_desc = await ac.get("/api/v1/friends/audit?sort_by=conversion_desc&force=true", headers=AUTH_HEADERS)
+            assert r_desc.status_code == 200
+            d_desc = r_desc.json()
+            assert [f["userId"] for f in d_desc["friends"]] == [101, 102]
+
+            r_asc = await ac.get("/api/v1/friends/audit?sort_by=conversion_asc&force=true", headers=AUTH_HEADERS)
+            assert r_asc.status_code == 200
+            assert [f["userId"] for f in r_asc.json()["friends"]] == [102, 101]
+
+            r_scan = await ac.post("/api/v1/raids/brigades/scan", json={"top_brigades_limit": 5}, headers=AUTH_HEADERS)
+            assert r_scan.status_code == 200
+            assert r_scan.json()["players_saved"] == 2
+
+            r_ob = await ac.post("/api/v1/raids/players/check-obshak", json={"user_ids": [8801, 8802], "max_profiles": 5}, headers=AUTH_HEADERS)
+            assert r_ob.status_code == 200
+            assert r_ob.json()["with_obshak"] == 1
+
+            r_pl = await ac.get("/api/v1/raids/players?sources=brigades&obshak_filter=vor&apply_criteria=true", headers=AUTH_HEADERS)
+            assert r_pl.status_code == 200
+            pl_data = r_pl.json()
+            assert pl_data["source_counts"]["brigades"] == 2
+            assert len(pl_data["players"]) == 1
+            assert pl_data["players"][0]["userId"] == 8801
+            assert pl_data["players"][0]["obshak_type"] == "vor"
+            assert pl_data["players"][0]["brigade_name"] == "LEPREKON_ZM"
+            assert pl_data["obshak_coverage"]["total"] == 2
+            assert pl_data["obshak_coverage"]["checked"] == 2
+
+            r_st = await ac.get("/api/v1/outreach/status", headers=AUTH_HEADERS)
+            assert r_st.status_code == 200
+            assert r_st.json()["obshak_coverage"]["by_type"]["vor"] == 1
+    finally:
+        bot_context.db_engine = old_engine
+        bot_context.social_api = old_social
+        bot_context.player_api = old_player
+        await engine.dispose()
+
+
+def test_audit_nickname_onerror_and_conversion_sort_in_js():
+    """Node.js runtime test: onerror on avatar img never wipes .fa-nick, and conversion_desc/asc sorting works."""
+    import re
+    import subprocess
+    from pathlib import Path
+
+    app_js = Path("web/static/app.js").read_text(encoding="utf-8")
+    assert '<span class="fa-avatar-wrap"><img' in app_js
+    assert "conversion_desc" in app_js and "conversion_asc" in app_js
+
+    m_sort = re.search(r"function filterAndSortAuditFriends\(friends, filterStatus, searchText, sortKey\) \{[\s\S]*?\n\}", app_js)
+    assert m_sort, "filterAndSortAuditFriends not found"
+
+    script = f"""
+{m_sort.group(0)}
+const list = [
+  {{ userId: 1, nickname: 'OlegTop', status: 'active', conversionPct: 80.0, totalDamageToMyBosses: 500000, bossHitsCount: 5, daysInactive: 0 }},
+  {{ userId: 2, nickname: 'AlexZero', status: 'candidate', conversionPct: 0.0, totalDamageToMyBosses: 0, bossHitsCount: 0, daysInactive: 10 }},
+];
+const desc = filterAndSortAuditFriends(list, 'all', '', 'conversion_desc');
+if (desc[0].userId !== 1) throw new Error('conversion_desc failed');
+const asc = filterAndSortAuditFriends(list, 'all', '', 'conversion_asc');
+if (asc[0].userId !== 2) throw new Error('conversion_asc failed');
+console.log('AUDIT_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "AUDIT_JS_OK" in res.stdout
+
+
+def test_limit_banner_removed_and_obshak_coverage_ui():
+    """Проверка удаления плашки лимита 24ч и работы updateObshakCoverageUI в JS."""
+    import re
+    import subprocess
+    from pathlib import Path
+
+    html = Path("web/static/index.html").read_text(encoding="utf-8")
+    assert "raids-safety-limit-text" not in html
+    assert "raids-safety-circuit-badge" not in html
+    assert "obshak-coverage-pill" in html
+
+    app_js = Path("web/static/app.js").read_text(encoding="utf-8")
+    m_cov = re.search(r"function updateObshakCoverageUI\(cov, inProgressFlag\) \{[\s\S]*?\n\}", app_js)
+    assert m_cov, "updateObshakCoverageUI not found"
+
+    script = f"""
+const pill = {{ textContent: '', classList: {{ _s: new Set(), remove(...a){{a.forEach(x=>this._s.delete(x));}}, add(x){{this._s.add(x);}} }} }};
+const optVor = {{ value: 'vor', textContent: 'Воровской' }};
+const sel = {{ options: [optVor] }};
+const document = {{ getElementById: (id) => id === 'obshak-coverage-pill' ? pill : (id === 'raids-players-obshak' ? sel : null) }};
+{m_cov.group(0)}
+updateObshakCoverageUI({{ total: 10, checked: 6, unknown: 4, in_progress: true, by_type: {{ vor: 3 }} }}, true);
+if (!pill.textContent.includes('6/10')) throw new Error('expected 6/10, got ' + pill.textContent);
+if (!optVor.textContent.includes('(3)')) throw new Error('expected (3), got ' + optVor.textContent);
+updateObshakCoverageUI({{ total: 10, checked: 10, unknown: 0, in_progress: false, by_type: {{ vor: 4 }} }}, false);
+if (!pill.textContent.includes('все 10 проверены')) throw new Error('expected all checked, got ' + pill.textContent);
+console.log('COVERAGE_UI_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "COVERAGE_UI_OK" in res.stdout

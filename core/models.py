@@ -227,6 +227,10 @@ class TrackedCandidate(Base):
 
     guild_id = Column(Integer, nullable=True)
     guild_name = Column(String(100), nullable=True)
+    brigade_name = Column(String(128), nullable=True)
+    has_obshak = Column(Boolean, default=False, nullable=False)
+    obshak_type = Column(String(24), default="unknown", nullable=False)
+    obshak_checked_at = Column(Float, nullable=True)
 
     level = Column(Integer, default=0, nullable=False)
     authority = Column(BigInteger, default=0, nullable=False)
@@ -455,8 +459,29 @@ class FriendOutreachHistory(Base):
     status = Column(String(32), default="sent", nullable=False, index=True)
     error_message = Column(String(255), nullable=True)
     sent_at = Column(Float, nullable=False, index=True)
+    accepted_at = Column(Float, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("account_id", "target_id", name="uq_friend_outreach_account_target"),
+    )
+
+
+class IncomingFriendRequest(Base):
+    """
+    Учет входящих заявок в друзья для сквозной аналитики конверсии.
+    """
+    __tablename__ = "incoming_friend_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True, default=1)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    nickname = Column(String(128), nullable=True)
+    status = Column(String(32), default="pending", nullable=False, index=True)  # "pending" | "accepted" | "declined"
+    received_at = Column(Float, nullable=False)
+    resolved_at = Column(Float, nullable=True)
+    damage = Column(BigInteger, default=0, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "user_id", name="uq_incoming_friend_account_user"),
     )
 

@@ -55,6 +55,8 @@ def evaluate_outreach_candidate(
         src_raw = cand.get("source") or "weekly_top"
         sources_list = cand.get("sources") if isinstance(cand.get("sources"), list) else [src_raw]
         last_seen = str(cand.get("last_seen_at") or cand.get("lastSeenAt") or "")
+        ob_type = str(cand.get("obshak_type") or "unknown").lower()
+        has_ob = bool(cand.get("has_obshak"))
     else:
         uid = int(getattr(cand, "user_id", 0) or 0)
         nick = str(getattr(cand, "nickname", None) or f"Игрок #{uid}")
@@ -64,6 +66,8 @@ def evaluate_outreach_candidate(
         sources_list = [src_raw]
         ls_dt = getattr(cand, "last_seen_at", None)
         last_seen = ls_dt.isoformat() if ls_dt else ""
+        ob_type = str(getattr(cand, "obshak_type", "unknown") or "unknown").lower()
+        has_ob = bool(getattr(cand, "has_obshak", False))
 
     canon_sources = []
     for s in sources_list:
@@ -130,6 +134,21 @@ def evaluate_outreach_candidate(
             outreach_status = "filtered_out"
             filter_reason = f"Исключен по слову «{hit_kw}»"
             skip_reason_key = "keyword_excluded"
+
+    ob_filter = str(crit.get("obshak_filter") or "any").lower()
+    if outreach_status == "matched" and ob_filter != "any":
+        if ob_filter in ("has_any", "has_obshak") and not (has_ob or ob_type in ("pacan", "blat", "vor", "avtoritet")):
+            outreach_status = "filtered_out"
+            filter_reason = "Нет общака"
+            skip_reason_key = "source_filtered"
+        elif ob_filter in ("none", "no_obshak") and (has_ob or ob_type != "none"):
+            outreach_status = "filtered_out"
+            filter_reason = "Есть общак (фильтр: без общака)"
+            skip_reason_key = "source_filtered"
+        elif ob_filter in ("pacan", "blat", "vor", "avtoritet") and ob_type != ob_filter:
+            outreach_status = "filtered_out"
+            filter_reason = f"Требуется общак ({ob_filter})"
+            skip_reason_key = "source_filtered"
 
     return {
         "userId": uid,
@@ -225,8 +244,11 @@ class FriendOutreachWorker:
         self.state_hub = state_hub
         self.enable_jitter = enable_jitter
         self._lock = asyncio.Lock()
+        self._enrichment_lock = asyncio.Lock()
 
         self.cooldown_until_ts: float = 0.0
+        self.enrichment_cooldown_until_ts: float = 0.0
+        self.enrichment_in_progress: bool = False
         self.last_run_ts: float = 0.0
         self.last_error: str = ""
         self.last_sent_player: Optional[Dict[str, Any]] = None
@@ -240,8 +262,111 @@ class FriendOutreachWorker:
             "last_error": self.last_error,
             "last_sent_player": self.last_sent_player,
             "cooldown_until_ts": self.cooldown_until_ts,
+            "enrichment_in_progress": bool(self.enrichment_in_progress or self._enrichment_lock.locked()),
+            "enrichment_cooldown_until_ts": self.enrichment_cooldown_until_ts,
             "skip_stats": dict(self.last_skip_stats),
         }
+
+    def wake_enrichment(self, batch_size: int = 25) -> None:
+        """Неблокирующе будит фоновое обогащение профилей/общака сразу после скана источников."""
+        if not self.player_api or self._enrichment_lock.locked():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.run_profile_enrichment_pass(batch_size=batch_size))
+        except RuntimeError:
+            pass
+
+    async def run_profile_enrichment_pass(
+        self,
+        batch_size: int = 25,
+        user_ids: Optional[List[int]] = None,
+        delay_sec: float = 0.3,
+    ) -> Dict[str, Any]:
+        """
+        Автоматический фоновый проход обогащения профилей и общака (работает даже при auto_friend_outreach=False).
+        За 1 запрос get_player_view обновляет authority, level, total_damage, nickname, brigade_name и obshak_type.
+        """
+        from core.database import get_obshak_coverage_stats, normalize_outreach_criteria
+        from core.models import BotConfig
+        from sqlalchemy import select
+
+        if not self.player_api:
+            return {"status": "no_player_api", "checked": 0, "updated": 0, "with_obshak": 0}
+
+        eng = self.db_engine or get_engine()
+        now_ts = get_game_now_ts()
+        if not user_ids and self.enrichment_cooldown_until_ts > now_ts:
+            return {
+                "status": "cooldown",
+                "cooldown_sec": round(self.enrichment_cooldown_until_ts - now_ts, 1),
+                "checked": 0,
+                "updated": 0,
+                "with_obshak": 0,
+            }
+
+        async with self._enrichment_lock:
+            self.enrichment_in_progress = True
+            try:
+                prio_sources: Optional[List[str]] = None
+                try:
+                    async with get_session(eng) as session:
+                        cfg = (
+                            await session.execute(select(BotConfig).where(BotConfig.account_id == self.account_id))
+                        ).scalar_one_or_none()
+                        if cfg is not None:
+                            crit = normalize_outreach_criteria(getattr(cfg, "outreach_criteria", None), cfg=cfg)
+                            prio_sources = crit.get("sources")
+                except Exception:
+                    prio_sources = None
+
+                r_api = self.raids_api
+                if r_api is None:
+                    from client.api.raids import RaidsAPI
+                    r_api = RaidsAPI()
+                    self.raids_api = r_api
+
+                res = await r_api.enrich_candidates_profiles_and_obshak(
+                    player_api=self.player_api,
+                    db_engine=eng,
+                    account_id=self.account_id,
+                    user_ids=user_ids,
+                    max_profiles=batch_size,
+                    delay_sec=delay_sec,
+                    ttl_seconds=86400.0,
+                    prioritized_sources=prio_sources,
+                )
+                if res.get("rate_limited"):
+                    self.enrichment_cooldown_until_ts = get_game_now_ts() + 120.0
+
+                coverage = await get_obshak_coverage_stats(account_id=self.account_id, engine=eng)
+                if res.get("updated", 0) > 0:
+                    hub = self.state_hub
+                    if hub is None:
+                        try:
+                            from core.state_hub import state_hub as global_hub
+                            hub = global_hub
+                        except Exception:
+                            hub = None
+                    if hub is not None:
+                        try:
+                            hub.invalidate_slice(self.account_id, "outreach")
+                            hub.emit_change(
+                                self.account_id,
+                                ["outreach", "active_players"],
+                                patch={"obshak_coverage": coverage},
+                                reason="profile_obshak_enrichment",
+                            )
+                        except Exception as e:
+                            logger.debug("Ошибка публикации obshak_coverage в StateHub: %s", e)
+
+                return {
+                    "status": "rate_limited" if res.get("rate_limited") else "success",
+                    **res,
+                    "obshak_coverage": coverage,
+                }
+            finally:
+                self.enrichment_in_progress = False
 
     def _publish_state(self, status_payload: Dict[str, Any]) -> None:
         hub = self.state_hub
@@ -254,8 +379,9 @@ class FriendOutreachWorker:
         if hub is None:
             return
         try:
+            hub.invalidate_slice(self.account_id, "friends")
             hub.update_slice(self.account_id, "outreach", status_payload, source_tag="outreach_worker")
-            hub.emit_change(self.account_id, ["outreach", "active_players"], patch={"outreach": status_payload}, reason="outreach_cycle")
+            hub.emit_change(self.account_id, ["outreach", "active_players", "friends"], patch={"outreach": status_payload}, reason="outreach_cycle")
         except Exception as e:
             logger.debug("Ошибка публикации outreach в StateHub: %s", e)
 
@@ -350,6 +476,12 @@ class FriendOutreachWorker:
                     )
                 except Exception as te:
                     logger.debug("Ошибка синхронизации weekly_top в FriendOutreachWorker: %s", te)
+
+            if str(criteria.get("obshak_filter") or "any").lower() != "any" and self.player_api is not None:
+                try:
+                    await self.run_profile_enrichment_pass(batch_size=15)
+                except Exception as ee:
+                    logger.debug("Ошибка авто-допроверки общака в run_cycle: %s", ee)
 
             candidates, friend_ids, self_id = await self._load_candidates_and_friends()
             excluded_ids = await get_outreach_excluded_ids(self.account_id, engine=self.db_engine)

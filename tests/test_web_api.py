@@ -2125,7 +2125,7 @@ async def test_friends_summary_deltas_and_conversion(web_setup):
     assert data["has24hHistory"] is True
     assert len(data["conversionBySource"]) >= 1
 
-    tg_src = next(s for s in data["conversionBySource"] if s["source"] == "tg_channel")
+    tg_src = next(s for s in data["conversionBySource"] if s["source"] in ("tg_raids", "tg_channel"))
     assert tg_src["sent"] == 20
     assert tg_src["accepted"] == 14
     assert tg_src["ignored"] == 4

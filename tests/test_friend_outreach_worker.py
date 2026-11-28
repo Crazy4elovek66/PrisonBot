@@ -150,3 +150,65 @@ async def test_outreach_worker_429_backoff(tmp_path):
     res_cd = await worker.run_cycle(manual=False)
     assert res_cd["status"] == "cooldown"
     await engine.dispose()
+
+
+def test_outreach_obshak_filter_evaluation():
+    from workers.friend_outreach_worker import evaluate_outreach_candidate
+
+    cand_vor = {"userId": 501, "nickname": "VorPlayer", "damage": 500000, "authority": 100, "source": "brigades", "has_obshak": True, "obshak_type": "vor"}
+    cand_none = {"userId": 502, "nickname": "NoObPlayer", "damage": 500000, "authority": 100, "source": "brigades", "has_obshak": False, "obshak_type": "none"}
+
+    ev1 = evaluate_outreach_candidate(cand_vor, {"sources": ["brigades"], "obshak_filter": "has_obshak"}, excluded_ids=set(), friend_ids=set(), sent_status_map={})
+    assert ev1["matches_criteria"] is True
+
+    ev2 = evaluate_outreach_candidate(cand_none, {"sources": ["brigades"], "obshak_filter": "has_obshak"}, excluded_ids=set(), friend_ids=set(), sent_status_map={})
+    assert ev2["matches_criteria"] is False
+
+    ev3 = evaluate_outreach_candidate(cand_vor, {"sources": ["brigades"], "obshak_filter": "vor"}, excluded_ids=set(), friend_ids=set(), sent_status_map={})
+    assert ev3["matches_criteria"] is True
+
+    ev4 = evaluate_outreach_candidate(cand_none, {"sources": ["brigades"], "obshak_filter": "no_obshak"}, excluded_ids=set(), friend_ids=set(), sent_status_map={})
+    assert ev4["matches_criteria"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_profile_enrichment_pass_and_429_backoff_and_coverage(tmp_path):
+    from sqlalchemy import select
+    from core.database import get_obshak_coverage_stats
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'enrich_pass.db'}")
+    await init_db(engine)
+    await get_or_create_config(1, engine)
+
+    async with get_session(engine) as session:
+        session.add(TrackedCandidate(account_id=1, user_id=6001, nickname="Unk1", source="weekly_top", obshak_type="unknown"))
+        session.add(TrackedCandidate(account_id=1, user_id=6002, nickname="Unk2", source="weekly_top", obshak_type="unknown"))
+        session.add(TrackedCandidate(account_id=1, user_id=6003, nickname="FreshNone", source="weekly_top", has_obshak=False, obshak_type="none", obshak_checked_at=time.time()))
+        await session.commit()
+
+    social_api = AsyncMock()
+    player_api = AsyncMock()
+    player_api.get_player_view.side_effect = [
+        {"userId": 6001, "nickname": "VorLoaded", "authority": 90000, "vpiTier": "vorovskoy", "guild": {"name": "TopClan"}},
+        RuntimeError("429 Too Many Requests"),
+    ]
+    worker = FriendOutreachWorker(1, social_api=social_api, player_api=player_api, db_engine=engine, enable_jitter=False)
+
+    res = await worker.run_profile_enrichment_pass(batch_size=10, delay_sec=0.0)
+    assert res["status"] == "rate_limited"
+    assert res["updated"] == 1
+    assert worker.enrichment_cooldown_until_ts > time.time()
+
+    cov = await get_obshak_coverage_stats(1, engine=engine)
+    assert cov["total"] == 3
+    assert cov["checked"] == 2
+    assert cov["unknown"] == 1
+    assert cov["by_type"]["vor"] == 1
+    assert cov["by_type"]["none"] == 1
+
+    async with get_session(engine) as session:
+        c1 = (await session.execute(select(TrackedCandidate).where(TrackedCandidate.user_id == 6001))).scalar_one()
+        assert c1.authority == 90000
+        assert c1.obshak_type == "vor"
+        assert c1.brigade_name == "TopClan"
+    await engine.dispose()

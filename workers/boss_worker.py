@@ -1435,7 +1435,7 @@ class BossWorker:
                 try:
                     from core.state_hub import state_hub
                     ev_type = "boss_finished" if outcome == "victory" else "boss_claimed"
-                    extra = ["profile", "talents", "notifications"]
+                    extra = ["profile", "talents", "notifications", "friends", "friends_stats"]
                     if isinstance(parsed, dict) and any(
                         str(d.get("kind") or d.get("type") or "").lower() in ("tattoo", "clothing", "room", "complect")
                         for d in (parsed.get("drops") or [])

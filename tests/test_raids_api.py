@@ -870,3 +870,76 @@ def test_normalize_outreach_source_aliases():
     assert normalize_outreach_source("brigades") == "brigades"
     assert normalize_outreach_source("guild") == "brigades"
     assert normalize_outreach_source("guild_scan") == "brigades"
+
+
+@pytest.mark.asyncio
+async def test_collect_top_brigades_and_enrich_obshak(tmp_path):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import get_session, init_db
+    from core.models import TrackedCandidate
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'brigades_obshak.db'}")
+    await init_db(engine)
+
+    raids_api = RaidsAPI()
+    mock_social = MagicMock(spec=SocialAPI)
+    mock_social.get_recruitment_list = AsyncMock(return_value=[{"guildId": 348, "name": "LEPREKON_ZM"}])
+    mock_social.get_guild_members = AsyncMock(return_value=[
+        {"userId": 7001, "nickname": "BrigadeTop", "activityRating": 15000, "campActivity": {"damage": 40000}},
+        {"userId": 7002, "nickname": "BrigadeLow", "activityRating": 500, "campActivity": {"damage": 1200}},
+    ])
+
+    res_b = await raids_api.collect_top_brigades_candidates(mock_social, engine, account_id=1, top_brigades_limit=5)
+    assert res_b["success"] is True
+    assert res_b["guilds_scanned"] == 1
+    assert res_b["players_saved"] == 2
+
+    mock_player = MagicMock()
+    mock_player.get_player_view = AsyncMock(side_effect=[
+        {"userId": 7001, "vpiTier": "vorovskoy"},
+        {"userId": 7002, "vpiTier": None},
+    ])
+    res_ob = await raids_api.enrich_candidates_obshak(mock_player, engine, account_id=1, user_ids=[7001, 7002], max_profiles=5)
+    assert res_ob["success"] is True
+    assert res_ob["checked"] == 2
+    assert res_ob["with_obshak"] == 1
+
+    async with get_session(engine) as session:
+        c1 = (await session.execute(select(TrackedCandidate).where(TrackedCandidate.user_id == 7001))).scalar_one()
+        c2 = (await session.execute(select(TrackedCandidate).where(TrackedCandidate.user_id == 7002))).scalar_one()
+        assert c1.source == "brigades"
+        assert c1.brigade_name == "LEPREKON_ZM"
+        assert c1.has_obshak is True
+        assert c1.obshak_type == "vor"
+        assert c2.has_obshak is False
+        assert c2.obshak_type == "none"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_extract_obshak_from_payload_and_upsert_protection(tmp_path):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from client.api.player import extract_obshak_from_payload
+    from core.database import get_session, init_db, upsert_tracked_candidate
+    from core.models import TrackedCandidate
+
+    assert extract_obshak_from_payload({"vpiTier": "pacansky"}) == (True, "pacan")
+    assert extract_obshak_from_payload({"vpiTier": "blatnoy"}) == (True, "blat")
+    assert extract_obshak_from_payload({"vpiTier": "vorovskoy"}) == (True, "vor")
+    assert extract_obshak_from_payload({"vpiTier": "avtoritet"}) == (True, "avtoritet")
+    assert extract_obshak_from_payload({"userId": 1, "vpiTier": None, "weaponDamage": {"poison": 250}}) == (False, "none")
+    assert extract_obshak_from_payload({"userId": 1, "nickname": "ShortRow", "authority": 100}) == (None, "unknown")
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upsert_obshak.db'}")
+    await init_db(engine)
+    await upsert_tracked_candidate(1, 9001, nickname="VorGuy", source="weekly_top", has_obshak=True, obshak_type="vor", engine=engine)
+    await upsert_tracked_candidate(1, 9001, nickname="VorGuy", source="weekly_top", has_obshak=None, obshak_type="unknown", authority=50000, engine=engine)
+
+    async with get_session(engine) as session:
+        cand = (await session.execute(select(TrackedCandidate).where(TrackedCandidate.user_id == 9001))).scalar_one()
+        assert cand.has_obshak is True
+        assert cand.obshak_type == "vor"
+        assert cand.authority == 50000
+    await engine.dispose()

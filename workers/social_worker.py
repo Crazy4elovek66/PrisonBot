@@ -201,6 +201,12 @@ class SocialWorker:
                             fs_obj.updated_at = datetime.utcnow()
                         await session.commit()
 
+                    try:
+                        from core.database import mark_friends_removed_in_outreach
+                        await mark_friends_removed_in_outreach(self.account_id, [uid], engine=self.db_engine)
+                    except Exception:
+                        pass
+
                     await self._log_action(
                         "friend_remove",
                         f"/api/friendship/remove-friend?friendUserId={uid}",
@@ -269,6 +275,7 @@ class SocialWorker:
                     if not f_id:
                         continue
                     f_uid = int(f_id)
+                    f_nick = str(r.get("nickname") or f"Игрок #{f_uid}")
 
                     lvl = int(r.get("level") or r.get("lvl") or 0)
                     auth = int(r.get("authority", 0) or 0)
@@ -324,6 +331,14 @@ class SocialWorker:
                                 logger.info("Заявка %s не принята (%s): %s", f_uid, err_code, acc_res.get("message"))
                                 continue
                             accepted_ids.append(f_uid)
+                            if self.db_engine:
+                                try:
+                                    from core.database import record_incoming_friend_request
+                                    await record_incoming_friend_request(
+                                        self.account_id, f_uid, nickname=f_nick, status="accepted", damage=tot_dmg, engine=self.db_engine
+                                    )
+                                except Exception:
+                                    pass
                             await self._log_action("accept_friend", "/api/friendship/accept-request", 200, True, {
                                 "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal, "poisonDamage": poi_dmg
                             })
@@ -338,12 +353,29 @@ class SocialWorker:
                                     stale_removed_ids.append(f_uid)
                                 continue
                             rejected_ids.append(f_uid)
+                            if self.db_engine:
+                                try:
+                                    from core.database import record_incoming_friend_request
+                                    await record_incoming_friend_request(
+                                        self.account_id, f_uid, nickname=f_nick, status="declined", damage=tot_dmg, engine=self.db_engine
+                                    )
+                                except Exception:
+                                    pass
                             await self._log_action("decline_friend", "/api/friendship/decline-request", 200, True, {
                                 "fromUserId": f_uid, "nickname": r.get("nickname"), "talents": tal
                             })
                             await self._jitter()
                         except Exception as de:
                             logger.warning("Ошибка отклонения друга %s: %s", f_uid, de)
+                    else:
+                        if self.db_engine:
+                            try:
+                                from core.database import record_incoming_friend_request
+                                await record_incoming_friend_request(
+                                    self.account_id, f_uid, nickname=f_nick, status="pending", damage=tot_dmg, engine=self.db_engine
+                                )
+                            except Exception:
+                                pass
 
                 processed = set(accepted_ids) | set(rejected_ids) | set(stale_removed_ids)
                 remaining = [
@@ -583,6 +615,15 @@ class SocialWorker:
                             req.resolved_at = now
 
                     await session.commit()
+
+                try:
+                    from core.database import reconcile_friend_requests_with_friends
+                    await reconcile_friend_requests_with_friends(self.account_id, current_friend_ids, engine=self.db_engine)
+                    from core.state_hub import state_hub
+                    state_hub.invalidate_slice(self.account_id, "friends")
+                    state_hub.invalidate_slice(self.account_id, "friends_stats")
+                except Exception:
+                    pass
             except Exception as se:
                 logger.error("Ошибка синхронизации FriendStats/Snapshots: %s", se)
 

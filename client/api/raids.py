@@ -10,7 +10,13 @@ from typing import Dict, Any, List, Optional, Set
 import httpx
 from sqlalchemy import select, func, or_
 
-from client.api.social import SocialAPI, calculate_level_from_authority, extract_player_combat_stats
+from client.api.social import (
+    SocialAPI,
+    _has_explicit_obshak_field,
+    calculate_level_from_authority,
+    extract_player_combat_stats,
+    parse_obshak_info,
+)
 from core.database import get_session
 from core.models import SentFriendRequest, TrackedCandidate, BotConfig
 
@@ -1236,6 +1242,18 @@ class RaidsAPI:
                         if isinstance(p_data, dict):
                             cand.nickname = p_data.get("nickname") or p_data.get("name") or cand.nickname
                             cand.photo_url = p_data.get("photoUrl") or p_data.get("avatarUrl") or cand.photo_url
+                            g_obj = p_data.get("guild")
+                            if isinstance(g_obj, dict) and g_obj.get("name"):
+                                cand.brigade_name = str(g_obj["name"])
+                            elif p_data.get("guildName") or p_data.get("brigadeName"):
+                                cand.brigade_name = str(p_data.get("guildName") or p_data.get("brigadeName"))
+
+                        from client.api.player import extract_obshak_from_payload
+                        ob_has, ob_type = extract_obshak_from_payload(merged_payload)
+                        if ob_type != "unknown":
+                            cand.has_obshak = bool(ob_has)
+                            cand.obshak_type = ob_type
+                            cand.obshak_checked_at = time.time()
 
                         if ext["talents"] > 0:
                             cand.talents = ext["talents"]
@@ -1372,3 +1390,284 @@ class RaidsAPI:
             "totalFound": len(participants),
             "participants": participants,
         }
+
+    async def collect_top_brigades_candidates(
+        self,
+        social_api: Any,
+        db_engine: Any,
+        account_id: int = 1,
+        top_brigades_limit: int = 15,
+        self_id: Optional[int] = None,
+        delay_sec: float = 0.35,
+    ) -> Dict[str, Any]:
+        """
+        Живой сбор участников из топа/списка бригад игры (GET /api/guild/recruitment/list + /api/guild/{id}/members).
+        Сохраняет кандидатов в tracked_candidates с каноническим source='brigades' и brigade_name.
+        """
+        if not social_api or not db_engine:
+            return {"success": False, "collected": 0, "brigades_scanned": 0}
+
+        try:
+            raw_list = await social_api.get_recruitment_list(limit=max(20, int(top_brigades_limit)))
+        except Exception as e:
+            logger.warning("Ошибка загрузки списка бригад: %s", e)
+            return {"success": False, "collected": 0, "brigades_scanned": 0, "error": str(e)}
+
+        guilds = raw_list if isinstance(raw_list, list) else (raw_list.get("guilds") or raw_list.get("items") or [] if isinstance(raw_list, dict) else [])
+        guilds = [g for g in guilds if isinstance(g, dict) and (g.get("guildId") or g.get("id"))][:top_brigades_limit]
+
+        now = datetime.utcnow()
+        collected = 0
+        brigades_scanned = 0
+        seen_uids: Set[int] = set()
+
+        for idx, g in enumerate(guilds):
+            if idx > 0 and delay_sec > 0:
+                await asyncio.sleep(delay_sec)
+            gid = int(g.get("guildId") or g.get("id"))
+            g_name = str(g.get("name") or f"Бригада #{gid}").strip()
+
+            try:
+                m_raw = await social_api.get_guild_members(gid)
+            except Exception as ge:
+                if "429" in str(ge):
+                    logger.warning("429 при опросе бригады %s — остановка пачки", gid)
+                    break
+                continue
+
+            brigades_scanned += 1
+            members = m_raw if isinstance(m_raw, list) else (m_raw.get("members") or m_raw.get("players") or [] if isinstance(m_raw, dict) else [])
+            if not members:
+                continue
+
+            async with get_session(db_engine) as session:
+                for m in members:
+                    if not isinstance(m, dict):
+                        continue
+                    uid_raw = m.get("userId") or m.get("id")
+                    if not uid_raw:
+                        continue
+                    uid = int(uid_raw)
+                    if (self_id is not None and uid == int(self_id)) or uid in seen_uids:
+                        continue
+                    seen_uids.add(uid)
+
+                    nick = str(m.get("nickname") or m.get("name") or f"Игрок {uid}").strip()
+                    authority = int(m.get("authority") or 0)
+                    level = int(m.get("level") or 0)
+                    if level == 0 and authority > 0:
+                        level = calculate_level_from_authority(authority)
+                    camp_obj = m.get("campActivity") if isinstance(m.get("campActivity"), dict) else {}
+                    camp_total = int(camp_obj.get("total") or (m.get("campActivity") if isinstance(m.get("campActivity"), (int, float)) else 0) or 0)
+                    act_rating = int(m.get("activityRating") or 0)
+                    dmg = int(m.get("bossDamage") or m.get("totalDamage") or camp_obj.get("damage") or act_rating or 0)
+
+                    cand = (
+                        await session.execute(
+                            select(TrackedCandidate).where(
+                                TrackedCandidate.account_id == account_id,
+                                TrackedCandidate.user_id == uid,
+                            )
+                        )
+                    ).scalar_one_or_none()
+
+                    from client.api.player import extract_obshak_from_payload
+                    ob_has, ob_type = extract_obshak_from_payload(m)
+
+                    if not cand:
+                        cand = TrackedCandidate(
+                            account_id=account_id,
+                            user_id=uid,
+                            nickname=nick,
+                            photo_url=m.get("photoUrl") or m.get("avatarUrl"),
+                            guild_id=gid,
+                            guild_name=g_name,
+                            brigade_name=g_name,
+                            level=level,
+                            authority=authority,
+                            total_damage=dmg,
+                            camp_activity=camp_total,
+                            source="brigades",
+                            is_active_recently=(act_rating > 0 or camp_total > 0),
+                            has_obshak=bool(ob_has) if ob_type != "unknown" else None,
+                            obshak_type=ob_type,
+                            obshak_checked_at=time.time() if ob_type != "unknown" else None,
+                            first_seen_at=now,
+                            last_seen_at=now,
+                            last_snapshot_at=now,
+                        )
+                        session.add(cand)
+                    else:
+                        cand.last_seen_at = now
+                        cand.nickname = nick or cand.nickname
+                        cand.guild_id = gid
+                        cand.guild_name = g_name
+                        cand.brigade_name = g_name
+                        cand.source = "brigades"
+                        if dmg > int(cand.total_damage or 0):
+                            cand.total_damage = dmg
+                        if authority > int(cand.authority or 0):
+                            cand.authority = authority
+                        if act_rating > 0 or camp_total > 0:
+                            cand.is_active_recently = True
+                        if ob_type != "unknown":
+                            cand.has_obshak = bool(ob_has)
+                            cand.obshak_type = ob_type
+                            cand.obshak_checked_at = time.time()
+                    collected += 1
+                await session.commit()
+
+        return {
+            "success": True,
+            "collected": collected,
+            "players_saved": collected,
+            "brigades_scanned": brigades_scanned,
+            "guilds_scanned": brigades_scanned,
+        }
+
+    async def enrich_candidates_profiles_and_obshak(
+        self,
+        player_api: Any,
+        db_engine: Any,
+        account_id: int = 1,
+        user_ids: Optional[List[int]] = None,
+        max_profiles: int = 25,
+        delay_sec: float = 0.3,
+        ttl_seconds: float = 86400.0,
+        prioritized_sources: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Единое обогащение профилей кандидатов: за 1 запрос get_player_view(uid) обновляет
+        nickname, authority, level, total_damage, brigade_name, has_obshak, obshak_type и obshak_checked_at.
+        """
+        if not player_api or not db_engine:
+            return {"success": False, "checked": 0, "updated": 0, "with_obshak": 0, "rate_limited": False}
+
+        from client.api.player import extract_obshak_from_payload
+        from core.database import get_candidates_needing_profile_enrichment
+
+        now_ts = time.time()
+        limit_n = max(1, min(50, int(max_profiles or 25)))
+        checked = 0
+        updated = 0
+        with_obshak = 0
+        rate_limited = False
+
+        if user_ids:
+            clean_ids = [int(u) for u in user_ids if u]
+            if not clean_ids:
+                return {"success": True, "checked": 0, "updated": 0, "with_obshak": 0, "rate_limited": False}
+            async with get_session(db_engine) as session:
+                rows = (
+                    await session.execute(
+                        select(TrackedCandidate).where(
+                            TrackedCandidate.account_id == account_id,
+                            TrackedCandidate.user_id.in_(clean_ids),
+                        )
+                    )
+                ).scalars().all()
+                to_check_ids = [
+                    int(r.user_id) for r in rows
+                    if (getattr(r, "obshak_type", "unknown") in (None, "", "unknown"))
+                    or (getattr(r, "obshak_checked_at", None) is None)
+                    or ((now_ts - float(r.obshak_checked_at)) > ttl_seconds)
+                ][:limit_n]
+        else:
+            prio_cands = await get_candidates_needing_profile_enrichment(
+                account_id=account_id,
+                limit=limit_n,
+                ttl_sec=int(ttl_seconds),
+                prioritized_sources=prioritized_sources,
+                engine=db_engine,
+            )
+            to_check_ids = [int(c.user_id) for c in prio_cands if getattr(c, "user_id", None) is not None]
+
+        if not to_check_ids:
+            return {"success": True, "checked": 0, "updated": 0, "with_obshak": 0, "rate_limited": False}
+
+        async with get_session(db_engine) as session:
+            rows_db = (
+                await session.execute(
+                    select(TrackedCandidate).where(
+                        TrackedCandidate.account_id == account_id,
+                        TrackedCandidate.user_id.in_(to_check_ids),
+                    )
+                )
+            ).scalars().all()
+            by_uid = {int(r.user_id): r for r in rows_db}
+
+            for idx, uid in enumerate(to_check_ids):
+                cand = by_uid.get(uid)
+                if not cand:
+                    continue
+                if idx > 0 and delay_sec > 0:
+                    await asyncio.sleep(delay_sec)
+                try:
+                    pv = await player_api.get_player_view(uid)
+                    checked += 1
+                    p_data = pv.get("data") if isinstance(pv, dict) and isinstance(pv.get("data"), dict) else pv
+                    ob_has, ob_type = extract_obshak_from_payload(p_data)
+                    if ob_type == "unknown" and isinstance(p_data, dict):
+                        # Полный ответ get_player_view без блока общака считаем проверенным (none)
+                        ob_has, ob_type = False, "none"
+                    cand.has_obshak = bool(ob_has)
+                    cand.obshak_type = str(ob_type)
+                    cand.obshak_checked_at = time.time()
+                    if cand.has_obshak:
+                        with_obshak += 1
+
+                    if isinstance(p_data, dict):
+                        p_nick = p_data.get("nickname") or p_data.get("name")
+                        if p_nick:
+                            cand.nickname = str(p_nick)
+                        ext = extract_player_combat_stats(p_data)
+                        if ext.get("authority", 0) > int(cand.authority or 0):
+                            cand.authority = int(ext["authority"])
+                        if ext.get("level", 0) > int(cand.level or 0):
+                            cand.level = int(ext["level"])
+                        elif (cand.level or 0) <= 1 and int(cand.authority or 0) > 0:
+                            cand.level = calculate_level_from_authority(int(cand.authority))
+                        if ext.get("totalDamage", 0) > int(cand.total_damage or 0):
+                            cand.total_damage = int(ext["totalDamage"])
+                        g_obj = p_data.get("guild")
+                        if isinstance(g_obj, dict) and g_obj.get("name"):
+                            cand.brigade_name = str(g_obj["name"])
+                        elif p_data.get("guildName") or p_data.get("brigadeName"):
+                            cand.brigade_name = str(p_data.get("guildName") or p_data.get("brigadeName"))
+                    cand.enriched_at = datetime.utcnow()
+                    updated += 1
+                except Exception as exc:
+                    if "429" in str(exc) or "too many" in str(exc).lower():
+                        rate_limited = True
+                        break
+                    logger.debug("Ошибка обогащения профиля/общака %s: %s", uid, exc)
+            await session.commit()
+
+        return {
+            "success": True,
+            "checked": checked,
+            "updated": updated,
+            "with_obshak": with_obshak,
+            "rate_limited": rate_limited,
+        }
+
+    async def enrich_candidates_obshak(
+        self,
+        player_api: Any,
+        db_engine: Any,
+        account_id: int = 1,
+        user_ids: Optional[List[int]] = None,
+        max_profiles: int = 15,
+        delay_sec: float = 0.45,
+        ttl_seconds: float = 86400.0,
+    ) -> Dict[str, Any]:
+        """Совместимая обёртка над единым обогащением профилей и общака."""
+        return await self.enrich_candidates_profiles_and_obshak(
+            player_api=player_api,
+            db_engine=db_engine,
+            account_id=account_id,
+            user_ids=user_ids,
+            max_profiles=max_profiles,
+            delay_sec=delay_sec,
+            ttl_seconds=ttl_seconds,
+        )

@@ -213,6 +213,10 @@ def _migrate_tracked_candidates(connection) -> None:
         ("talents", "INTEGER DEFAULT 0 NOT NULL"),
         ("score", "INTEGER DEFAULT 0 NOT NULL"),
         ("enriched_at", "DATETIME"),
+        ("brigade_name", "VARCHAR(128)"),
+        ("has_obshak", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("obshak_type", "VARCHAR(24) DEFAULT 'unknown' NOT NULL"),
+        ("obshak_checked_at", "REAL"),
     ]
 
     for col_name, col_type in col_defs:
@@ -239,14 +243,16 @@ def _migrate_tracked_candidates(connection) -> None:
 
 
 def _migrate_sent_friend_requests(connection) -> None:
-    """Автоматическая миграция новых колонок SentFriendRequest при необходимости."""
+    """Автоматическая миграция новых колонок SentFriendRequest и friend_outreach_history при необходимости."""
     cursor = connection.execute(text("PRAGMA table_info(sent_friend_requests);"))
     existing_cols = {row[1] for row in cursor.fetchall()}
-    if not existing_cols:
-        return
-
-    if "resolved_at" not in existing_cols:
+    if existing_cols and "resolved_at" not in existing_cols:
         connection.execute(text("ALTER TABLE sent_friend_requests ADD COLUMN resolved_at DATETIME;"))
+
+    cursor_h = connection.execute(text("PRAGMA table_info(friend_outreach_history);"))
+    hist_cols = {row[1] for row in cursor_h.fetchall()}
+    if hist_cols and "accepted_at" not in hist_cols:
+        connection.execute(text("ALTER TABLE friend_outreach_history ADD COLUMN accepted_at REAL;"))
 
 
 def _migrate_boss_presets(connection) -> None:
@@ -1078,6 +1084,7 @@ def normalize_outreach_criteria(raw: Any = None, cfg: Any = None) -> dict:
         "delay_between_requests_sec": 3.0,
         "cycle_interval_sec": 300,
         "exclude_keywords": "",
+        "obshak_filter": "any",
     }
     if isinstance(raw, dict):
         for k in base:
@@ -1117,6 +1124,8 @@ def normalize_outreach_criteria(raw: Any = None, cfg: Any = None) -> dict:
     base["delay_between_requests_sec"] = max(1.0, min(30.0, float(base["delay_between_requests_sec"] or 3.0)))
     base["cycle_interval_sec"] = max(60, min(3600, int(base["cycle_interval_sec"] or 300)))
     base["exclude_keywords"] = str(base.get("exclude_keywords") or "").strip()
+    obf = str(base.get("obshak_filter") or "any").strip().lower()
+    base["obshak_filter"] = obf if obf in ("any", "has_any", "has_obshak", "pacan", "blat", "vor", "avtoritet", "none", "no_obshak") else "any"
     return base
 
 
@@ -1168,7 +1177,7 @@ async def get_outreach_excluded_ids(
         res_h = await session.execute(
             select(FriendOutreachHistory.target_id).where(
                 FriendOutreachHistory.account_id == account_id,
-                FriendOutreachHistory.status.in_(["sent", "already_friend", "already_pending", "privacy_blocked"]),
+                FriendOutreachHistory.status.in_(["sent", "already_friend", "already_pending", "privacy_blocked", "accepted", "removed_friend"]),
             )
         )
         for uid in res_h.scalars().all():
@@ -1233,3 +1242,515 @@ async def record_outreach_history(
                 )
             )
         await session.commit()
+
+
+async def record_incoming_friend_request(
+    account_id: int,
+    user_id: int,
+    nickname: str = "",
+    status: str = "pending",
+    damage: int = 0,
+    received_at: Optional[float] = None,
+    resolved_at: Optional[float] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Фиксирует входящую заявку в друзья (`pending` | `accepted` | `declined`) в SQLite."""
+    import time as _time
+    from sqlalchemy import select
+    from core.models import IncomingFriendRequest
+
+    now_ts = float(received_at if received_at is not None else _time.time())
+    res_ts = float(resolved_at) if resolved_at is not None else (now_ts if status in ("accepted", "declined") else None)
+    async with get_session(engine) as session:
+        row = (
+            await session.execute(
+                select(IncomingFriendRequest).where(
+                    IncomingFriendRequest.account_id == account_id,
+                    IncomingFriendRequest.user_id == int(user_id),
+                )
+            )
+        ).scalar_one_or_none()
+        if row:
+            if nickname:
+                row.nickname = nickname
+            if int(damage or 0) > int(row.damage or 0):
+                row.damage = int(damage)
+            row.status = status
+            if res_ts is not None:
+                row.resolved_at = res_ts
+        else:
+            session.add(
+                IncomingFriendRequest(
+                    account_id=account_id,
+                    user_id=int(user_id),
+                    nickname=nickname or f"Игрок #{user_id}",
+                    status=status,
+                    received_at=now_ts,
+                    resolved_at=res_ts,
+                    damage=int(damage or 0),
+                )
+            )
+        await session.commit()
+
+
+async def mark_friends_removed_in_outreach(
+    account_id: int,
+    user_ids: list[int],
+    engine: Optional[AsyncEngine] = None,
+) -> None:
+    """Помечает удалённых корешей как `removed_friend`, чтобы исключить повторный спам."""
+    import time as _time
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory
+
+    clean_ids = [int(uid) for uid in (user_ids or []) if uid]
+    if not clean_ids:
+        return
+    now_ts = _time.time()
+    async with get_session(engine) as session:
+        rows = (
+            await session.execute(
+                select(FriendOutreachHistory).where(
+                    FriendOutreachHistory.account_id == account_id,
+                    FriendOutreachHistory.target_id.in_(clean_ids),
+                )
+            )
+        ).scalars().all()
+        found = set()
+        for r in rows:
+            found.add(int(r.target_id))
+            r.status = "removed_friend"
+            r.error_message = "Удалён при чистке корешей"
+        for uid in clean_ids:
+            if uid not in found:
+                session.add(
+                    FriendOutreachHistory(
+                        account_id=account_id,
+                        target_id=uid,
+                        nickname=f"Игрок #{uid}",
+                        source="cleanup",
+                        status="removed_friend",
+                        error_message="Удалён при чистке корешей",
+                        sent_at=now_ts,
+                    )
+                )
+        await session.commit()
+
+
+async def reconcile_friend_requests_with_friends(
+    account_id: int,
+    friend_ids: set[int],
+    damage_by_friend: Optional[dict[int, int]] = None,
+    now_ts: Optional[float] = None,
+    engine: Optional[AsyncEngine] = None,
+) -> dict:
+    """
+    Сверяет исходящие (`friend_outreach_history` + `sent_friend_requests`) и входящие (`incoming_friend_requests`)
+    заявки с реальным списком корешей игры: переводит принятые заявки в `accepted` и помечает протухшие (>72ч) `ignored`.
+    """
+    import time as _time
+    from datetime import datetime
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory, IncomingFriendRequest, SentFriendRequest
+
+    cur_ts = float(now_ts if now_ts is not None else _time.time())
+    cur_dt = datetime.utcfromtimestamp(cur_ts)
+    dmg_map = damage_by_friend or {}
+    f_set = {int(uid) for uid in (friend_ids or set())}
+    accepted_out = 0
+    ignored_out = 0
+
+    async with get_session(engine) as session:
+        hist_rows = (
+            await session.execute(
+                select(FriendOutreachHistory).where(FriendOutreachHistory.account_id == account_id)
+            )
+        ).scalars().all()
+        for h in hist_rows:
+            uid = int(h.target_id)
+            if uid in f_set and h.status in ("sent", "already_pending", "ignored"):
+                h.status = "accepted"
+                h.accepted_at = h.accepted_at or cur_ts
+                accepted_out += 1
+            elif uid not in f_set and h.status in ("sent", "already_pending") and (cur_ts - float(h.sent_at or 0)) > 72 * 3600:
+                h.status = "ignored"
+                ignored_out += 1
+            if uid in dmg_map and int(dmg_map[uid] or 0) > int(h.damage or 0):
+                h.damage = int(dmg_map[uid])
+
+        sent_rows = (
+            await session.execute(
+                select(SentFriendRequest).where(SentFriendRequest.account_id == account_id)
+            )
+        ).scalars().all()
+        for req in sent_rows:
+            uid = int(req.target_user_id)
+            if uid in f_set and req.status in ("sent", "ignored"):
+                req.status = "accepted"
+                req.resolved_at = req.resolved_at or cur_dt
+                accepted_out += 1
+            elif uid not in f_set and req.status == "sent" and req.created_at and (cur_dt - req.created_at).total_seconds() > 72 * 3600:
+                req.status = "ignored"
+                req.resolved_at = req.resolved_at or cur_dt
+                ignored_out += 1
+
+        inc_rows = (
+            await session.execute(
+                select(IncomingFriendRequest).where(IncomingFriendRequest.account_id == account_id)
+            )
+        ).scalars().all()
+        for inc in inc_rows:
+            uid = int(inc.user_id)
+            if uid in f_set and inc.status == "pending":
+                inc.status = "accepted"
+                inc.resolved_at = inc.resolved_at or cur_ts
+            if uid in dmg_map and int(dmg_map[uid] or 0) > int(inc.damage or 0):
+                inc.damage = int(dmg_map[uid])
+
+        await session.commit()
+
+    return {"accepted": accepted_out, "ignored": ignored_out}
+
+
+async def get_friends_source_analytics(
+    account_id: int = 1,
+    engine: Optional[AsyncEngine] = None,
+) -> list[dict]:
+    """
+    Возвращает сквозную аналитику конверсии по всем источникам исходящих заявок
+    (`friend_outreach_history` + `sent_friend_requests` с дедупликацией) + отдельную строку `incoming` («Входящие заявки»).
+    """
+    from sqlalchemy import select
+    from core.models import FriendOutreachHistory, FriendStats, IncomingFriendRequest, SentFriendRequest, TrackedCandidate
+
+    async with get_session(engine) as session:
+        hist_rows = (
+            await session.execute(select(FriendOutreachHistory).where(FriendOutreachHistory.account_id == account_id))
+        ).scalars().all()
+        sent_rows = (
+            await session.execute(select(SentFriendRequest).where(SentFriendRequest.account_id == account_id))
+        ).scalars().all()
+        inc_rows = (
+            await session.execute(select(IncomingFriendRequest).where(IncomingFriendRequest.account_id == account_id))
+        ).scalars().all()
+
+        cand_dmg_map = {
+            int(uid): int(dmg or 0)
+            for uid, dmg in (
+                await session.execute(
+                    select(TrackedCandidate.user_id, TrackedCandidate.total_damage).where(
+                        TrackedCandidate.account_id == account_id
+                    )
+                )
+            ).all()
+            if uid is not None
+        }
+        friend_rows = (
+            await session.execute(
+                select(FriendStats.user_id, FriendStats.total_damage_to_my_bosses, FriendStats.boss_hits_count, FriendStats.is_current_friend).where(
+                    FriendStats.account_id == account_id
+                )
+            )
+        ).all()
+
+    friend_avg_dmg: dict[int, int] = {}
+    current_friend_ids: set[int] = set()
+    for uid, tot_dmg, hits, is_cur in friend_rows:
+        if uid is None:
+            continue
+        u = int(uid)
+        if is_cur:
+            current_friend_ids.add(u)
+        h_cnt = int(hits or 0)
+        t_dmg = int(tot_dmg or 0)
+        friend_avg_dmg[u] = round(t_dmg / h_cnt) if h_cnt > 0 else t_dmg
+
+    status_rank = {"accepted": 4, "sent": 3, "already_pending": 2, "ignored": 1, "removed_friend": 1}
+
+    def _norm_analytics_source(raw: str) -> str:
+        s = str(raw or "").strip().lower()
+        if s in ("manual", "import", "raid"):
+            return "manual"
+        if s in ("radar", "radar_batch"):
+            return "weekly_top"
+        if s == "auto_outreach":
+            return "weekly_top"
+        return normalize_outreach_source(s)
+
+    dedup: dict[int, dict] = {}
+    for s in sent_rows:
+        if s.target_user_id is None:
+            continue
+        uid = int(s.target_user_id)
+        st = "accepted" if (s.status == "accepted" or uid in current_friend_ids) else str(s.status or "sent")
+        if st == "failed":
+            continue
+        dedup[uid] = {
+            "source": _norm_analytics_source(s.source),
+            "status": st,
+            "damage": friend_avg_dmg.get(uid) or cand_dmg_map.get(uid) or 0,
+        }
+
+    for h in hist_rows:
+        if h.target_id is None:
+            continue
+        uid = int(h.target_id)
+        if h.status in ("error", "privacy_blocked", "already_friend"):
+            continue
+        st = "accepted" if (h.status == "accepted" or uid in current_friend_ids) else str(h.status or "sent")
+        src = _norm_analytics_source(h.source)
+        prev = dedup.get(uid)
+        if not prev or status_rank.get(st, 0) >= status_rank.get(prev["status"], 0):
+            dedup[uid] = {
+                "source": src,
+                "status": st,
+                "damage": friend_avg_dmg.get(uid) or int(h.damage or 0) or cand_dmg_map.get(uid) or 0,
+            }
+
+    buckets: dict[str, dict] = {}
+    for uid, rec in dedup.items():
+        src = rec["source"]
+        b = buckets.setdefault(src, {"source": src, "sent": 0, "accepted": 0, "ignored": 0, "pending": 0, "accepted_damages": []})
+        b["sent"] += 1
+        st = rec["status"]
+        if st == "accepted":
+            b["accepted"] += 1
+            if rec["damage"] > 0:
+                b["accepted_damages"].append(rec["damage"])
+        elif st in ("ignored", "removed_friend"):
+            b["ignored"] += 1
+        else:
+            b["pending"] += 1
+
+    out_list = []
+    for src, b in buckets.items():
+        sent_cnt = b["sent"]
+        acc_cnt = b["accepted"]
+        conv = round((acc_cnt / sent_cnt) * 100.0, 1) if sent_cnt > 0 else 0.0
+        avg_d = int(sum(b["accepted_damages"]) / len(b["accepted_damages"])) if b["accepted_damages"] else 0
+        out_list.append({
+            "source": src,
+            "source_label": OUTREACH_SOURCE_LABELS.get(src, "Ручная отправка" if src == "manual" else src),
+            "sent": sent_cnt,
+            "accepted": acc_cnt,
+            "ignored": b["ignored"],
+            "pending": b["pending"],
+            "conversionRate": conv,
+            "avgDamage": avg_d,
+        })
+
+    out_list.sort(key=lambda x: (x["conversionRate"], x["accepted"], x["sent"]), reverse=True)
+
+    # Строка входящих заявок
+    inc_received = len(inc_rows)
+    inc_accepted = 0
+    inc_declined = 0
+    inc_pending = 0
+    inc_dmgs = []
+    for inc in inc_rows:
+        uid = int(inc.user_id)
+        if inc.status == "accepted" or uid in current_friend_ids:
+            inc_accepted += 1
+            d = friend_avg_dmg.get(uid) or int(inc.damage or 0)
+            if d > 0:
+                inc_dmgs.append(d)
+        elif inc.status == "declined":
+            inc_declined += 1
+        else:
+            inc_pending += 1
+
+    inc_conv = round((inc_accepted / inc_received) * 100.0, 1) if inc_received > 0 else 0.0
+    inc_avg = int(sum(inc_dmgs) / len(inc_dmgs)) if inc_dmgs else 0
+    out_list.append({
+        "source": "incoming",
+        "source_label": "Входящие заявки",
+        "sent": inc_received,
+        "received": inc_received,
+        "accepted": inc_accepted,
+        "declined": inc_declined,
+        "pending": inc_pending,
+        "ignored": inc_declined,
+        "conversionRate": inc_conv,
+        "avgDamage": inc_avg,
+    })
+
+    return out_list
+
+
+async def upsert_tracked_candidate(
+    account_id: int,
+    user_id: int,
+    *,
+    nickname: Optional[str] = None,
+    source: Optional[str] = None,
+    authority: Optional[int] = None,
+    level: Optional[int] = None,
+    total_damage: Optional[int] = None,
+    poison_damage: Optional[int] = None,
+    brigade_name: Optional[str] = None,
+    has_obshak: Optional[bool] = None,
+    obshak_type: Optional[str] = None,
+    obshak_checked_at: Optional[float] = None,
+    is_active_recently: Optional[bool] = None,
+    engine: Optional[Any] = None,
+) -> None:
+    """
+    Безопасный upsert кандидата в `tracked_candidates`.
+    НИКОГДА не затирает уже известное значение `obshak_type != "unknown"` значением `"unknown"`.
+    """
+    from datetime import datetime
+    from sqlalchemy import select
+    from core.models import TrackedCandidate
+
+    eng = engine or get_engine()
+    now_dt = datetime.utcnow()
+    norm_src = normalize_outreach_source(source) if source else None
+    new_ob_type = str(obshak_type or "unknown").strip().lower() if obshak_type is not None else "unknown"
+
+    async with get_session(eng) as session:
+        cand = (
+            await session.execute(
+                select(TrackedCandidate).where(
+                    TrackedCandidate.account_id == account_id,
+                    TrackedCandidate.user_id == int(user_id),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if cand is None:
+            cand = TrackedCandidate(
+                account_id=account_id,
+                user_id=int(user_id),
+                nickname=nickname or f"Игрок {user_id}",
+                source=norm_src or "weekly_top",
+                authority=int(authority or 0),
+                level=int(level or 0),
+                total_damage=int(total_damage or 0),
+                poison_damage=int(poison_damage or 0),
+                brigade_name=brigade_name,
+                has_obshak=has_obshak if new_ob_type != "unknown" else None,
+                obshak_type=new_ob_type,
+                obshak_checked_at=obshak_checked_at if new_ob_type != "unknown" else None,
+                is_active_recently=bool(is_active_recently) if is_active_recently is not None else False,
+                last_seen_at=now_dt,
+            )
+            session.add(cand)
+        else:
+            cand.last_seen_at = now_dt
+            if nickname:
+                cand.nickname = nickname
+            if norm_src:
+                cand.source = norm_src
+            if authority is not None and int(authority) > int(cand.authority or 0):
+                cand.authority = int(authority)
+            if level is not None and int(level) > int(cand.level or 0):
+                cand.level = int(level)
+            if total_damage is not None and int(total_damage) > int(cand.total_damage or 0):
+                cand.total_damage = int(total_damage)
+            if poison_damage is not None and int(poison_damage) > int(cand.poison_damage or 0):
+                cand.poison_damage = int(poison_damage)
+            if brigade_name:
+                cand.brigade_name = brigade_name
+            if is_active_recently:
+                cand.is_active_recently = True
+            if new_ob_type != "unknown":
+                cand.has_obshak = bool(has_obshak)
+                cand.obshak_type = new_ob_type
+                cand.obshak_checked_at = float(obshak_checked_at or datetime.utcnow().timestamp())
+        await session.commit()
+
+
+async def get_candidates_needing_profile_enrichment(
+    account_id: int = 1,
+    limit: int = 25,
+    ttl_sec: int = 86400,
+    prioritized_sources: Optional[List[str]] = None,
+    engine: Optional[Any] = None,
+) -> List[Any]:
+    """
+    Возвращает кандидатов, у которых `obshak_type == 'unknown'` (приоритет)
+    или устаревший `obshak_checked_at` (> ttl_sec), с учётом приоритетных источников и свежести.
+    """
+    import time
+    from datetime import datetime
+    from sqlalchemy import select
+    from core.models import TrackedCandidate
+
+    eng = engine or get_engine()
+    now_ts = time.time()
+    prio_set = {normalize_outreach_source(s) for s in (prioritized_sources or []) if s}
+
+    async with get_session(eng) as session:
+        rows = (
+            await session.execute(
+                select(TrackedCandidate)
+                .where(TrackedCandidate.account_id == account_id)
+                .order_by(TrackedCandidate.last_seen_at.desc())
+            )
+        ).scalars().all()
+
+    unknown_list = []
+    stale_list = []
+    for r in rows:
+        ob = str(getattr(r, "obshak_type", None) or "unknown").strip().lower()
+        chk = getattr(r, "obshak_checked_at", None)
+        if ob in ("", "unknown"):
+            unknown_list.append(r)
+        elif chk is None or (now_ts - float(chk)) > float(ttl_sec):
+            stale_list.append(r)
+
+    def _sort_key(c: Any) -> tuple:
+        c_src = normalize_outreach_source(getattr(c, "source", "weekly_top"))
+        in_prio = 1 if (not prio_set or c_src in prio_set) else 0
+        dmg = max(int(getattr(c, "poison_damage", 0) or 0), int(getattr(c, "total_damage", 0) or 0))
+        ts = getattr(c, "last_seen_at", None)
+        ts_val = ts.timestamp() if hasattr(ts, "timestamp") else 0.0
+        return (in_prio, dmg > 0, ts_val, dmg)
+
+    unknown_list.sort(key=_sort_key, reverse=True)
+    stale_list.sort(key=_sort_key, reverse=True)
+    combined = unknown_list + stale_list
+    return combined[: max(1, int(limit or 25))]
+
+
+async def get_obshak_coverage_stats(
+    account_id: int = 1,
+    engine: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Возвращает статистику покрытия общаком по всем уникальным `TrackedCandidate` аккаунта."""
+    from datetime import datetime
+    from sqlalchemy import select
+    from core.models import TrackedCandidate
+
+    eng = engine or get_engine()
+    by_type = {"pacan": 0, "blat": 0, "vor": 0, "avtoritet": 0, "none": 0, "unknown": 0}
+    if not eng:
+        return {"total": 0, "checked": 0, "unknown": 0, "by_type": by_type}
+
+    async with get_session(eng) as session:
+        rows = (
+            await session.execute(
+                select(TrackedCandidate.user_id, TrackedCandidate.obshak_type).where(
+                    TrackedCandidate.account_id == account_id
+                )
+            )
+        ).all()
+
+    seen: Dict[int, str] = {}
+    for uid, ob_raw in rows:
+        if uid is None:
+            continue
+        u = int(uid)
+        ob = str(ob_raw or "unknown").strip().lower()
+        if ob not in by_type:
+            ob = "unknown"
+        if u not in seen or (seen[u] == "unknown" and ob != "unknown"):
+            seen[u] = ob
+
+    for ob in seen.values():
+        by_type[ob] = by_type.get(ob, 0) + 1
+
+    total = len(seen)
+    unknown = by_type["unknown"]
+    checked = max(0, total - unknown)
+    return {"total": total, "checked": checked, "unknown": unknown, "by_type": by_type}

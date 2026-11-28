@@ -657,3 +657,63 @@ class PlayerAPI:
 
         self._ensure_catalogs_loaded()
         return self._clothing_cache or []
+
+
+_FULL_PROFILE_MARKERS = (
+    "vpiTier",
+    "vpi_tier",
+    "obshakTier",
+    "obshak_tier",
+    "subType",
+    "subLevel",
+    "fundTier",
+    "vpi",
+    "obshak",
+    "obshchak",
+    "commonFund",
+    "subscription",
+    "vip",
+    "weaponDamage",
+    "weaponStats",
+    "talentsCount",
+    "talents",
+    "resources",
+    "camera",
+    "tattoos",
+    "clothing",
+    "activeTattoos",
+    "activeClothing",
+    "isFriend",
+    "friendStatus",
+)
+
+
+def extract_obshak_from_payload(
+    payload: Any,
+    now_ts: Optional[float] = None,
+) -> tuple[Optional[bool], str]:
+    """
+    Канонический парсер наличия и типа общака из payload профиля/лидерборда.
+    Возвращает `(has_obshak, obshak_type)`:
+      - `(True, "pacan" | "blat" | "vor" | "avtoritet")` — активный общак найден
+      - `(False, "none")` — полный профиль получен и общака в нём явно нет
+      - `(None, "unknown")` — сокращённый объект без полей профиля/общака
+    """
+    if not isinstance(payload, dict):
+        return (None, "unknown")
+
+    src = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(src, dict):
+        return (None, "unknown")
+
+    from client.api.social import parse_obshak_info
+
+    info = parse_obshak_info(src, now_ts=now_ts)
+    if info.get("has_obshak") and info.get("obshak_tier") in ("pacan", "blat", "avtoritet", "vor"):
+        return (True, str(info["obshak_tier"]))
+
+    # Если это полный ответ профиля или в нём явно переданы поля общака (даже null/истёкший) -> 'none'
+    if any(k in src for k in _FULL_PROFILE_MARKERS):
+        return (False, "none")
+
+    return (None, "unknown")

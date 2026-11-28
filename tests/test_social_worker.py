@@ -871,8 +871,10 @@ async def test_friends_stats_and_summary_auto_sync_from_api(social_setup):
 
         sum_res = await get_friends_summary(account_id=acc_id, force=True)
         assert sum_res["totalFriends"] == 2
-        assert len(sum_res["conversionBySource"]) == 1
-        row = sum_res["conversionBySource"][0]
+        assert len(sum_res["conversionBySource"]) == 2
+        sources_map = {r["source"]: r for r in sum_res["conversionBySource"]}
+        assert "incoming" in sources_map
+        row = next(r for r in sum_res["conversionBySource"] if r["source"] != "incoming")
         assert row["sent"] == 2
         assert row["accepted"] == 1
         assert row["conversionRate"] == 50.0
@@ -1039,3 +1041,52 @@ async def test_enrich_friend_requests_with_obshak_cache_and_resilience():
     assert res2[0]["obshak_tier"] == "vor"
     assert calls == [101, 102]
     _OBSHAK_PROFILE_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_friends_conversion_analytics_and_incoming_row(tmp_path):
+    import time
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import (
+        get_friends_source_analytics,
+        get_outreach_excluded_ids,
+        init_db,
+        mark_friends_removed_in_outreach,
+        reconcile_friend_requests_with_friends,
+        record_incoming_friend_request,
+    )
+    from core.models import FriendOutreachHistory, SentFriendRequest
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'conv_sync.db'}")
+    await init_db(engine)
+
+    async with get_session(engine) as session:
+        session.add(SentFriendRequest(account_id=1, target_user_id=1001, source="radar_batch", status="sent"))
+        session.add(SentFriendRequest(account_id=1, target_user_id=1002, source="radar_batch", status="sent"))
+        session.add(FriendOutreachHistory(account_id=1, target_id=2001, source="weekly_top", status="sent", sent_at=time.time()))
+        await session.commit()
+
+    await record_incoming_friend_request(1, 3001, nickname="InUser", status="accepted", damage=50000, engine=engine)
+    await record_incoming_friend_request(1, 3002, nickname="InUser2", status="declined", damage=1000, engine=engine)
+
+    await reconcile_friend_requests_with_friends(
+        account_id=1,
+        friend_ids={1001, 2001, 3001},
+        damage_by_friend={1001: 120000, 2001: 80000, 3001: 50000},
+        engine=engine,
+    )
+
+    analytics = await get_friends_source_analytics(account_id=1, engine=engine)
+    by_src = {r["source"]: r for r in analytics}
+    radar_row = by_src.get("radar_batch") or by_src.get("weekly_top")
+    assert radar_row["accepted"] >= 1
+    assert by_src["weekly_top"]["accepted"] >= 1
+    assert by_src["incoming"]["source_label"] == "Входящие заявки"
+    assert by_src["incoming"]["sent"] == 2
+    assert by_src["incoming"]["accepted"] == 1
+    assert by_src["incoming"]["conversionRate"] == 50.0
+
+    await mark_friends_removed_in_outreach(1, [2001], engine=engine)
+    excluded = await get_outreach_excluded_ids(1, engine=engine)
+    assert 2001 in excluded
+    await engine.dispose()

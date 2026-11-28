@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_14";
+const ASSET_VERSION = "20261127_16";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -2560,10 +2560,17 @@ function renderFriendsSummaryData(data) {
       s => s.source,
       s => `${s.source}|${s.sent}|${s.accepted}|${s.conversionRate}|${s.avgDamage}`,
       s => {
-        const srcName = SOURCE_LABELS[s.source] || s.source || "Неизвестно";
+        const extraSrcLabels = {
+          incoming: "Входящие заявки",
+          brigades: "Бригады",
+          weekly_top: "Топ недели",
+          achievements: "Топ ачивок",
+          tg_raids: "TG-каналы",
+        };
+        const srcName = s.source_label || extraSrcLabels[s.source] || SOURCE_LABELS[s.source] || s.source || "Неизвестно";
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td class="col-src" style="text-align: left; font-weight: 600;">${srcName}</td>
+          <td class="col-src" style="text-align: left; font-weight: 600;">${escapeHtml(srcName)}</td>
           <td class="col-sent" style="text-align: right;">${s.sent}</td>
           <td class="col-acc" style="text-align: right; color: #22c55e;">${s.accepted}</td>
           <td class="col-rate" style="text-align: right; font-weight: 700;">${s.conversionRate}%</td>
@@ -2593,7 +2600,7 @@ async function loadFriendsSummary() {
 }
 
 // --- 4.8.2 Friends Audit & Cleanup ---
-let currentAuditSort = "damage_7d";
+let currentAuditSort = (typeof localStorage !== "undefined" && localStorage.getItem("prisonbot_audit_sort")) || "damage_7d";
 let currentAuditFilter = "all";
 let currentAuditSearch = "";
 let auditAllFriends = [];
@@ -2634,6 +2641,10 @@ function filterAndSortAuditFriends(friends, filterStatus, searchText, sortKey) {
   if (sortKey === "candidates_first") {
     const order = { candidate: 0, low_damage: 1, newbie_protected: 2, active: 3, whitelisted: 4 };
     filtered.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || (a.totalDamageToMyBosses || 0) - (b.totalDamageToMyBosses || 0));
+  } else if (sortKey === "conversion_desc" || sortKey === "usefulness_desc") {
+    filtered.sort((a, b) => (b.conversionPct || 0) - (a.conversionPct || 0) || (b.totalDamageToMyBosses || 0) - (a.totalDamageToMyBosses || 0) || (b.bossHitsCount || 0) - (a.bossHitsCount || 0));
+  } else if (sortKey === "conversion_asc" || sortKey === "usefulness_asc") {
+    filtered.sort((a, b) => (a.conversionPct || 0) - (b.conversionPct || 0) || (a.totalDamageToMyBosses || 0) - (b.totalDamageToMyBosses || 0) || (b.daysInactive || 0) - (a.daysInactive || 0));
   } else if (sortKey === "total_damage") {
     filtered.sort((a, b) => (b.totalDamageToMyBosses || 0) - (a.totalDamageToMyBosses || 0));
   } else if (sortKey === "avg_damage") {
@@ -2642,7 +2653,7 @@ function filterAndSortAuditFriends(friends, filterStatus, searchText, sortKey) {
     filtered.sort((a, b) => (b.bossHitsCount || 0) - (a.bossHitsCount || 0));
   } else if (sortKey === "authority") {
     filtered.sort((a, b) => (b.authority || 0) - (a.authority || 0));
-  } else if (sortKey === "inactive") {
+  } else if (sortKey === "inactive" || sortKey === "inactive_days") {
     filtered.sort((a, b) => (b.daysInactive || 0) - (a.daysInactive || 0));
   } else {
     filtered.sort((a, b) => (b.damage7d || 0) - (a.damage7d || 0) || (b.totalDamageToMyBosses || 0) - (a.totalDamageToMyBosses || 0));
@@ -2772,10 +2783,10 @@ function renderFriendsAuditData(data) {
     f => f.userId,
     f => `${f.userId}|${f.nickname}|${f.level}|${f.authority}|${f.totalDamageToMyBosses}|${f.avgDamage}|${f.bossHitsCount}|${f.daysInactive}|${f.status}|${Boolean(f.isWhitelisted)}|${auditSelectedIds.has(Number(f.userId))}`,
     f => {
-      const initial = (f.nickname || "К")[0].toUpperCase();
+      const initial = escapeHtml((f.nickname || "К")[0].toUpperCase());
       const avatarHtml = f.photoUrl
-        ? `<img src="${f.photoUrl}" alt="" style="width: 28px; height: 28px; border-radius: 50%; object-fit: cover;" onerror="this.onerror=null;this.parentElement.textContent='${initial}'">`
-        : `<span style="background: var(--primary); color: #000; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800;">${initial}</span>`;
+        ? `<span class="fa-avatar-wrap"><img src="${escapeHtml(f.photoUrl)}" alt="" style="width: 28px; height: 28px; border-radius: 50%; object-fit: cover;" onerror="this.onerror=null;this.parentElement.textContent='${initial}'"></span>`
+        : `<span class="fa-avatar-wrap">${initial}</span>`;
       const isWl = Boolean(f.isWhitelisted);
       const card = document.createElement("div");
       card.className = "friend-card";
@@ -3976,8 +3987,11 @@ document.getElementById("audit-search-input")?.addEventListener("input", (e) => 
   if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
 });
 
-document.getElementById("audit-sort-select")?.addEventListener("change", (e) => {
+const _auditSortSel = document.getElementById("audit-sort-select");
+if (_auditSortSel && currentAuditSort) _auditSortSel.value = currentAuditSort;
+_auditSortSel?.addEventListener("change", (e) => {
   currentAuditSort = e.target.value || "damage_7d";
+  try { localStorage.setItem("prisonbot_audit_sort", currentAuditSort); } catch (_) {}
   if (liveSlices.data.friends_stats) renderFriendsAuditData(liveSlices.data.friends_stats);
 });
 
@@ -6758,7 +6772,19 @@ const liveSyncClient = (() => {
     else if (slice === "friend_requests") renderFriendRequestsData(data);
     else if (slice === "friends_stats") renderFriendsAuditData(data);
     else if (slice === "monthly") renderMonthlyStateData(data);
-    else if (slice === "outreach" && typeof applyOutreachStatusData === "function") applyOutreachStatusData(data);
+    else if (slice === "outreach" && typeof applyOutreachStatusData === "function") {
+      applyOutreachStatusData(data);
+      if (typeof loadUnifiedRaidsPlayers === "function" && document.getElementById("unified-raids-players-list")) {
+        loadUnifiedRaidsPlayers();
+      }
+    } else if (slice === "active_players") {
+      if (data && data.obshak_coverage && typeof updateObshakCoverageUI === "function") {
+        updateObshakCoverageUI(data.obshak_coverage);
+      }
+      if (typeof loadUnifiedRaidsPlayers === "function" && document.getElementById("unified-raids-players-list")) {
+        loadUnifiedRaidsPlayers();
+      }
+    }
     else if (slice === "collections") renderCollectionsData(data);
     else if (slice === "bauls") renderBaulsData(data);
     else if (slice === "radar" && typeof renderActivePlayersRadarFromData === "function") {
@@ -8512,11 +8538,6 @@ function initRaidsSection() {
     loadActivePlayersRadar();
   });
 
-  document.getElementById("btn-refresh-safety")?.addEventListener("click", async () => {
-    await loadSafetyStatus();
-    showToast("Статус безопасности обновлен", "info");
-  });
-
   // Guild Scanner Button
   document.getElementById("btn-scan-guilds")?.addEventListener("click", async () => {
     const btn = document.getElementById("btn-scan-guilds");
@@ -8764,33 +8785,7 @@ async function loadSafetyStatus() {
 }
 
 function renderSafetyBar(safety) {
-  const limitText = document.getElementById("raids-safety-limit-text");
-  const circuitBadge = document.getElementById("raids-safety-circuit-badge");
-
-  if (limitText) {
-    const sent = safety.sentLast24h || 0;
-    const limit = safety.dailyLimit || 50;
-    const rem = safety.remaining24h !== undefined ? safety.remaining24h : Math.max(0, limit - sent);
-    limitText.textContent = `Лимит за 24ч: ${sent} / ${limit} (осталось ${rem})`;
-    if (rem === 0) {
-      limitText.style.color = "#f87171";
-    } else if (rem <= 5) {
-      limitText.style.color = "#fbbf24";
-    } else {
-      limitText.style.color = "#34d399";
-    }
-  }
-
-  if (circuitBadge) {
-    if (safety.circuitOpen) {
-      circuitBadge.className = "raids-safety-status-badge safety-status-paused";
-      circuitBadge.textContent = `⏸ Пауза: ${safety.circuitReason || "Предохранитель"}`;
-    } else {
-      circuitBadge.className = "raids-safety-status-badge safety-status-ok";
-      circuitBadge.textContent = "🛡️ Защита: Активна (OK)";
-    }
-  }
-
+  if (!safety || typeof safety !== "object") return;
   // Update Guild Cooldown
   if (safety.guildScanCooldownSec && safety.guildScanCooldownSec > 0) {
     startGuildCooldownCountdown(safety.guildScanCooldownSec);
@@ -9375,6 +9370,7 @@ let savedCriteria = {
   max_authority: 0,
   sources: [...OUTREACH_ALL_SOURCES],
   sort_by: "fresh",
+  obshak_filter: "any",
   exclude_keywords: "",
 };
 let draftCriteria = { ...savedCriteria, sources: [...savedCriteria.sources] };
@@ -9397,6 +9393,7 @@ function _criteriaEqual(a, b) {
     Number(a.min_authority || 0) === Number(b.min_authority || 0) &&
     Number(a.max_authority || 0) === Number(b.max_authority || 0) &&
     String(a.sort_by || "fresh") === String(b.sort_by || "fresh") &&
+    String(a.obshak_filter || "any") === String(b.obshak_filter || "any") &&
     String(a.exclude_keywords || "").trim() === String(b.exclude_keywords || "").trim() &&
     sa === sb
   );
@@ -9457,6 +9454,18 @@ function _evaluatePlayerLocally(p, crit) {
       return { outreach_status: "filtered_out", filter_reason: `Исключен по слову «${hit}»`, matches_criteria: false };
     }
   }
+  const obFlt = String(crit.obshak_filter || "any").toLowerCase();
+  const pOb = String(p.obshak_type || "unknown").toLowerCase();
+  const pHasOb = Boolean(p.has_obshak) || ["pacan", "blat", "avtoritet", "vor"].includes(pOb);
+  if (obFlt === "has_obshak" && !pHasOb) {
+    return { outreach_status: "filtered_out", filter_reason: "Нет общака (или не проверен)", matches_criteria: false };
+  }
+  if (obFlt === "no_obshak" && pOb !== "none") {
+    return { outreach_status: "filtered_out", filter_reason: "Фильтр: без общака", matches_criteria: false };
+  }
+  if (["pacan", "blat", "avtoritet", "vor"].includes(obFlt) && pOb !== obFlt) {
+    return { outreach_status: "filtered_out", filter_reason: `Требуется общак: ${obFlt}`, matches_criteria: false };
+  }
   return { outreach_status: "matched", filter_reason: "", matches_criteria: true };
 }
 
@@ -9473,6 +9482,10 @@ function syncToolbarWithDraftCriteria() {
   const sortSel = document.getElementById("raids-players-sort");
   if (sortSel && draftCriteria.sort_by) {
     sortSel.value = draftCriteria.sort_by;
+  }
+  const obSel = document.getElementById("raids-players-obshak");
+  if (obSel && draftCriteria.obshak_filter) {
+    obSel.value = draftCriteria.obshak_filter;
   }
   const srcSel = document.getElementById("raids-players-source");
   if (srcSel) {
@@ -9521,9 +9534,56 @@ function updateOutreachSummaryAndTelemetry(matchedCountOverride) {
   }
 }
 
+function updateObshakCoverageUI(cov, inProgressFlag) {
+  if (!cov || typeof cov !== "object") return;
+  const total = Number(cov.total || 0);
+  const checked = Number(cov.checked || 0);
+  const unknown = Number(cov.unknown || 0);
+  const running = Boolean(cov.in_progress || inProgressFlag);
+
+  const pill = document.getElementById("obshak-coverage-pill");
+  if (pill) {
+    pill.classList.remove("is-done", "is-running");
+    if (total === 0) {
+      pill.textContent = "Общак проверен: 0/0";
+    } else if (unknown === 0) {
+      pill.textContent = `Общак: все ${total} проверены`;
+      pill.classList.add("is-done");
+    } else if (running) {
+      pill.textContent = `Авто-проверка общака: ${checked}/${total}...`;
+      pill.classList.add("is-running");
+    } else {
+      pill.textContent = `Общак проверен: ${checked}/${total}`;
+    }
+  }
+
+  const bt = cov.by_type || {};
+  const hasAnyCnt = Number(bt.pacan || 0) + Number(bt.blat || 0) + Number(bt.avtoritet || 0) + Number(bt.vor || 0);
+  const updateSelectLabels = (selId, isToolbar) => {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    const mapLabels = {
+      has_obshak: `${isToolbar ? "Есть общак" : "Есть общак (любой)"} (${hasAnyCnt})`,
+      vor: `${isToolbar ? "Воровской" : "Только Воровской"} (${Number(bt.vor || 0)})`,
+      avtoritet: `${isToolbar ? "Авторитетный" : "Только Авторитетный"} (${Number(bt.avtoritet || 0)})`,
+      blat: `${isToolbar ? "Блатной" : "Только Блатной"} (${Number(bt.blat || 0)})`,
+      pacan: `${isToolbar ? "Пацанский" : "Только Пацанский"} (${Number(bt.pacan || 0)})`,
+      no_obshak: `Без общака (${Number(bt.none || 0)})`,
+    };
+    Array.from(sel.options || []).forEach(opt => {
+      if (mapLabels[opt.value]) opt.textContent = mapLabels[opt.value];
+    });
+  };
+  updateSelectLabels("raids-players-obshak", true);
+  updateSelectLabels("outreach-obshak-filter", false);
+}
+
 function applyOutreachStatusData(res) {
   if (!res || typeof res !== "object") return;
   _outreachLastServerPayload = res;
+  if (res.obshak_coverage) {
+    updateObshakCoverageUI(res.obshak_coverage, res.enrichment_in_progress);
+  }
   if (res.source_counts && typeof res.source_counts === "object") {
     _outreachSourceCounts = { ..._outreachSourceCounts, ...res.source_counts };
     updateOutreachSourceChipsCounts();
@@ -9538,6 +9598,7 @@ function applyOutreachStatusData(res) {
     max_authority: Number(crit.max_authority ?? 0),
     sources: Array.isArray(crit.sources) ? crit.sources.map(normalizeOutreachSourceJs) : [...OUTREACH_ALL_SOURCES],
     sort_by: String(crit.sort_by || "fresh"),
+    obshak_filter: String(crit.obshak_filter || "any"),
     exclude_keywords: String(crit.exclude_keywords || ""),
   };
   savedCriteria = { ...normalizedCrit, sources: [...normalizedCrit.sources] };
@@ -9558,6 +9619,7 @@ function applyOutreachStatusData(res) {
     setVal("outreach-max-authority", draftCriteria.max_authority);
     setVal("outreach-daily-limit", draftCriteria.daily_limit);
     setVal("outreach-sort-by", draftCriteria.sort_by);
+    setVal("outreach-obshak-filter", draftCriteria.obshak_filter);
     setVal("outreach-exclude-keywords", draftCriteria.exclude_keywords);
     syncToolbarWithDraftCriteria();
   }
@@ -9596,6 +9658,12 @@ function renderOutreachPlayersTableFromCache() {
       if (Number(p.authority || 0) < Number(draftCriteria.min_authority || 0)) return false;
       if (Number(draftCriteria.max_authority || 0) > 0 && Number(p.authority || 0) > Number(draftCriteria.max_authority)) return false;
       if (kwList.length > 0 && kwList.some(k => String(p.nickname || "").toLowerCase().includes(k))) return false;
+      const obFlt = String(draftCriteria.obshak_filter || "any").toLowerCase();
+      const pOb = String(p.obshak_type || "unknown").toLowerCase();
+      const pHasOb = Boolean(p.has_obshak) || ["pacan", "blat", "avtoritet", "vor"].includes(pOb);
+      if (obFlt === "has_obshak" && !pHasOb) return false;
+      if (obFlt === "no_obshak" && pOb !== "none") return false;
+      if (["pacan", "blat", "avtoritet", "vor"].includes(obFlt) && pOb !== obFlt) return false;
     }
 
     if (searchQ) {
@@ -9665,6 +9733,11 @@ function renderOutreachPlayersTableFromCache() {
 
     const canonSrc = normalizeOutreachSourceJs(p.source);
     const srcLabel = p.source_label || OUTREACH_SOURCE_LABELS[canonSrc] || canonSrc;
+    const obType = String(p.obshak_type || "unknown").toLowerCase();
+    const obLabel = p.obshak_label || (obType === "none" ? "Без общака" : "Не проверен");
+    const obIconHtml = p.obshak_icon ? `<img src="/prison/static/${escapeHtml(p.obshak_icon)}" alt="">` : "";
+    const obBadgeHtml = `<span class="obshak-badge obshak-badge--${escapeHtml(obType)}" title="Статус общака">${obIconHtml}${escapeHtml(obLabel)}</span>`;
+    const brigadeBadgeHtml = p.brigade_name ? `<span class="brigade-badge" title="Бригада">${escapeHtml(p.brigade_name)}</span>` : "";
     const canInvite = ost === "matched" || ost === "filtered_out";
     const rowOpacity = ost === "filtered_out" ? "opacity: 0.72;" : "";
     return `
@@ -9674,6 +9747,8 @@ function renderOutreachPlayersTableFromCache() {
             <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
               <span style="font-weight: 700; font-size: 12px; color: #fff;">${escapeHtml(p.nickname || `Игрок #${p.userId}`)}</span>
               <span class="source-badge">${escapeHtml(srcLabel)}</span>
+              ${brigadeBadgeHtml}
+              ${obBadgeHtml}
             </div>
             <div style="font-size: 10px; color: var(--muted-foreground);">Урон: ${formatNum(p.damage || 0)} · Авторитет: ${formatNum(p.authority || 0)}</div>
           </div>
@@ -9714,6 +9789,7 @@ async function loadUnifiedRaidsPlayers() {
     min_authority: String(draftCriteria.min_authority || 0),
     max_authority: String(draftCriteria.max_authority || 0),
     exclude_keywords: String(draftCriteria.exclude_keywords || ""),
+    obshak_filter: String(draftCriteria.obshak_filter || "any"),
     sort_by: String(draftCriteria.sort_by || "fresh"),
     search: String(_outreachViewState.search || ""),
     status_filter: String(_outreachViewState.statusFilter || "all"),
@@ -9746,6 +9822,7 @@ function onDraftCriteriaChanged(opts = { fetchServer: true, debounce: false }) {
     min_authority: Math.max(0, parseInt(document.getElementById("outreach-min-authority")?.value || "0", 10) || 0),
     max_authority: Math.max(0, parseInt(document.getElementById("outreach-max-authority")?.value || "0", 10) || 0),
     sort_by: document.getElementById("outreach-sort-by")?.value || draftCriteria.sort_by || "fresh",
+    obshak_filter: document.getElementById("outreach-obshak-filter")?.value || draftCriteria.obshak_filter || "any",
     exclude_keywords: document.getElementById("outreach-exclude-keywords")?.value || "",
   };
   syncToolbarWithDraftCriteria();
@@ -9774,6 +9851,7 @@ async function saveOutreachCriteria() {
         min_authority: draftCriteria.min_authority,
         max_authority: draftCriteria.max_authority,
         sort_by: draftCriteria.sort_by,
+        obshak_filter: draftCriteria.obshak_filter,
         sources: draftCriteria.sources,
         exclude_keywords: draftCriteria.exclude_keywords,
       }),
@@ -9832,6 +9910,7 @@ document.querySelectorAll("#outreach-sources-chips .outreach-chip").forEach(chip
   document.getElementById(id)?.addEventListener("input", () => onDraftCriteriaChanged({ fetchServer: true, debounce: true }));
 });
 document.getElementById("outreach-sort-by")?.addEventListener("change", () => onDraftCriteriaChanged({ fetchServer: true, debounce: false }));
+document.getElementById("outreach-obshak-filter")?.addEventListener("change", () => onDraftCriteriaChanged({ fetchServer: true, debounce: false }));
 document.getElementById("btn-save-outreach-criteria")?.addEventListener("click", saveOutreachCriteria);
 document.getElementById("btn-run-outreach-now")?.addEventListener("click", runOutreachNow);
 
@@ -9842,6 +9921,41 @@ document.getElementById("raids-players-sort")?.addEventListener("change", (e) =>
   updateOutreachDirtyUI();
   renderOutreachPlayersTableFromCache();
   loadUnifiedRaidsPlayers();
+});
+document.getElementById("raids-players-obshak")?.addEventListener("change", (e) => {
+  draftCriteria.obshak_filter = String(e.target.value || "any");
+  const topOb = document.getElementById("outreach-obshak-filter");
+  if (topOb) topOb.value = draftCriteria.obshak_filter;
+  updateOutreachDirtyUI();
+  renderOutreachPlayersTableFromCache();
+  loadUnifiedRaidsPlayers();
+});
+document.getElementById("btn-scan-brigades-top")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-scan-brigades-top");
+  if (btn) { btn.disabled = true; btn.textContent = "🏴 Сбор..."; }
+  try {
+    const res = await apiFetch("/raids/brigades/scan", { method: "POST", body: JSON.stringify({ top_brigades_limit: 15 }) });
+    showToast(`Бригады: обработано ${res.guilds_scanned || 0}, добавлено/обновлено ${res.players_saved || 0}`, "success");
+    await loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка сбора из бригад: ${err.message}`, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🏴 Из топа бригад"; }
+  }
+});
+document.getElementById("btn-check-obshak")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-check-obshak");
+  if (btn) { btn.disabled = true; btn.textContent = "🛡 Проверка..."; }
+  try {
+    const uids = (_outreachAllPlayersCache || []).slice(0, 15).map(p => Number(p.userId)).filter(Boolean);
+    const res = await apiFetch("/raids/players/check-obshak", { method: "POST", body: JSON.stringify({ user_ids: uids, max_profiles: 15 }) });
+    showToast(`Проверено профилей: ${res.checked || 0} (с общаком: ${res.with_obshak || 0})`, "success");
+    await loadUnifiedRaidsPlayers();
+  } catch (err) {
+    showToast(`Ошибка проверки общака: ${err.message}`, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🛡 Проверить общак"; }
+  }
 });
 document.getElementById("raids-players-source")?.addEventListener("change", (e) => {
   const val = String(e.target.value || "all");

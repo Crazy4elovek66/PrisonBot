@@ -639,7 +639,18 @@ def create_scheduler(
             max_instances=1,
             coalesce=True,
         )
-        logger.info("FriendOutreachWorker зарегистрирован с независимым интервалом 300с (старт через 10с).")
+        scheduler.add_job(
+            friend_outreach_worker.run_profile_enrichment_pass,
+            trigger="interval",
+            seconds=45,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+            id=f"profile_obshak_enrichment_{acc_id}",
+            name=f"Background Profile & Obshak Enrichment for account {acc_id}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("FriendOutreachWorker и фоновое обогащение профилей/общака (45с, старт через 15с) зарегистрированы.")
 
     # Многоуровневые фоновые обновления LiveStateHub (для бесшовного SSE UI)
     scheduler.add_job(

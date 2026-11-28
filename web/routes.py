@@ -5645,6 +5645,7 @@ async def get_unified_raids_players(
     max_damage: Optional[int] = Query(None, ge=0),
     min_authority: Optional[int] = Query(None, ge=0),
     max_authority: Optional[int] = Query(None, ge=0),
+    obshak_filter: Optional[str] = Query(None),
     exclude_keywords: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     status_filter: str = Query("all"),
@@ -5653,6 +5654,7 @@ async def get_unified_raids_players(
     account_id: int = 1,
 ) -> Dict[str, Any]:
     """Единый дедуплицированный список активных игроков с каноническими источниками и серверной фильтрацией."""
+    from client.api.social import _OBSHAK_TIERS
     from client.http_client import get_game_now_ts
     from core.database import (
         DEFAULT_OUTREACH_SOURCES,
@@ -5708,6 +5710,8 @@ async def get_unified_raids_players(
         eff_criteria["min_authority"] = int(min_authority)
     if max_authority is not None:
         eff_criteria["max_authority"] = int(max_authority)
+    if obshak_filter is not None:
+        eff_criteria["obshak_filter"] = str(obshak_filter).strip().lower()
     if exclude_keywords is not None:
         eff_criteria["exclude_keywords"] = str(exclude_keywords)
     eff_sort = str(sort_by or sort or eff_criteria.get("sort_by") or "fresh").lower()
@@ -5768,8 +5772,21 @@ async def get_unified_raids_players(
                 existing["authority"] = auth
             if ts > existing["last_seen_at"]:
                 existing["last_seen_at"] = ts
+            if getattr(c, "brigade_name", None) and not existing.get("brigade_name"):
+                existing["brigade_name"] = c.brigade_name
+            if getattr(c, "obshak_type", None) and existing.get("obshak_type") in (None, "unknown"):
+                o_type = str(c.obshak_type or "unknown")
+                o_meta = _OBSHAK_TIERS.get(o_type)
+                existing["has_obshak"] = bool(getattr(c, "has_obshak", False))
+                existing["obshak_type"] = o_type
+                existing["obshak_label"] = o_meta[1] if o_meta else ("Без общака" if o_type == "none" else "Не проверен")
+                existing["obshak_icon"] = o_meta[2] if o_meta else None
+                o_chk = getattr(c, "obshak_checked_at", None)
+                existing["obshak_checked_at"] = o_chk.isoformat() + "Z" if hasattr(o_chk, "isoformat") else o_chk
         else:
             source_counts[canon_src] = source_counts.get(canon_src, 0) + 1
+            o_type = str(getattr(c, "obshak_type", None) or "unknown")
+            o_meta = _OBSHAK_TIERS.get(o_type)
             dedup[uid] = {
                 "userId": uid,
                 "nickname": c.nickname or f"Игрок #{uid}",
@@ -5781,6 +5798,12 @@ async def get_unified_raids_players(
                 "source": canon_src,
                 "source_label": OUTREACH_SOURCE_LABELS.get(canon_src, canon_src),
                 "sources": [canon_src],
+                "brigade_name": getattr(c, "brigade_name", None) or "",
+                "has_obshak": bool(getattr(c, "has_obshak", False)) if getattr(c, "has_obshak", None) is not None else None,
+                "obshak_type": o_type,
+                "obshak_label": o_meta[1] if o_meta else ("Без общака" if o_type == "none" else "Не проверен"),
+                "obshak_icon": o_meta[2] if o_meta else None,
+                "obshak_checked_at": (lambda v: v.isoformat() + "Z" if hasattr(v, "isoformat") else v)(getattr(c, "obshak_checked_at", None)),
                 "last_seen_at": ts,
             }
 
@@ -5842,7 +5865,18 @@ async def get_unified_raids_players(
             if not (set(p["sources"]) & allowed_src_set):
                 continue
 
-        # 2. Фильтры диапазонов / стоп-слов при apply_criteria
+        # 2. Фильтры диапазонов / стоп-слов / общака при apply_criteria (или явный obshak_filter)
+        eff_obshak = str(eff_criteria.get("obshak_filter") or "any").lower()
+        if obshak_filter is not None or apply_criteria:
+            p_ob = str(p.get("obshak_type") or "unknown").lower()
+            p_has = p.get("has_obshak")
+            if eff_obshak == "has_obshak" and not (p_has is True or p_ob in ("pacan", "blat", "avtoritet", "vor")):
+                continue
+            elif eff_obshak == "no_obshak" and p_ob != "none":
+                continue
+            elif eff_obshak in ("pacan", "blat", "avtoritet", "vor") and p_ob != eff_obshak:
+                continue
+
         if apply_criteria:
             if p["damage"] < eff_criteria["min_damage"]:
                 continue
@@ -5894,6 +5928,10 @@ async def get_unified_raids_players(
     if not telemetry.get("skip_stats"):
         telemetry["skip_stats"] = skip_stats
 
+    from core.database import get_obshak_coverage_stats
+    ob_cov = await get_obshak_coverage_stats(account_id=account_id, engine=engine)
+    ob_cov["in_progress"] = bool(telemetry.get("enrichment_in_progress", False))
+
     return {
         "success": True,
         "server_now_ts": round(now_ts, 3),
@@ -5902,6 +5940,7 @@ async def get_unified_raids_players(
         "filtered_total": len(filtered),
         "total_candidates": len(dedup),
         "source_counts": source_counts,
+        "obshak_coverage": ob_cov,
         "sent_24h": sent_24h,
         "daily_limit": daily_limit,
         "matched_count": matched_count,
@@ -5987,6 +6026,10 @@ async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
     if not telemetry.get("skip_stats"):
         telemetry["skip_stats"] = skip_stats
 
+    from core.database import get_obshak_coverage_stats
+    ob_cov = await get_obshak_coverage_stats(account_id=account_id, engine=engine)
+    ob_cov["in_progress"] = bool(telemetry.get("enrichment_in_progress", False))
+
     return {
         "success": True,
         "server_now_ts": round(now_ts, 3),
@@ -5995,6 +6038,7 @@ async def _build_outreach_status_payload(account_id: int = 1) -> Dict[str, Any]:
         "matched_count": len(matched),
         "total_candidates": len(all_rows),
         "source_counts": source_counts,
+        "obshak_coverage": ob_cov,
         "criteria": criteria,
         **telemetry,
     }
@@ -6283,6 +6327,9 @@ async def scan_channels_endpoint(
         account_id=account_id,
         force=force,
     )
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    if ow is not None and hasattr(ow, "wake_enrichment"):
+        ow.wake_enrichment(batch_size=25)
     return res
 
 
@@ -6563,7 +6610,7 @@ async def get_friends_summary(account_id: int = 1, force: bool = Query(False)) -
     hub = _get_hub()
     tag = _hub_source_tag()
     if not force:
-        warm = hub.get_slice(account_id, "friends", max_age_seconds=120.0, source_tag=tag)
+        warm = hub.get_slice(account_id, "friends", max_age_seconds=15.0, source_tag=tag)
         if warm is not None:
             return warm.data
 
@@ -6636,75 +6683,43 @@ async def get_friends_summary(account_id: int = 1, force: bool = Query(False)) -
 
             delta_24h = total_friends - baseline_count
 
-            # 3. Конверсия по источникам из SentFriendRequest
-            reqs_stmt = select(SentFriendRequest).where(SentFriendRequest.account_id == account_id)
-            all_reqs = (await session.execute(reqs_stmt)).scalars().all()
+            # 3. Кросс-модульная сверка заявок с текущими друзьями и аналитика конверсии
+            from client.http_client import get_game_now_ts
+            from core.database import get_friends_source_analytics, reconcile_friend_requests_with_friends
 
-            cands_stmt = select(TrackedCandidate.user_id, TrackedCandidate.total_damage).where(
-                TrackedCandidate.account_id == account_id
-            )
-            cand_dmg_map = {row[0]: row[1] for row in (await session.execute(cands_stmt)).all()}
-
-            stats_stmt = select(FriendStats.user_id, FriendStats.total_damage_to_my_bosses).where(
+            stats_stmt = select(FriendStats.user_id, FriendStats.total_damage_to_my_bosses, FriendStats.is_current_friend).where(
                 FriendStats.account_id == account_id
             )
-            stat_dmg_map = {row[0]: row[1] for row in (await session.execute(stats_stmt)).all()}
+            stats_rows = (await session.execute(stats_stmt)).all()
+            current_friend_ids = {int(r[0]) for r in stats_rows if r[0] is not None and bool(r[2])}
+            stat_dmg_map = {int(r[0]): int(r[1] or 0) for r in stats_rows if r[0] is not None}
 
-            sources_data: Dict[str, Dict[str, Any]] = {}
-            for req in all_reqs:
-                src = req.source or "unknown"
-                if src not in sources_data:
-                    sources_data[src] = {
-                        "source": src,
-                        "sent": 0,
-                        "accepted": 0,
-                        "ignored": 0,
-                        "pending": 0,
-                        "accepted_damages": [],
-                    }
-                item = sources_data[src]
-                item["sent"] += 1
-                if req.status == "accepted":
-                    item["accepted"] += 1
-                    uid = req.target_user_id
-                    dmg = max(cand_dmg_map.get(uid, 0), stat_dmg_map.get(uid, 0))
-                    if dmg > 0:
-                        item["accepted_damages"].append(dmg)
-                elif req.status == "ignored":
-                    item["ignored"] += 1
-                elif req.status == "sent":
-                    item["pending"] += 1
+        if current_friend_ids:
+            await reconcile_friend_requests_with_friends(
+                account_id=account_id,
+                friend_ids=current_friend_ids,
+                damage_by_friend=stat_dmg_map,
+                engine=engine,
+            )
 
-            conversion_by_source = []
-            for src, d in sources_data.items():
-                sent_cnt = d["sent"]
-                acc_cnt = d["accepted"]
-                conv_rate = round((acc_cnt / sent_cnt * 100.0), 1) if sent_cnt > 0 else 0.0
-                avg_dmg = int(sum(d["accepted_damages"]) / len(d["accepted_damages"])) if d["accepted_damages"] else 0
-                conversion_by_source.append({
-                    "source": src,
-                    "sent": sent_cnt,
-                    "accepted": acc_cnt,
-                    "ignored": d["ignored"],
-                    "pending": d["pending"],
-                    "conversionRate": conv_rate,
-                    "avgDamage": avg_dmg,
-                })
+        conversion_by_source = await get_friends_source_analytics(account_id=account_id, engine=engine)
 
-            conversion_by_source.sort(key=lambda x: (x["conversionRate"], x["sent"]), reverse=True)
+        return {
+            "totalFriends": total_friends,
+            "friendsCount": total_friends,
+            "delta24h": delta_24h,
+            "baselineCount": baseline_count,
+            "baselineAt": baseline_at,
+            "snapshotAt": baseline_at,
+            "has24hHistory": has_24h_history,
+            "conversionBySource": conversion_by_source,
+            "server_now_ts": round(get_game_now_ts(), 3),
+        }
 
-            return {
-                "totalFriends": total_friends,
-                "friendsCount": total_friends,
-                "delta24h": delta_24h,
-                "baselineCount": baseline_count,
-                "baselineAt": baseline_at,
-                "snapshotAt": baseline_at,
-                "has24hHistory": has_24h_history,
-                "conversionBySource": conversion_by_source,
-            }
-
-    summary_payload = await _flight_cache.get_or_set(f"friends_summary:{account_id}", 15.0, _compute_summary)
+    if force:
+        summary_payload = await _compute_summary()
+    else:
+        summary_payload = await _flight_cache.get_or_set(f"friends_summary:{account_id}", 10.0, _compute_summary)
     hub.update_slice(account_id, "friends", summary_payload, source_tag=tag)
     return summary_payload
 
@@ -6920,8 +6935,10 @@ async def _sync_friends_stats_to_db(account_id: int, engine: Any, force: bool = 
 
 
 @api_router.get("/friends/stats")
+@api_router.get("/friends/audit")
 async def get_friends_stats(
     sort: str = Query("damage_7d"),
+    sort_by: Optional[str] = Query(None),
     limit: int = Query(500, ge=1, le=1000),
     account_id: int = 1,
     force: bool = Query(False),
@@ -6930,14 +6947,17 @@ async def get_friends_stats(
     Выгрузка списка друзей с боевой статистикой, уроном за 7 дней, средним уроном,
     процентом участия в боях и категоризацией для безопасной чистки.
     """
+    from client.http_client import get_game_now_ts
+
     engine = bot_context.db_engine
     if not engine:
         raise HTTPException(status_code=503, detail="Database engine not available")
 
+    eff_sort = str(sort_by or sort or "damage_7d").strip().lower()
     hub = _get_hub()
     tag = _hub_source_tag()
-    if not force and sort == "damage_7d" and limit == 500:
-        warm = hub.get_slice(account_id, "friends_stats", max_age_seconds=120.0, source_tag=tag)
+    if not force and eff_sort == "damage_7d" and limit == 500:
+        warm = hub.get_slice(account_id, "friends_stats", max_age_seconds=15.0, source_tag=tag)
         if warm is not None:
             return warm.data
 
@@ -7064,18 +7084,22 @@ async def get_friends_stats(
                 "statusReason": f_reason,
             })
 
-        if sort == "candidates_first":
+        if eff_sort == "candidates_first":
             order_map = {"candidate": 0, "low_damage": 1, "newbie_protected": 2, "active": 3, "whitelisted": 4}
             results.sort(key=lambda x: (order_map.get(x["status"], 9), x["totalDamageToMyBosses"], -x["daysInactive"]))
-        elif sort == "total_damage":
+        elif eff_sort in ("conversion_desc", "usefulness_desc"):
+            results.sort(key=lambda x: (x["conversionPct"], x["totalDamageToMyBosses"], x["bossHitsCount"]), reverse=True)
+        elif eff_sort in ("conversion_asc", "usefulness_asc"):
+            results.sort(key=lambda x: (x["conversionPct"], x["totalDamageToMyBosses"], -x["daysInactive"]))
+        elif eff_sort == "total_damage":
             results.sort(key=lambda x: (x["totalDamageToMyBosses"], x["damage7d"]), reverse=True)
-        elif sort == "avg_damage":
+        elif eff_sort == "avg_damage":
             results.sort(key=lambda x: (x["avgDamage"], x["totalDamageToMyBosses"]), reverse=True)
-        elif sort == "hits":
+        elif eff_sort == "hits":
             results.sort(key=lambda x: (x["bossHitsCount"], x["totalDamageToMyBosses"]), reverse=True)
-        elif sort == "authority":
+        elif eff_sort == "authority":
             results.sort(key=lambda x: (x["authority"], x["level"]), reverse=True)
-        elif sort == "inactive":
+        elif eff_sort in ("inactive", "inactive_days"):
             results.sort(key=lambda x: x["daysInactive"], reverse=True)
         else:
             results.sort(key=lambda x: (x["damage7d"], x["totalDamageToMyBosses"]), reverse=True)
@@ -7083,10 +7107,12 @@ async def get_friends_stats(
         payload = {
             "success": True,
             "total": len(results),
+            "sortBy": eff_sort,
             "summary": summary_counts,
             "friends": results[:limit],
+            "server_now_ts": round(get_game_now_ts(), 3),
         }
-        if sort == "damage_7d" and limit == 500:
+        if eff_sort == "damage_7d" and limit == 500:
             hub.update_slice(account_id, "friends_stats", payload, source_tag=tag)
         return payload
 
@@ -7311,9 +7337,15 @@ async def run_friends_cleanup(
     else:
         removed_count = await worker.cleanup_inactive_friends(config=cfg)
 
+    if removed_ids:
+        from core.database import mark_friends_removed_in_outreach
+        await mark_friends_removed_in_outreach(account_id=account_id, user_ids=removed_ids, engine=engine)
+
     hub = _get_hub()
     hub.invalidate_slice(account_id, "friends_stats")
     hub.invalidate_slice(account_id, "friends")
+    hub.invalidate_slice(account_id, "outreach")
+    hub.emit_change(account_id, ["friends", "friends_stats", "outreach"], reason="friends_cleanup")
 
     return {
         "success": True,
@@ -7360,6 +7392,89 @@ async def sync_top_endpoint(
         account_id=account_id,
         force=force,
     )
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    if ow is not None and hasattr(ow, "wake_enrichment"):
+        ow.wake_enrichment(batch_size=25)
+    return res
+
+
+@api_router.post("/raids/brigades/scan")
+async def scan_brigades_top_endpoint(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Ручной запуск парсинга активных игроков из топа бригад (/api/guild/recruitment/list + members)."""
+    social_api = bot_context.social_api
+    if not social_api:
+        raise HTTPException(status_code=503, detail="SocialAPI not available")
+
+    engine = bot_context.db_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Database engine not available")
+
+    top_limit = max(1, min(30, int(payload.get("top_brigades_limit") or 15)))
+    self_id = None
+    if bot_context.player_api:
+        try:
+            me = await bot_context.player_api.get_me()
+            if isinstance(me, dict):
+                self_id = me.get("id") or me.get("userId")
+        except Exception:
+            pass
+
+    res = await _raids_api.collect_top_brigades_candidates(
+        social_api=social_api,
+        db_engine=engine,
+        account_id=account_id,
+        top_brigades_limit=top_limit,
+        self_id=self_id,
+    )
+    if res.get("success"):
+        hub = _get_hub()
+        hub.invalidate_slice(account_id, "outreach")
+        hub.emit_change(account_id, ["outreach"], reason="brigades_scan")
+        ow = getattr(bot_context, "friend_outreach_worker", None)
+        if ow is not None and hasattr(ow, "wake_enrichment"):
+            ow.wake_enrichment(batch_size=25)
+    return res
+
+
+@api_router.post("/raids/players/check-obshak")
+async def check_players_obshak_endpoint(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Безопасная проверка наличия общака и статов профиля (единый lock с фоновым обогащением)."""
+    player_api = bot_context.player_api
+    if not player_api:
+        raise HTTPException(status_code=503, detail="PlayerAPI not available")
+
+    engine = bot_context.db_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Database engine not available")
+
+    raw_ids = payload.get("user_ids") or payload.get("userIds")
+    user_ids = [int(x) for x in raw_ids if str(x).isdigit()] if isinstance(raw_ids, list) else None
+    max_profiles = max(1, min(50, int(payload.get("max_profiles") or 25)))
+
+    ow = getattr(bot_context, "friend_outreach_worker", None)
+    if ow is not None and hasattr(ow, "run_profile_enrichment_pass") and getattr(ow, "player_api", None) is not None:
+        res = await ow.run_profile_enrichment_pass(batch_size=max_profiles, user_ids=user_ids)
+        return res
+
+    res = await _raids_api.enrich_candidates_profiles_and_obshak(
+        player_api=player_api,
+        db_engine=engine,
+        account_id=account_id,
+        user_ids=user_ids,
+        max_profiles=max_profiles,
+    )
+    from core.database import get_obshak_coverage_stats
+    res["obshak_coverage"] = await get_obshak_coverage_stats(account_id=account_id, engine=engine)
+    if res.get("success"):
+        hub = _get_hub()
+        hub.invalidate_slice(account_id, "outreach")
+        hub.emit_change(account_id, ["outreach", "active_players"], patch={"obshak_coverage": res["obshak_coverage"]}, reason="obshak_check")
     return res
 
 
