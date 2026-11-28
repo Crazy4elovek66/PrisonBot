@@ -189,7 +189,7 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
     sw = (root / "web" / "static" / "sw.js").read_text(encoding="utf-8")
 
     # Проверка sw.js
-    assert "prisonbot-assets-v32" in sw
+    assert "prisonbot-assets-v33" in sw
     assert "skipWaiting" in sw
     assert "clients.claim" in sw
     assert "isCacheableAssetResponse" in sw
@@ -197,20 +197,20 @@ def test_resolve_app_asset_url_idempotency_and_sw_v7():
 
     # Синхронность версий в index.html, app.js и sw.js
     index_html = (root / "web" / "static" / "index.html").read_text(encoding="utf-8")
-    assert 'const ASSET_VERSION = "20261127_11";' in js
+    assert 'const ASSET_VERSION = "20261127_12";' in js
     assert "Ночной режим (только боссы)" in index_html
     assert "katala-free-status-badge" in index_html
     for icon_name in ("cigarettes.webp", "rubles.webp", "sugar.webp", "soap.webp"):
-        assert f"/static/assets/icons/{icon_name}?v=20261127_11" in index_html
+        assert f"/static/assets/icons/{icon_name}?v=20261127_12" in index_html
 
     # Проверка меню навигации и блока активного боя в index.html
     for expected_snippet in (
-        'src="assets/icons/boss.webp?v=20261127_11"',
-        'src="assets/icons/room_reward.webp?v=20261127_11"',
-        'src="assets/icons/complect.webp?v=20261127_11"',
-        'src="assets/icons/podogrev.webp?v=20261127_11"',
-        'src="assets/icons/authority.webp?v=20261127_11"',
-        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_11"',
+        'src="assets/icons/boss.webp?v=20261127_12"',
+        'src="assets/icons/room_reward.webp?v=20261127_12"',
+        'src="assets/icons/complect.webp?v=20261127_12"',
+        'src="assets/icons/podogrev.webp?v=20261127_12"',
+        'src="assets/icons/authority.webp?v=20261127_12"',
+        'id="boss-title"><img class="boss-battle-icon" src="assets/icons/boss.webp?v=20261127_12"',
     ):
         assert expected_snippet in index_html
     assert "⚔️ Поиск активного рейда" not in index_html
@@ -1393,9 +1393,12 @@ def test_js_smoke_friend_request_removal_and_news_raids_and_energy():
         extract_fn(js_text, "function getFriendRequestKey("),
         extract_fn(js_text, "function renderFriendRequestsData("),
         extract_fn(js_text, "function applySocialUpdatedEvent("),
+        extract_fn(js_text, "function _stabilizePrisonEnergy("),
+        extract_fn(js_text, "function _stabilizeMasterEnergy("),
         extract_fn(js_text, "function renderPrisonsGrid("),
-        "let _mastersCatalogCache = [];\n" + extract_fn(js_text, "function updateSelectedMasterEnergyInfo("),
-        extract_fn(js_text, "function renderMastersSelect("),
+        "function setWidthIfChanged(el, w) { if (el && el.style) el.style.width = w; }\nconst _prisonsEnergyCache = {};\nconst _mastersEnergyCache = {};\nlet currentMasterId = 1;\nlet _mastersCatalogCache = [];\n" + extract_fn(js_text, "function updateSelectedMasterCard("),
+        extract_fn(js_text, "function renderMastersGrid("),
+        extract_fn(js_text, "function renderMastersSection("),
         extract_fn(js_text, "function renderNewsPostCard("),
     ])
 
@@ -1450,15 +1453,17 @@ function makeEl(id) {{
 }}
 for (const id of [
   'friend-requests-list', 'friend-requests-count', 'drawer-friends-badge',
-  'prisons-catalog-grid', 'select-master', 'master-cycle-energy-info',
-  'news-list-container'
+  'prisons-catalog-grid', 'masters-catalog-grid', 'current-master-name',
+  'current-master-subtitle', 'master-progress-text', 'master-progress-percent',
+  'master-progress-fill', 'btn-master-train', 'btn-master-drain',
+  'master-cycle-energy-info', 'news-list-container'
 ]) {{
   els[id] = makeEl(id);
 }}
 
 const sandbox = {{
   console, Math, Date, JSON, Array, Object, String, Number, Boolean, Set, Map, RegExp, Promise, URL, URLSearchParams,
-  ASSET_VERSION: '20261127_11',
+  ASSET_VERSION: '20261127_12',
   currentPrisonId: 1,
   liveSlices: {{ data: {{}} }},
   domainRevisions: {{}},
@@ -1527,8 +1532,8 @@ vm.runInContext(`
     night_remaining_energy: 25,
   }}));
   renderPrisonsGrid(fifteenPrisons);
-  renderMastersSelect([
-    {{ id: 10, name: 'ПЕТЯ ВЕРСТАК', level: 1, full_cycle_energy: 50, remaining_cycle_energy: 20 }}
+  renderMastersSection([
+    {{ id: 10, name: 'ПЕТЯ ВЕРСТАК', level: 1, full_cycle_energy: 50, remaining_cycle_energy: 20, step_energy: 2 }}
   ]);
 `, sandbox);
 if (els['prisons-catalog-grid'].children.length !== 15) {{
@@ -1538,9 +1543,9 @@ const prisonEnergyHtml = els['prisons-catalog-grid'].children[0]?.slots['.prison
 if (!prisonEnergyHtml.includes('60') || !prisonEnergyHtml.includes('40')) {{
   throw new Error('Prison full energy missing: ' + prisonEnergyHtml);
 }}
-const masterText = els['select-master'].children[0]?.textContent || '';
-if (!masterText.includes('50')) {{
-  throw new Error('Master full energy missing: ' + masterText);
+const masterTileHtml = els['masters-catalog-grid'].children[0]?.slots['.master-tile-energy']?.innerHTML || '';
+if (!masterTileHtml.includes('50')) {{
+  throw new Error('Master full energy missing: ' + masterTileHtml);
 }}
 if (!els['master-cycle-energy-info'].innerHTML.includes('50')) {{
   throw new Error('Master energy info bar missing: ' + els['master-cycle-energy-info'].innerHTML);
@@ -1923,3 +1928,175 @@ console.log('MONTHLY_JS_OK');
     res = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
     assert "MONTHLY_JS_OK" in res.stdout
+
+
+def test_masters_cards_prisons_energy_and_xor_js_runtime():
+    import json
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    app_js = (root / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = f"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeEl(id) {{
+  const attrs = {{}};
+  const listeners = {{}};
+  return {{
+    id,
+    innerHTML: '',
+    textContent: '',
+    className: '',
+    value: '',
+    checked: false,
+    disabled: false,
+    title: '',
+    dataset: {{}},
+    style: {{}},
+    children: [],
+    classList: {{
+      _set: new Set(),
+      add(c) {{ this._set.add(c); }},
+      remove(c) {{ this._set.delete(c); }},
+      contains(c) {{ return this._set.has(c) || (this._parentClass || '').split(/\\s+/).includes(c); }},
+    }},
+    setAttribute(k, v) {{ attrs[k] = String(v); }},
+    getAttribute(k) {{ return attrs[k] ?? null; }},
+    addEventListener(ev, fn) {{ (listeners[ev] = listeners[ev] || []).push(fn); }},
+    dispatchEvent(ev) {{
+      const list = listeners[ev.type || ev] || [];
+      for (const fn of list) fn(ev);
+    }},
+    querySelector(sel) {{
+      if (sel === '.prison-tile-name' || sel === '.master-tile-name') return this._nameEl || (this._nameEl = makeEl());
+      if (sel === '.prison-tile-lock' || sel === '.master-tile-lock') return this._lockEl || (this._lockEl = makeEl());
+      if (sel === '.prison-tile-meta' || sel === '.master-tile-meta') return this._metaEl || (this._metaEl = makeEl());
+      if (sel === '.prison-tile-energy' || sel === '.master-tile-energy') return this._energyEl || (this._energyEl = makeEl());
+      return makeEl();
+    }},
+    querySelectorAll() {{ return []; }},
+    appendChild(ch) {{ this.children.push(ch); }},
+    insertBefore(ch) {{ this.children.push(ch); }},
+    remove() {{}},
+    closest() {{ return null; }},
+  }};
+}}
+
+const elements = {{}};
+const ids = [
+  'prisons-catalog-grid', 'masters-catalog-grid', 'current-prison-name',
+  'prison-checkpoint-text', 'prison-checkpoint-percent', 'prison-checkpoint-fill',
+  'btn-prison-work-one', 'btn-shift-day', 'btn-shift-night',
+  'current-master-name', 'current-master-subtitle', 'master-progress-text',
+  'master-progress-percent', 'master-progress-fill', 'master-cycle-energy-info',
+  'btn-master-train', 'btn-master-drain', 'cfg-auto_prison', 'cfg-auto_masters'
+];
+for (const id of ids) elements[id] = makeEl(id);
+
+const sandbox = {{
+  console, Math, Date, JSON, Number, String, Boolean, Array, Object, Set, Map, URLSearchParams,
+  setTimeout: () => 0, clearTimeout: () => {{}}, setInterval: () => 0, clearInterval: () => {{}},
+  localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  sessionStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+  location: {{ hash: '', search: '', pathname: '/', hostname: 'localhost' }},
+  navigator: {{}},
+  window: {{ addEventListener: () => {{}}, Telegram: {{ WebApp: {{ initData: '', ready: () => {{}}, expand: () => {{}} }} }} }},
+  document: {{
+    getElementById: (id) => elements[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => makeEl(),
+    addEventListener: () => {{}},
+  }},
+  fetch: async () => ({{ ok: true, status: 200, json: async () => ({{ success: true }}) }}),
+  apiFetch: async () => ({{ success: true }}),
+  showToast: () => {{}},
+  refreshState: () => {{}},
+  EventSource: function() {{ return {{ addEventListener: () => {{}}, close: () => {{}} }}; }},
+}};
+sandbox.globalThis = sandbox;
+vm.runInNewContext({json.dumps(app_js)}, sandbox);
+
+const masters = Array.from({{ length: 16 }}, (_, idx) => ({{
+  id: idx + 1,
+  name: idx === 0 ? 'ПЕТЯ ВЕРСТАК' : `МАСТЕР #${{idx + 1}}`,
+  level: 1,
+  locked: false,
+  full_cycle_energy: 443 + idx * 10,
+  remaining_cycle_energy: 443 + idx * 10,
+  step_energy: 2,
+  step_current: 0,
+  step_total: 7,
+  progress_pct: 0,
+}}));
+
+const prisons = [
+  {{ id: 4, name: 'КРЕСТЫ', isUnlocked: true, dayRuns: 1, nightRuns: 1, day_full_energy: 519, night_full_energy: 635 }},
+  {{ id: 5, name: 'В.ЦЕНТРАЛ', isUnlocked: true, dayRuns: 0, nightRuns: 0, day_full_energy: 675, night_full_energy: 848 }},
+];
+
+sandbox.renderPrisonsData({{
+  success: true,
+  targetId: 4,
+  targetMasterId: 1,
+  isDay: true,
+  prisons,
+  masters,
+  checkpoints: [],
+}});
+
+const pGrid = elements['prisons-catalog-grid'];
+if (pGrid.children.length !== 2) throw new Error('expected 2 prisons');
+if (!pGrid.children[0]._energyEl.innerHTML.includes('519') || !pGrid.children[0]._energyEl.innerHTML.includes('635')) {{
+  throw new Error('Kresty energy missing');
+}}
+
+// Повторный рендер с обнуленными значениями (частичный SSE) не должен стирать цифры
+sandbox.renderPrisonsData({{
+  success: true,
+  targetId: 4,
+  targetMasterId: 1,
+  isDay: true,
+  prisons: [
+    {{ id: 4, name: 'КРЕСТЫ', isUnlocked: true, dayRuns: 1, nightRuns: 1, day_full_energy: 0, night_full_energy: 0 }},
+    {{ id: 5, name: 'В.ЦЕНТРАЛ', isUnlocked: true, dayRuns: 0, nightRuns: 0, day_full_energy: 675, night_full_energy: 0 }},
+  ],
+  masters: masters.map(m => Object.assign({{}}, m, {{ full_cycle_energy: 0 }})),
+  checkpoints: [],
+}});
+if (!pGrid.children[0]._energyEl.innerHTML.includes('519') || !pGrid.children[1]._energyEl.innerHTML.includes('848')) {{
+  throw new Error('SSE partial update wiped prison energy');
+}}
+
+const mGrid = elements['masters-catalog-grid'];
+if (mGrid.children.length !== 16) throw new Error('expected 16 master cards, got ' + mGrid.children.length);
+if (!mGrid.children[15]._energyEl.innerHTML.includes('593')) {{
+  throw new Error('Master 16 energy missing');
+}}
+
+// Клик по карточке мастера 2 выбирает его и обновляет верхнюю панель
+mGrid.children[1].dispatchEvent({{ type: 'click' }});
+if (!elements['current-master-name'].textContent.includes('МАСТЕР #2')) {{
+  throw new Error('clicking master card did not update top panel');
+}}
+
+// Проверка XOR тумблеров на фронтенде
+elements['cfg-auto_prison'].checked = true;
+elements['cfg-auto_masters'].checked = true;
+elements['cfg-auto_masters'].dispatchEvent({{ type: 'change' }});
+if (elements['cfg-auto_prison'].checked !== false) {{
+  throw new Error('auto_masters=true did not uncheck auto_prison');
+}}
+elements['cfg-auto_prison'].checked = true;
+elements['cfg-auto_prison'].dispatchEvent({{ type: 'change' }});
+if (elements['cfg-auto_masters'].checked !== false) {{
+  throw new Error('auto_prison=true did not uncheck auto_masters');
+}}
+
+console.log('MASTERS_XOR_JS_OK');
+"""
+    res = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert res.returncode == 0, f"Node failed: {res.stderr}\n{res.stdout}"
+    assert "MASTERS_XOR_JS_OK" in res.stdout

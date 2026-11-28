@@ -310,6 +310,10 @@ class LiveStateHub:
             new_cols = data.get("collections") or []
             if old_cols and not new_cols:
                 return False, existing
+        if slice_name == "prisons" and existing is not None and isinstance(existing.data, dict) and isinstance(data, dict):
+            from client.api.prison import merge_prisons_energy_preserve
+            data = merge_prisons_energy_preserve(existing.data, copy.deepcopy(data))
+            fp = compute_fingerprint(data)
         if existing is not None and existing.fingerprint == fp and (source_tag is None or existing.source_tag == source_tag):
             existing.updated_at = now_iso
             existing.monotonic_ts = now_mono

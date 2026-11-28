@@ -468,8 +468,8 @@ class PrisonWorker:
                 except Exception as e:
                     logger.warning("Ошибка сбора чекпоинта: %s", e)
 
-            # Тренировка у мастера (если включена и осталась энергия)
-            if source == "auto" and getattr(config, "auto_masters", False) and current_energy >= 10:
+            # XOR-инвариант: в auto-режиме ходок не тратим энергию на мастеров
+            if source == "auto" and getattr(config, "auto_masters", False) and not getattr(config, "auto_prison", False) and current_energy >= 10:
                 master_id = getattr(config, "master_target_id", 1)
                 try:
                     await self.prison_api.do_master_work(master_id=master_id)
@@ -556,8 +556,106 @@ class PrisonWorker:
                 "next_wait_seconds": next_wait_sec,
             }
 
+    async def drain_master_energy(
+        self,
+        master_id: Optional[int] = None,
+        source: str = "auto",
+        max_runs: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Непрерывно тратит доступную энергию на тренировки у выбранного мастера."""
+        run_limit = int(max_runs or self.max_iterations or self.DEFAULT_MAX_RUNS)
+
+        async with self._drain_lock:
+            config = await get_or_create_config(self.account_id, self.db_engine)
+            mid = int(master_id if master_id is not None else (getattr(config, "master_target_id", 1) or 1))
+
+            current_energy = 0
+            last_restore_time = None
+            regen_interval_sec = 300
+            if self.player_api is not None:
+                try:
+                    init_data = await self.player_api.init_player()
+                    e_info = self._extract_energy_info(init_data)
+                    current_energy = e_info["energy"]
+                    last_restore_time = e_info["last_restore"]
+                    regen_interval_sec = e_info["interval"]
+                except Exception as e:
+                    logger.warning("Не удалось получить профиль игрока для тренировки у мастера: %s", e)
+
+            step_cost = 2
+            try:
+                m_enter = await self.prison_api.enter_master(mid)
+                if isinstance(m_enter, dict):
+                    if m_enter.get("locked"):
+                        return {"status": "locked", "masterId": mid, "works_done": 0, "energy": current_energy}
+                    from client.api.prison import get_master_energy_details
+                    details = get_master_energy_details(m_enter)
+                    if details["step_energy"] > 0:
+                        step_cost = details["step_energy"]
+            except Exception as e:
+                logger.debug("Ошибка enter_master(%s): %s", mid, e)
+
+            works_done = 0
+            while current_energy >= step_cost and works_done < run_limit:
+                try:
+                    res = await self.prison_api.do_master_work(master_id=mid)
+                    works_done += 1
+                    if isinstance(res, dict) and res.get("energy") is not None:
+                        current_energy = int(res["energy"])
+                    else:
+                        current_energy = max(0, current_energy - step_cost)
+                    await self._log_action(
+                        action_type="master_work",
+                        endpoint=f"/api/player/masters/{mid}/work",
+                        status_code=200,
+                        success=True,
+                        details={"masterId": mid, "source": source, "stepCost": step_cost},
+                    )
+                    if self.enable_jitter:
+                        await self._fast_pause()
+                except Exception as e:
+                    logger.warning("Ошибка тренировки у мастера %s: %s", mid, e)
+                    break
+
+            if works_done > 0:
+                try:
+                    from client.api.prison import invalidate_master_enter_cache
+                    invalidate_master_enter_cache(self.account_id, mid)
+                except Exception:
+                    pass
+                try:
+                    from core.state_hub import state_hub
+                    state_hub.notify_mutation(self.account_id, "prison_completed", reason="master_work")
+                except Exception:
+                    pass
+
+            wait_buf = random.uniform(3.0, 6.0) if self.enable_jitter else 4.0
+            next_wait_sec = compute_next_stage_wait_seconds(
+                current_energy=current_energy,
+                stage_cost=step_cost,
+                regen_interval_sec=regen_interval_sec,
+                last_restore_time=last_restore_time,
+                jitter_sec=wait_buf,
+            )
+            if self.on_reschedule is not None:
+                try:
+                    self.on_reschedule(max(15.0, min(next_wait_sec, 300.0)))
+                except Exception:
+                    pass
+
+            return {
+                "status": "success" if works_done > 0 else ("skipped_low_energy" if source == "auto" else "low_energy"),
+                "masterId": mid,
+                "works_done": works_done,
+                "runsCompleted": works_done,
+                "energy": current_energy,
+                "remaining_energy": current_energy,
+                "stepCost": step_cost,
+                "next_wait_seconds": next_wait_sec,
+            }
+
     async def run_cycle(self) -> Dict[str, Any]:
-        """Основной автоматический цикл: проверяет активность, автосбор подогревов и сливает всю энергию."""
+        """Основной автоматический цикл: проверяет активность, XOR-инвариант и сливает энергию в выбранную цель."""
         if server_health_monitor.is_maintenance:
             if server_health_monitor.should_log_worker_skip():
                 logger.debug("Игровые сервера на техработах — PrisonWorker на паузе.")
@@ -568,13 +666,42 @@ class PrisonWorker:
             logger.info("Планировщик на паузе или активен режим сна. Пропуск ходок.")
             return {"status": "skipped", "reason": "paused_or_sleep"}
 
-        if not getattr(config, "auto_prison", True):
-            logger.info("Авто-ходки в тюрьмах отключены в конфигурации.")
+        auto_prison = bool(getattr(config, "auto_prison", False))
+        auto_masters = bool(getattr(config, "auto_masters", False))
+
+        if auto_prison and auto_masters:
+            logger.warning(
+                "Обнаружен конфликт авто-целей энергии (auto_prison=True и auto_masters=True) — "
+                "принудительно отключаем auto_masters."
+            )
+            auto_masters = False
+            if self.db_engine is not None:
+                try:
+                    from sqlalchemy import update
+                    from core.database import get_session
+                    from core.models import BotConfig
+                    async with get_session(self.db_engine) as session:
+                        await session.execute(
+                            update(BotConfig)
+                            .where(BotConfig.account_id == self.account_id)
+                            .values(auto_masters=False)
+                        )
+                        await session.commit()
+                except Exception as e:
+                    logger.debug("Не удалось нормализовать конфликт флагов в БД: %s", e)
+
+        if not auto_prison and not auto_masters:
+            logger.info("Авто-ходки и авто-тренировка у мастеров отключены в конфигурации.")
             return {"status": "skipped", "reason": "auto_prison_disabled"}
 
         try:
-            return await self.drain_all_energy(
-                collect_podogrev=bool(getattr(config, "auto_podogrev", True)),
+            if auto_prison:
+                return await self.drain_all_energy(
+                    collect_podogrev=bool(getattr(config, "auto_podogrev", True)),
+                    source="auto",
+                )
+            return await self.drain_master_energy(
+                master_id=getattr(config, "master_target_id", 1),
                 source="auto",
             )
         except GameMaintenanceError:

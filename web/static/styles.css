@@ -830,8 +830,9 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   color: #34d399;
 }
 
-/* Prisons Grid */
-.prisons-grid {
+/* Prisons & Masters Grid */
+.prisons-grid,
+.masters-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px;
@@ -840,7 +841,8 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   padding-right: 4px;
 }
 
-.prison-tile {
+.prison-tile,
+.master-tile {
   background-color: var(--secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -852,16 +854,19 @@ html[data-active-sec="settings"] .section-pane:not(#sec-settings) {
   transition: all 0.15s ease;
 }
 
-.prison-tile:hover {
+.prison-tile:hover,
+.master-tile:hover {
   border-color: rgba(217, 165, 20, 0.4);
 }
 
-.prison-tile.selected {
+.prison-tile.selected,
+.master-tile.selected {
   border-color: var(--primary);
   background-color: rgba(217, 165, 20, 0.08);
 }
 
-.prison-tile.locked {
+.prison-tile.locked,
+.master-tile.locked {
   opacity: 0.5;
   cursor: not-allowed;
 }

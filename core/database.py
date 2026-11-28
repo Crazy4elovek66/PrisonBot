@@ -153,6 +153,34 @@ def _migrate_bot_configs(connection) -> None:
             text("UPDATE bot_configs SET friend_outreach_daily_limit = 50 WHERE friend_outreach_daily_limit = 25;")
         )
 
+    # XOR-нормализация взаимоисключающих целей энергии при миграции
+    if "auto_prison" in existing_cols and "auto_masters" in existing_cols:
+        connection.execute(
+            text("UPDATE bot_configs SET auto_masters = 0 WHERE auto_prison = 1 AND auto_masters = 1;")
+        )
+
+
+def normalize_energy_target_flags(
+    auto_prison: bool,
+    auto_masters: bool,
+    prev_auto_prison: bool = False,
+    prev_auto_masters: bool = False,
+) -> tuple[bool, bool, Optional[str]]:
+    """
+    Гарантирует XOR-инвариант целей энергии: одновременно активен максимум один режим
+    (`auto_prison` или `auto_masters`). Возвращает `(auto_prison, auto_masters, disabled_conflict_target)`.
+    """
+    ap = bool(auto_prison)
+    am = bool(auto_masters)
+    if ap and am:
+        if not prev_auto_masters and am and prev_auto_prison:
+            return False, True, "auto_prison"
+        if not prev_auto_prison and ap and prev_auto_masters:
+            return True, False, "auto_masters"
+        # Если оба пришли True одновременно (из старого клиента или БД) — приоритет auto_prison
+        return True, False, "auto_masters"
+    return ap, am, None
+
 
 def _migrate_notifications(connection) -> None:
     """Автоматическая миграция новых колонок Notification при необходимости."""

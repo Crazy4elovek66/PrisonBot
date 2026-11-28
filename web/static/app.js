@@ -4,7 +4,7 @@
  */
 
 const API_BASE = "/api/v1";
-const ASSET_VERSION = "20261127_11";
+const ASSET_VERSION = "20261127_12";
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -1581,8 +1581,11 @@ function renderPrisonsData(data) {
     setTextIfChanged(workOneBtn, `Выполнить 1 действие (⚡ ${energyCost})`);
   }
 
+  if (data.targetMasterId) {
+    currentMasterId = Number(data.targetMasterId);
+  }
   renderPrisonsGrid(data.prisons || []);
-  renderMastersSelect(data.masters || []);
+  renderMastersSection(data.masters || []);
 }
 
 async function loadPrisons(opts = {}) {
@@ -1595,9 +1598,59 @@ async function loadPrisons(opts = {}) {
   }
 }
 
+const _prisonsEnergyCache = {};
+const _mastersEnergyCache = {};
+let currentMasterId = 1;
+
+function _stabilizePrisonEnergy(p) {
+  if (!p || p.id == null) return p;
+  const pid = Number(p.id);
+  const prev = _prisonsEnergyCache[pid] || {};
+  const dFull = Number(p.day_full_energy || 0) > 0 ? Number(p.day_full_energy) : Number(prev.day_full_energy || 0);
+  const nFull = Number(p.night_full_energy || 0) > 0 ? Number(p.night_full_energy) : Number(prev.night_full_energy || 0);
+  const dRem = Number(p.day_full_energy || 0) > 0 ? Number(p.day_remaining_energy || 0) : Number(prev.day_remaining_energy || 0);
+  const nRem = Number(p.night_full_energy || 0) > 0 ? Number(p.night_remaining_energy || 0) : Number(prev.night_remaining_energy || 0);
+  if (dFull > 0 || nFull > 0) {
+    _prisonsEnergyCache[pid] = {
+      day_full_energy: dFull,
+      night_full_energy: nFull,
+      day_remaining_energy: dRem,
+      night_remaining_energy: nRem,
+    };
+  }
+  return Object.assign({}, p, {
+    day_full_energy: dFull,
+    night_full_energy: nFull,
+    day_remaining_energy: dRem,
+    night_remaining_energy: nRem,
+  });
+}
+
+function _stabilizeMasterEnergy(m) {
+  if (!m || m.id == null) return m;
+  const mid = Number(m.id);
+  const prev = _mastersEnergyCache[mid] || {};
+  const fullE = Number(m.full_cycle_energy || 0) > 0 ? Number(m.full_cycle_energy) : Number(prev.full_cycle_energy || 0);
+  const remE = Number(m.full_cycle_energy || 0) > 0 ? Number(m.remaining_cycle_energy || 0) : Number(prev.remaining_cycle_energy || 0);
+  const stepE = Number(m.step_energy || 0) > 0 ? Number(m.step_energy) : Number(prev.step_energy || 0);
+  if (fullE > 0) {
+    _mastersEnergyCache[mid] = {
+      full_cycle_energy: fullE,
+      remaining_cycle_energy: remE,
+      step_energy: stepE,
+    };
+  }
+  return Object.assign({}, m, {
+    full_cycle_energy: fullE,
+    remaining_cycle_energy: remE,
+    step_energy: stepE,
+  });
+}
+
 function renderPrisonsGrid(prisons) {
   const container = document.getElementById("prisons-catalog-grid");
   if (!container) return;
+  const stablePrisons = (prisons || []).map(_stabilizePrisonEnergy);
 
   const patchTile = (tile, p) => {
     const isSelected = Number(p.id) === Number(currentPrisonId);
@@ -1627,7 +1680,7 @@ function renderPrisonsGrid(prisons) {
 
   reconcileKeyedList(
     container,
-    prisons || [],
+    stablePrisons,
     p => p.id,
     p => `${p.id}|${p.name}|${Number(p.id) === Number(currentPrisonId)}|${p.isUnlocked !== false}|${p.unlockRequirement || p.unlock_requirement || p.requiredLevel || ''}|${p.dayRuns || 0}|${p.nightRuns || 0}|${p.day_full_energy || 0}|${p.night_full_energy || 0}`,
     p => {
@@ -1644,7 +1697,7 @@ function renderPrisonsGrid(prisons) {
       tile.addEventListener("click", async () => {
         if (tile.classList.contains("locked")) return;
         currentPrisonId = p.id;
-        renderPrisonsGrid(prisonsData.prisons || prisons);
+        renderPrisonsGrid(prisonsData.prisons || stablePrisons);
         await apiFetch("/config", {
           method: "PATCH",
           body: JSON.stringify({ prison_target_id: p.id }),
@@ -1662,65 +1715,143 @@ function renderPrisonsGrid(prisons) {
 
 let _mastersCatalogCache = [];
 
-function updateSelectedMasterEnergyInfo() {
-  const select = document.getElementById("select-master");
+function updateSelectedMasterCard() {
+  const m = (_mastersCatalogCache || []).find(item => Number(item.id) === Number(currentMasterId)) || _mastersCatalogCache[0];
+  const nameEl = document.getElementById("current-master-name");
+  const subEl = document.getElementById("current-master-subtitle");
+  const progTextEl = document.getElementById("master-progress-text");
+  const progPctEl = document.getElementById("master-progress-percent");
+  const progFillEl = document.getElementById("master-progress-fill");
   const infoEl = document.getElementById("master-cycle-energy-info");
-  if (!select || !infoEl) return;
-  const selId = Number(select.value || 0);
-  const m = (_mastersCatalogCache || []).find(item => Number(item.id) === selId);
+  const trainBtn = document.getElementById("btn-master-train");
+
   if (!m) {
-    infoEl.style.display = "none";
+    if (infoEl) infoEl.style.display = "none";
     return;
   }
+
+  const lvl = Number(m.level || 0);
   const fullE = Number(m.full_cycle_energy || 0);
   const remE = Number(m.remaining_cycle_energy || 0);
-  if (fullE > 0) {
-    const remPart = remE < fullE ? ` (осталось ${formatNum(remE)})` : "";
-    infoEl.innerHTML = `${gameIcon("energy", "⚡", "game-icon-sm")} <span>Полный круг: <b>${formatNum(fullE)}</b>${remPart}</span>`;
-    infoEl.style.display = "flex";
-  } else if (m.locked) {
-    infoEl.innerHTML = `<span style="color: var(--muted-foreground);">🔒 Мастер пока закрыт — затраты энергии круга откроются после разблокировки</span>`;
-    infoEl.style.display = "flex";
-  } else {
-    infoEl.style.display = "none";
+  const stepE = Number(m.step_energy || 2);
+  const stepCur = Number(m.step_current || 0);
+  const stepTot = Number(m.step_total || 0);
+  const pct = Number(m.progress_pct || 0);
+  const isLocked = Boolean(m.locked);
+
+  setTextIfChanged(nameEl, `🥋 ${m.name || 'Мастер #' + m.id} (ур. ${lvl})`);
+  if (subEl) {
+    setTextIfChanged(subEl, m.description || (isLocked ? (m.unlock_requirement || "Мастер закрыт") : "Тренировка характеристик у мастера"));
+  }
+  setTextIfChanged(progTextEl, stepTot > 0 ? `Круг ур. ${lvl} (шаг ${Math.min(stepTot, stepCur + 1)}/${stepTot})` : `Круг ур. ${lvl}`);
+  setTextIfChanged(progPctEl, `${pct}%`);
+  setWidthIfChanged(progFillEl, `${pct}%`);
+
+  if (trainBtn) {
+    setTextIfChanged(trainBtn, `Тренироваться (⚡ ${stepE})`);
+    trainBtn.disabled = isLocked;
+  }
+  const drainBtn = document.getElementById("btn-master-drain");
+  if (drainBtn) drainBtn.disabled = isLocked;
+
+  if (infoEl) {
+    if (fullE > 0) {
+      const remPart = remE < fullE ? ` (осталось ${formatNum(remE)})` : "";
+      infoEl.innerHTML = `${gameIcon("energy", "⚡", "game-icon-sm")} <span>Полный круг: <b>${formatNum(fullE)}</b> эн.${remPart}</span>`;
+      infoEl.style.display = "flex";
+    } else if (isLocked) {
+      infoEl.innerHTML = `<span style="color: var(--muted-foreground);">🔒 ${m.unlock_requirement || "Мастер пока закрыт"}</span>`;
+      infoEl.style.display = "flex";
+    } else {
+      infoEl.style.display = "none";
+    }
   }
 }
 
-function renderMastersSelect(masters) {
-  const select = document.getElementById("select-master");
-  if (!select) return;
-  const prevVal = select.value;
-  _mastersCatalogCache = Array.isArray(masters) ? masters : [];
-  select.innerHTML = "";
+function renderMastersGrid(masters) {
+  const container = document.getElementById("masters-catalog-grid");
+  if (!container) return;
 
-  if (_mastersCatalogCache.length === 0) {
-    select.innerHTML = '<option value="">Нет доступных мастеров</option>';
-    updateSelectedMasterEnergyInfo();
-    return;
-  }
-
-  _mastersCatalogCache.forEach(m => {
-    const opt = document.createElement("option");
-    opt.value = m.id;
+  const patchTile = (tile, m) => {
+    const isSelected = Number(m.id) === Number(currentMasterId);
+    const isUnlocked = m.locked !== true;
+    const lvl = Number(m.level || 0);
+    const pct = Number(m.progress_pct || 0);
     const fullE = Number(m.full_cycle_energy || 0);
-    const remE = Number(m.remaining_cycle_energy || 0);
-    const eSuffix = fullE > 0
-      ? (remE > 0 && remE < fullE ? ` • круг: ${fullE} эн. (ост. ${remE})` : ` • круг: ${fullE} эн.`)
-      : "";
-    opt.textContent = `${m.name || 'Мастер #' + m.id} (ур. ${m.level || 1}${eSuffix})`;
-    select.appendChild(opt);
-  });
+    const stepE = Number(m.step_energy || 0);
+    const unlockReq = m.unlock_requirement || `Заверши круг у мастера #${Math.max(1, Number(m.id) - 1)}`;
 
-  if (prevVal && _mastersCatalogCache.some(m => String(m.id) === String(prevVal))) {
-    select.value = prevVal;
-  } else if (_mastersCatalogCache.length > 0) {
-    select.value = String(_mastersCatalogCache[0].id);
+    tile.className = `master-tile ${isSelected ? 'selected' : ''} ${!isUnlocked ? 'locked' : ''}`;
+    tile.setAttribute("data-master-id", String(m.id));
+    setTextIfChanged(tile.querySelector(".master-tile-name"), m.name || `Мастер #${m.id}`);
+    setTextIfChanged(tile.querySelector(".master-tile-lock"), isUnlocked ? "🔓" : "🔒");
+
+    const metaTxt = isUnlocked
+      ? `Ур. ${lvl} • ${pct}%`
+      : `🔒 ${unlockReq}`;
+    setTextIfChanged(tile.querySelector(".master-tile-meta"), metaTxt);
+
+    const energyEl = tile.querySelector(".master-tile-energy");
+    if (energyEl) {
+      if (fullE > 0) {
+        const stepPart = stepE > 0 ? ` • шаг: ${stepE}` : "";
+        energyEl.innerHTML = `${gameIcon("energy", "⚡", "game-icon-sm")} <span>Полный круг: ${formatNum(fullE)}${stepPart}</span>`;
+        energyEl.title = `Полный круг: ${fullE} эн. (осталось ${m.remaining_cycle_energy || 0})`;
+        energyEl.style.display = "flex";
+      } else {
+        energyEl.style.display = "none";
+      }
+    }
+  };
+
+  reconcileKeyedList(
+    container,
+    masters,
+    m => m.id,
+    m => `${m.id}|${m.name}|${Number(m.id) === Number(currentMasterId)}|${m.locked === true}|${m.level || 0}|${m.progress_pct || 0}|${m.full_cycle_energy || 0}|${m.step_energy || 0}`,
+    m => {
+      const tile = document.createElement("div");
+      tile.setAttribute("data-master-id", String(m.id));
+      tile.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
+          <span class="master-tile-name" style="font-weight: 700; font-size: 12px; color: #fff;"></span>
+          <span class="master-tile-lock"></span>
+        </div>
+        <div class="master-tile-meta" style="font-size: 10px; color: var(--muted-foreground);"></div>
+        <div class="master-tile-energy" style="display: none; align-items: center; gap: 4px; font-size: 10px; color: #fbbf24; margin-top: 2px;"></div>
+      `;
+      tile.addEventListener("click", async () => {
+        if (tile.classList.contains("locked")) return;
+        currentMasterId = Number(m.id);
+        updateSelectedMasterCard();
+        renderMastersGrid(_mastersCatalogCache);
+        try {
+          await apiFetch("/config", {
+            method: "PATCH",
+            body: JSON.stringify({ master_target_id: m.id }),
+          });
+          showToast(`Выбран мастер: ${m.name}`, "info");
+        } catch (err) {
+          showToast(`Ошибка выбора мастера: ${err.message}`, "error");
+        }
+      });
+      patchTile(tile, m);
+      return tile;
+    },
+    (tile, m) => patchTile(tile, m),
+    '<div style="color: var(--muted-foreground); font-size: 11px;">Нет доступных мастеров</div>'
+  );
+}
+
+function renderMastersSection(masters) {
+  const stableMasters = (Array.isArray(masters) ? masters : []).map(_stabilizeMasterEnergy);
+  _mastersCatalogCache = stableMasters;
+  if (stableMasters.length > 0 && !stableMasters.some(m => Number(m.id) === Number(currentMasterId))) {
+    const firstUnlocked = stableMasters.find(m => m.locked !== true) || stableMasters[0];
+    currentMasterId = Number(firstUnlocked.id);
   }
-  if (!select.dataset.energyBound) {
-    select.dataset.energyBound = "1";
-    select.addEventListener("change", updateSelectedMasterEnergyInfo);
-  }
-  updateSelectedMasterEnergyInfo();
+  updateSelectedMasterCard();
+  renderMastersGrid(stableMasters);
 }
 
 // --- 4.5 Live Catalogs ---
@@ -3626,7 +3757,7 @@ document.getElementById("btn-shift-night")?.addEventListener("click", async () =
 
 // --- 5.8 Master Training ---
 document.getElementById("btn-master-train")?.addEventListener("click", async () => {
-  const masterId = document.getElementById("select-master")?.value;
+  const masterId = currentMasterId || _mastersCatalogCache[0]?.id;
   if (!masterId) return;
   try {
     const res = await apiFetch("/actions/master/work", {
@@ -3635,11 +3766,33 @@ document.getElementById("btn-master-train")?.addEventListener("click", async () 
     });
     if (res.success) {
       showToast("Тренировка у мастера завершена!", "success");
-      loadPrisons();
+      loadPrisons({ force: true });
       loadProfile();
     }
   } catch (e) {
     showToast(`Ошибка тренировки: ${e.message}`, "error");
+  }
+});
+
+document.getElementById("btn-master-drain")?.addEventListener("click", async () => {
+  const masterId = currentMasterId || _mastersCatalogCache[0]?.id;
+  if (!masterId) return;
+  const btn = document.getElementById("btn-master-drain");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch("/actions/master/drain", {
+      method: "POST",
+      body: JSON.stringify({ masterId: parseInt(masterId) }),
+    });
+    if (res.success) {
+      showToast(`Тренировки у мастера: выполнено ${res.works_done || 0}`, "success");
+      loadPrisons({ force: true });
+      loadProfile();
+    }
+  } catch (e) {
+    showToast(`Ошибка слива энергии у мастера: ${e.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 });
 
@@ -3993,15 +4146,37 @@ autoConfigKeys.forEach(k => {
   if (el) {
     el.addEventListener("change", async () => {
       const val = el.checked;
+      let conflictEl = null;
+      let prevConflict = false;
+      if (val && k === "auto_prison") {
+        conflictEl = document.getElementById("cfg-auto_masters");
+        if (conflictEl) {
+          prevConflict = conflictEl.checked;
+          conflictEl.checked = false;
+        }
+      } else if (val && k === "auto_masters") {
+        conflictEl = document.getElementById("cfg-auto_prison");
+        if (conflictEl) {
+          prevConflict = conflictEl.checked;
+          conflictEl.checked = false;
+        }
+      }
       try {
         await apiFetch("/config", {
           method: "PATCH",
           body: JSON.stringify({ [k]: val }),
         });
-        showToast(`Настройка сохранена`, "info");
+        if (val && k === "auto_prison" && prevConflict) {
+          showToast("Авто-тренировка у мастеров отключена: энергия направлена на ходки/бунт", "info");
+        } else if (val && k === "auto_masters" && prevConflict) {
+          showToast("Авто-ходки отключены: энергия направлена на обучение у мастера", "info");
+        } else {
+          showToast("Настройка сохранена", "info");
+        }
         refreshState();
       } catch (e) {
         el.checked = !val;
+        if (conflictEl) conflictEl.checked = prevConflict;
         showToast(`Ошибка сохранения настройки: ${e.message}`, "error");
       }
     });

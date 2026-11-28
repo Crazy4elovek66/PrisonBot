@@ -796,8 +796,9 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail=f"{auth_k} must be a non-negative integer")
 
-    from core.database import normalize_boss_targets
+    from core.database import normalize_boss_targets, normalize_energy_target_flags
 
+    disabled_conflict_target: Optional[str] = None
     async with get_session(engine) as session:
         stmt = select(BotConfig).where(BotConfig.account_id == account_id)
         res = await session.execute(stmt)
@@ -805,6 +806,18 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         if not cfg:
             cfg = BotConfig(account_id=account_id)
             session.add(cfg)
+
+        if "auto_prison" in updates or "auto_masters" in updates:
+            prev_ap = bool(getattr(cfg, "auto_prison", False))
+            prev_am = bool(getattr(cfg, "auto_masters", False))
+            req_ap = bool(updates.get("auto_prison", prev_ap))
+            req_am = bool(updates.get("auto_masters", prev_am))
+            norm_ap, norm_am, disabled_conflict_target = normalize_energy_target_flags(
+                req_ap, req_am, prev_auto_prison=prev_ap, prev_auto_masters=prev_am
+            )
+            updates["auto_prison"] = norm_ap
+            updates["auto_masters"] = norm_am
+
         for k, v in updates.items():
             setattr(cfg, k, v)
         cfg.updated_at = datetime.utcnow()
@@ -813,6 +826,8 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
         cfg_dict = {k: getattr(cfg, k) for k in allowed_fields}
         cfg_dict["boss_targets"] = normalize_boss_targets(cfg_dict.get("boss_targets") or [])
         cfg_dict["config_updated_at"] = cfg.updated_at.isoformat() if cfg.updated_at else None
+        if disabled_conflict_target:
+            cfg_dict["disabled_conflict_target"] = disabled_conflict_target
 
     # Синхронизация паузы планировщика
     if "is_paused" in updates:
@@ -848,7 +863,12 @@ async def update_config(payload: Dict[str, Any] = Body(...), account_id: int = 1
             or updates.get("boss_auto_melee")
             or ("boss_targets" in updates and (cfg.auto_boss_enabled or cfg.auto_boss_summon or cfg.boss_auto_melee))
         )
-        should_wake_prison = bool(updates.get("auto_prison") or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates)))
+        should_wake_prison = bool(
+            updates.get("auto_prison")
+            or updates.get("auto_masters")
+            or (cfg.auto_prison and ("prison_target_id" in updates or "prison_prefer_night" in updates))
+            or (cfg.auto_masters and "master_target_id" in updates)
+        )
         should_wake_routine = bool(
             updates.get("auto_monthly_tasks")
             or updates.get("auto_business")
@@ -2092,32 +2112,52 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
         if target_id not in unlocked_ids:
             unlocked_ids.append(int(target_id))
 
-        from client.api.prison import compute_prison_shift_energy, compute_master_cycle_energy
+        from client.api.prison import (
+            compute_prison_shift_energy,
+            get_cached_prison_checkpoints,
+            set_cached_prison_checkpoints,
+            get_cached_master_enter,
+            set_cached_master_enter,
+            get_master_energy_details,
+            merge_prisons_energy_preserve,
+        )
 
-        sem = asyncio.Semaphore(4)
-        async def _fetch_pstate_and_cps(pid: int):
-            async with sem:
-                st, cp_d, cp_n = await asyncio.gather(
-                    _safe_state(pid),
-                    _safe_checkpoints_for(pid, True),
-                    _safe_checkpoints_for(pid, False),
-                )
-                return pid, st, cp_d, cp_n
+        sem = asyncio.Semaphore(2)
 
         async def _safe_checkpoints_for(tid: int, day_flag: bool):
+            cached = get_cached_prison_checkpoints(tid, day_flag, max_age=0.0 if force else 1800.0)
+            if cached is not None:
+                return cached
             try:
-                cp = await prison_api.get_checkpoints(tid, day_flag)
+                async with sem:
+                    cp = await prison_api.get_checkpoints(tid, day_flag)
+                    await asyncio.sleep(0.05)
+                res_list = []
                 if isinstance(cp, dict):
                     data_cp = cp.get("data")
                     if isinstance(data_cp, list):
-                        return data_cp
-                    fallback_cp = cp.get("checkpoints")
-                    if isinstance(fallback_cp, list):
-                        return fallback_cp
-                    return []
-                return cp if isinstance(cp, list) else []
+                        res_list = data_cp
+                    else:
+                        fallback_cp = cp.get("checkpoints")
+                        if isinstance(fallback_cp, list):
+                            res_list = fallback_cp
+                elif isinstance(cp, list):
+                    res_list = cp
+                if res_list:
+                    set_cached_prison_checkpoints(tid, day_flag, res_list)
+                    return res_list
             except Exception:
-                return []
+                pass
+            return get_cached_prison_checkpoints(tid, day_flag, max_age=86400.0) or []
+
+        async def _fetch_pstate_and_cps(pid: int):
+            async with sem:
+                st = await _safe_state(pid)
+            cp_d, cp_n = await asyncio.gather(
+                _safe_checkpoints_for(pid, True),
+                _safe_checkpoints_for(pid, False),
+            )
+            return pid, st, cp_d, cp_n
 
         bundle_results = await asyncio.gather(*(_fetch_pstate_and_cps(pid) for pid in unlocked_ids))
         states_by_id = {pid: st for pid, st, _, _ in bundle_results}
@@ -2178,23 +2218,39 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
                     return
                 mid = m.get("id")
                 if mid is not None and not (m.get("checkpoints") or m.get("steps")):
-                    try:
-                        async with sem:
-                            m_enter = await prison_api.enter_master(int(mid))
-                        if isinstance(m_enter, dict):
-                            if m_enter.get("locked"):
-                                m["locked"] = True
-                            if isinstance(m_enter.get("checkpoints"), list):
-                                m["checkpoints"] = m_enter["checkpoints"]
-                            if isinstance(m_enter.get("data"), dict) and isinstance(m_enter["data"].get("progress"), dict):
-                                m["progress"] = m_enter["data"]["progress"]
-                                if m_enter["data"]["progress"].get("level") is not None:
-                                    m["level"] = m_enter["data"]["progress"].get("level")
-                    except Exception:
-                        pass
-                m_full, m_rem = compute_master_cycle_energy(m)
-                m["full_cycle_energy"] = m_full
-                m["remaining_cycle_energy"] = m_rem
+                    mid_int = int(mid)
+                    m_enter = get_cached_master_enter(account_id, mid_int, max_age=15.0 if not force else 0.0)
+                    # Для уже известного заблокированного мастера не спамим сервер чаще чем раз в 120с
+                    if m_enter is None:
+                        locked_cached = get_cached_master_enter(account_id, mid_int, max_age=120.0)
+                        if locked_cached and locked_cached.get("locked"):
+                            m_enter = locked_cached
+                    if m_enter is None:
+                        try:
+                            async with sem:
+                                m_enter = await prison_api.enter_master(mid_int)
+                                await asyncio.sleep(0.05)
+                            if isinstance(m_enter, dict) and (m_enter.get("checkpoints") or m_enter.get("locked")):
+                                set_cached_master_enter(account_id, mid_int, m_enter)
+                        except Exception:
+                            m_enter = get_cached_master_enter(account_id, mid_int, max_age=86400.0)
+                    if isinstance(m_enter, dict):
+                        if m_enter.get("locked"):
+                            m["locked"] = True
+                            if m_enter.get("requiredMasterId") is not None:
+                                m["requiredMasterId"] = m_enter.get("requiredMasterId")
+                            if m_enter.get("error"):
+                                m["unlock_requirement"] = str(m_enter["error"])
+                        else:
+                            m["locked"] = False
+                        if isinstance(m_enter.get("checkpoints"), list):
+                            m["checkpoints"] = m_enter["checkpoints"]
+                        if isinstance(m_enter.get("data"), dict) and isinstance(m_enter["data"].get("progress"), dict):
+                            m["progress"] = m_enter["data"]["progress"]
+                            if m_enter["data"]["progress"].get("level") is not None:
+                                m["level"] = m_enter["data"]["progress"].get("level")
+                details = get_master_energy_details(m)
+                m.update(details)
 
             await asyncio.gather(*(_enrich_master(m) for m in masters))
 
@@ -2224,11 +2280,12 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
                 )
 
         from client.http_client import get_game_now_ts
-        return {
+        payload_out = {
             "success": True,
             "server_now_ts": round(get_game_now_ts(), 3),
             "prisons": enriched_prisons,
             "targetId": target_id,
+            "targetMasterId": int(getattr(cfg, "master_target_id", 1) or 1),
             "isDay": is_day,
             "state": state_data,
             "checkpoints": checkpoints,
@@ -2243,11 +2300,15 @@ async def get_live_prisons(account_id: int = 1, force: bool = Query(False)) -> D
                 "progressPercent": round(total_progress, 1),
             },
         }
+        prev_slice = hub.get_slice(account_id, "prisons", max_age_seconds=86400.0, source_tag=tag)
+        if prev_slice is not None and isinstance(prev_slice.data, dict):
+            payload_out = merge_prisons_energy_preserve(prev_slice.data, payload_out)
+        return payload_out
 
     target_cfg = getattr(cfg, "prison_target_id", None)
     payload = await _flight_cache.get_or_set(f"prisons:{account_id}:{target_cfg}:{is_day}", 5.0, _fetch_prisons_payload)
-    hub.update_slice(account_id, "prisons", payload, source_tag=tag)
-    return payload
+    _, saved_entry = hub.update_slice(account_id, "prisons", payload, source_tag=tag)
+    return saved_entry.data
 
 
 class PrisonDrainRequest(BaseModel):
@@ -2583,16 +2644,64 @@ async def action_master_work(payload: Dict[str, Any] = Body(...), account_id: in
         raise HTTPException(status_code=503, detail="PrisonAPI not available")
 
     try:
-        res = await prison_api.do_master_work(int(master_id))
-        await _log_action(account_id, "manual_master_work", f"/api/player/masters/{master_id}/work", 200, True, {
-            "masterId": master_id, "result": res
+        mid = int(master_id)
+        res = await prison_api.do_master_work(mid)
+        await _log_action(account_id, "manual_master_work", f"/api/player/masters/{mid}/work", 200, True, {
+            "masterId": mid, "result": res
         })
+        from client.api.prison import invalidate_master_enter_cache
+        invalidate_master_enter_cache(account_id, mid)
+        if isinstance(res, dict) and res.get("energy") is not None:
+            _get_hub().patch_profile_resources(
+                account_id,
+                energy=res.get("energy"),
+                lastEnergyRestoreTime=res.get("lastEnergyRestoreTime"),
+            )
+        _flight_cache.invalidate("prisons")
+        _schedule_hub_refresh(account_id, "prisons", "profile")
         return {"success": True, "result": res}
     except Exception as e:
         await _log_action(account_id, "manual_master_work", f"/api/player/masters/{master_id}/work", 500, False, {
             "masterId": master_id, "error": str(e)
         })
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class MasterDrainRequest(BaseModel):
+    masterId: Optional[int] = None
+
+
+@api_router.post("/actions/master/drain")
+async def action_master_drain(
+    payload: MasterDrainRequest = Body(default_factory=MasterDrainRequest),
+    account_id: int = 1,
+) -> Dict[str, Any]:
+    """Непрерывный слив всей доступной энергии игрока на тренировки у выбранного мастера."""
+    prison_worker = bot_context.prison_worker
+    prison_api = bot_context.prison_api
+    if not prison_worker and not prison_api:
+        raise HTTPException(status_code=503, detail="PrisonAPI / PrisonWorker not available")
+
+    hub = _get_hub()
+    if prison_worker is None:
+        from workers.prison_worker import PrisonWorker
+        prison_worker = PrisonWorker(
+            account_id=account_id,
+            prison_api=prison_api,
+            player_api=bot_context.player_api,
+            db_engine=bot_context.db_engine,
+            state_hub=hub,
+            enable_jitter=False,
+        )
+    elif prison_worker.state_hub is None:
+        prison_worker.state_hub = hub
+
+    result = await prison_worker.drain_master_energy(master_id=payload.masterId, source="manual")
+    if isinstance(result, dict) and result.get("energy") is not None:
+        hub.patch_profile_resources(account_id, energy=result.get("energy"))
+    _flight_cache.invalidate("prisons")
+    _schedule_hub_refresh(account_id, "prisons", "profile")
+    return {"success": True, **result}
 
 
 @api_router.post("/actions/routine/collect")

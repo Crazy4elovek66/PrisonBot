@@ -545,3 +545,97 @@ def test_compute_prison_shift_energy_and_master_cycle_energy():
     assert (r_full, r_rem) == (50, 36)
 
 
+
+
+def test_prisons_and_masters_energy_preservation_in_state_hub():
+    from client.api.prison import get_master_energy_details
+    from core.state_hub import LiveStateHub
+
+    hub = LiveStateHub()
+    full_prisons = [
+        {"id": 1, "name": "БУТЫРКА", "isUnlocked": True, "day_full_energy": 166, "night_full_energy": 223, "day_remaining_energy": 100, "night_remaining_energy": 200},
+        {"id": 4, "name": "КРЕСТЫ", "isUnlocked": True, "day_full_energy": 519, "night_full_energy": 635, "day_remaining_energy": 519, "night_remaining_energy": 635},
+        {"id": 5, "name": "В.ЦЕНТРАЛ", "isUnlocked": True, "day_full_energy": 675, "night_full_energy": 848, "day_remaining_energy": 675, "night_remaining_energy": 848},
+    ]
+    masters_full = []
+    for mid in range(1, 17):
+        d = get_master_energy_details({
+            "id": mid,
+            "name": f"Мастер {mid}",
+            "checkpoints": [{"clicksRequired": 5, "energyCost": 2}, {"clicksRequired": 6, "energyCost": 2}],
+            "progress": {"currentCheckpoint": 0, "clicksInCheckpoint": 0, "level": 1},
+        })
+        masters_full.append({"id": mid, "name": f"Мастер {mid}", **d})
+        assert d["full_cycle_energy"] == 22
+        assert d["step_energy"] == 2
+
+    hub.update_slice(1, "prisons", {"success": True, "prisons": full_prisons, "masters": masters_full})
+
+    # Имитируем частичный/ошибочный ответ API (429 на КРЕСТЫ, Ночь у В.ЦЕНТРАЛ и мастеров)
+    degraded_prisons = [
+        {"id": 1, "name": "БУТЫРКА", "isUnlocked": True, "day_full_energy": 166, "night_full_energy": 223},
+        {"id": 4, "name": "КРЕСТЫ", "isUnlocked": True, "day_full_energy": 0, "night_full_energy": 0},
+        {"id": 5, "name": "В.ЦЕНТРАЛ", "isUnlocked": True, "day_full_energy": 675, "night_full_energy": 0},
+    ]
+    degraded_masters = [{"id": mid, "name": f"Мастер {mid}", "full_cycle_energy": 0} for mid in range(1, 17)]
+    _, entry = hub.update_slice(1, "prisons", {"success": True, "prisons": degraded_prisons, "masters": degraded_masters})
+
+    kresty = next(p for p in entry.data["prisons"] if p["id"] == 4)
+    vcentral = next(p for p in entry.data["prisons"] if p["id"] == 5)
+    assert kresty["day_full_energy"] == 519 and kresty["night_full_energy"] == 635
+    assert vcentral["day_full_energy"] == 675 and vcentral["night_full_energy"] == 848
+    assert all(m["full_cycle_energy"] == 22 for m in entry.data["masters"])
+
+
+@pytest.mark.asyncio
+async def test_prison_worker_xor_invariant_in_run_cycle(tmp_path):
+    from unittest.mock import AsyncMock
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from core.database import get_or_create_config, get_session, init_db
+    from workers.prison_worker import PrisonWorker
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'xor_worker.db'}")
+    await init_db(engine)
+
+    # Принудительно создаём конфликтное состояние в БД: оба флага True
+    cfg = await get_or_create_config(1, engine)
+    async with get_session(engine) as session:
+        cfg_db = await session.merge(cfg)
+        cfg_db.is_paused = False
+        cfg_db.auto_prison = True
+        cfg_db.auto_masters = True
+        cfg_db.master_target_id = 1
+        await session.commit()
+
+    prison_api = AsyncMock()
+    prison_api.get_all_prisons.return_value = {"prisons": [{"id": 1, "name": "БУТЫРКА", "isUnlocked": True}]}
+    prison_api.get_prison_state.return_value = {"data": {"dayCurrentCheckpoint": 0, "dayClicksInCheckpoint": 0}}
+    prison_api.get_checkpoints.return_value = {"data": [{"clicksRequired": 5, "energyCost": 10}]}
+    prison_api.do_prison_work.return_value = {"energy": 5}
+    prison_api.enter_master.return_value = {"checkpoints": [{"clicksRequired": 5, "energyCost": 2}], "data": {"progress": {"currentCheckpoint": 0}}}
+    prison_api.do_master_work.return_value = {"energy": 3}
+
+    player_api = AsyncMock()
+    player_api.init_player.return_value = {"energy": 15, "maxEnergy": 50}
+
+    worker = PrisonWorker(account_id=1, prison_api=prison_api, player_api=player_api, db_engine=engine, enable_jitter=False)
+    res = await worker.run_cycle()
+    assert res["status"] == "success"
+    prison_api.do_prison_work.assert_awaited()
+    prison_api.do_master_work.assert_not_awaited()
+
+    cfg_after = await get_or_create_config(1, engine)
+    assert cfg_after.auto_prison is True
+    assert cfg_after.auto_masters is False
+
+    # Переключаем только на auto_masters=True
+    async with get_session(engine) as session:
+        cfg_db = await session.merge(cfg_after)
+        cfg_db.auto_prison = False
+        cfg_db.auto_masters = True
+        await session.commit()
+
+    res_m = await worker.run_cycle()
+    assert res_m["status"] == "success"
+    prison_api.do_master_work.assert_awaited()
+    await engine.dispose()

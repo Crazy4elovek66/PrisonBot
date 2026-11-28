@@ -3390,3 +3390,56 @@ async def test_monthly_state_and_claim_endpoints(web_setup):
     assert r_claim.status_code == 200
     assert r_claim.json()["success"] is True
     bot_context.social_api.claim_monthly_reward.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_energy_target_xor_mutex_and_master_drain(web_setup):
+    from web.routes import bot_context
+
+    client, _ = web_setup
+    headers = {"X-Admin-Token": "test_admin_token"}
+
+    # 1. Включаем auto_prison -> auto_masters должен быть False
+    r1 = await client.patch("/api/v1/config", json={"auto_prison": True}, headers=headers)
+    assert r1.status_code == 200
+    c1 = r1.json()["config"]
+    assert c1["auto_prison"] is True
+    assert c1["auto_masters"] is False
+
+    # 2. Включаем auto_masters -> auto_prison автоматически выключается
+    r2 = await client.patch("/api/v1/config", json={"auto_masters": True}, headers=headers)
+    assert r2.status_code == 200
+    d2 = r2.json()["config"]
+    assert d2["auto_masters"] is True
+    assert d2["auto_prison"] is False
+    assert d2["disabled_conflict_target"] == "auto_prison"
+
+    # 3. Включаем auto_prison -> auto_masters автоматически выключается
+    r3 = await client.patch("/api/v1/config", json={"auto_prison": True}, headers=headers)
+    assert r3.status_code == 200
+    d3 = r3.json()["config"]
+    assert d3["auto_prison"] is True
+    assert d3["auto_masters"] is False
+    assert d3["disabled_conflict_target"] == "auto_masters"
+
+    # 4. Одновременная передача обоих True нормализуется к одному активному флагу
+    r4 = await client.patch("/api/v1/config", json={"auto_prison": True, "auto_masters": True}, headers=headers)
+    assert r4.status_code == 200
+    d4 = r4.json()["config"]
+    assert not (d4["auto_prison"] and d4["auto_masters"])
+
+    # 5. Ручной слив энергии у мастера
+    from unittest.mock import AsyncMock
+    bot_context.player_api = AsyncMock()
+    bot_context.prison_api = AsyncMock()
+    bot_context.prison_worker = None
+    bot_context.player_api.init_player.return_value = {"energy": 4, "maxEnergy": 50}
+    bot_context.prison_api.enter_master.return_value = {
+        "checkpoints": [{"clicksRequired": 5, "energyCost": 2}],
+        "data": {"progress": {"currentCheckpoint": 0, "clicksInCheckpoint": 0, "level": 0}},
+    }
+    bot_context.prison_api.do_master_work.side_effect = [{"energy": 2}, {"energy": 0}]
+    r_drain = await client.post("/api/v1/actions/master/drain", json={"masterId": 1}, headers=headers)
+    assert r_drain.status_code == 200
+    assert r_drain.json()["success"] is True
+    assert r_drain.json()["works_done"] == 2
