@@ -1,79 +1,139 @@
-# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ 2 ОСТАВШИХСЯ ПАДЕНИЙ ТЕСТОВ В GITHUB ACTIONS CI (320/320 GREEN)
+# ТЕХНИЧЕСКОЕ ЗАДАНИЕ: КОМПЛЕКСНЫЙ ПРОДУКТОВЫЙ АУДИТ PRISONBOT (АРХИТЕКТУРА, БЕЗОПАСНОСТЬ, НАДЕЖНОСТЬ, ПРОИЗВОДИТЕЛЬНОСТЬ И АНАЛИЗ ЗАДЕРЖКИ МС)
 
-Ты выступаешь в роли Senior Python / DevOps разработчика на проекте PrisonBot.
+Ты выступаешь в роли Principal Software Architect / Security & DevOps Auditor на проекте PrisonBot.
 
-**Анализ текущего состояния проекта:**
-- После прошлого фикса в GitHub Actions CI (`ubuntu-latest`, Python 3.11) уже проходят **318 из 320 тестов**.
-- Остались ровно **2 падения**, оба вызваны особенностями изоляции тестов в чистой Linux-среде без локальной БД:
-  1. `tests/test_improvements_v2.py::test_boss_victory_notification_web_and_telegram_formatting` - `BossWorker` создается без параметра `db_engine`, поэтому в чистом CI без локального `storage/prison_bot.db` падает с `sqlite3.OperationalError: no such table: action_logs` и `no such table: notifications`, из-за чего `worker._notified_victory_keys` остается пустым `set()`.
-  2. `tests/test_friend_outreach_worker.py::test_run_profile_enrichment_pass_and_429_backoff_and_coverage` - при добавлении кандидатов `6001` и `6002` подряд без явных значений `last_seen` / `total_damage` в Linux (микросекундная точность часов) `6002` получает чуть более свежую метку времени, сортировка по свежести ставит `6002` перед `6001`, в результате `authority = 90000` записывается в `6002`, а `6001` попадает на замоканный `RuntimeError("429 Too Many Requests")` и остается с `c1.authority == 0`.
+**Контекст и строгое ограничение режима работы:**
+- Проект PrisonBot развернут на VPS `178.17.60.16:/opt/prisonbot` (`prisonbot.service`), подключен автоматический CI/CD через `.github/workflows/deploy.yml` (320/320 тестов зеленые).
+- **СТРОГО READ-ONLY АУДИТ:** в рамках этой задачи **ЗАПРЕЩЕНО** изменять исходный код, конфиги, `.gitignore`, тесты, перезапускать `prisonbot.service` или делать коммиты/деплои. Если для диагностики нужны временные одноразовые команды - выполняй их через `python -c` / SSH без оставления мусорных файлов в репозитории и на VPS.
+- Никаких предположений «на глазок»: каждый вывод в отчете обязан опираться на точную проверку файла (`путь:строка`) или реальный вывод команды с локальной среды / VPS.
 
-Твоя задача - исправить оба теста (и проверить детерминированность сортировки в `core/database.py`), убедиться в отсутствии других тестов без `db_engine` и довести пакет `pytest` до гарантированных 100% в чистом Linux, чтобы следующий `git push` пользователя из VS Code впервые успешно провел автодеплой на VPS.
+Твоя задача - провести глубокий всесторонний аудит PrisonBot как готового коммерческого продукта (код, архитектура, логика воркеров, БД, фронтенд, безопасность, инфраструктура VPS + CI/CD, а также отдельный точный разбор задержки `мс` в правом верхнем углу HUD) и выдать структурированный отчет с конкретными доказательствами и приоритизированным планом исправлений (`P0` / `P1` / `P2`).
 
 ---
 
 ## 1. ЦЕЛЬ И БИЗНЕС-ТРЕБОВАНИЯ
 
-1. **Изолировать `test_boss_victory_notification_web_and_telegram_formatting` (`tests/test_improvements_v2.py`)**:
-   - Добавить фикстуру `tmp_path` в сигнатуру теста.
-   - Создать временную SQLite БД через `get_engine(f"sqlite+aiosqlite:///{(tmp_path / 'boss_victory_notif.db').as_posix()}")`, вызвать `await init_db(engine)` и при необходимости создать тестовый `Account(id=1, ...)`.
-   - Передать `db_engine=engine` в `BossWorker(...)`.
-   - Корректно закрыть движок (`await engine.dispose()`) в `finally`.
-2. **Сделать детерминированным `test_run_profile_enrichment_pass_and_429_backoff_and_coverage` (`tests/test_friend_outreach_worker.py`)**:
-   - Проверить точный `order_by` в `get_candidates_needing_profile_enrichment()` (`core/database.py`).
-   - В тесте явно задать для `6001` и `6002` одинаковые (или более высокий приоритет для `6001`, например фиксированный `last_seen` / `total_damage`) поля сортировки, чтобы на любой ОС (`Windows` и `Linux`) первым гарантированно выбирался `6001`, а вторым - `6002`.
-   - Корректно закрыть `await engine.dispose()` в конце теста.
-3. **Быстрый аудит остальных тестов на скрытую зависимость от локальной БД**:
-   - Проверить `tests/test_improvements_v2.py` и остальные файлы в `tests/` на создание `BossWorker`, `PrisonWorker`, `SocialWorker`, `FriendOutreachWorker`, `RoutineWorker`, `AuthProvider` без передачи `db_engine=engine` в тестах, которые дергают методы с записью в SQLite.
+Провести аудит по 7 обязательным направлениям и по каждому зафиксировать **сильные стороны**, **найденные проблемы / скрытые баги** и **конкретные рекомендации**:
+
+### 1.1. Глубокий разбор задержки `мс` в правом верхнем углу HUD (приоритетная тема)
+- Найти и проанализировать весь путь формирования числа и цвета индикатора пинга (сейчас у пользователя часто отображается желтым ~`311 мс`):
+  - фронтенд (`web/static/app.js`, `web/static/index.html`, `web/static/styles.css`): какой именно URL вызывается, как считается время (клиентский `performance.now()` или поле из JSON вроде `game_ping_ms`), как часто дергается, какие точные пороги цветов (`green` / `yellow` / `red`);
+  - бэкенд (`web/routes.py`, `core/server_health.py`, `client/http_client.py`): что происходит внутри `/api/v1/ping` (или используемого эндпоинта), есть ли кэш, дергается ли синхронно внешний игровой сервер, переиспользуется ли TCP/TLS keep-alive и HTTP/2;
+  - инфраструктура VPS (`178.17.60.16`): проверить конфиг Nginx для `/prison/` (HTTP/2, `proxy_http_version 1.1`, upstream keepalive, `gzip`/`brotli`, буферизация SSE).
+- Выполнить серию из 5-10 реальных замеров (в мс) на VPS:
+  1. `VPS -> oldprison-prod.luckygem.online` (холодный и прогретый keep-alive запрос к `/api/player/me`);
+  2. `127.0.0.1:8085 -> /api/v1/ping` (и внутренний `/`);
+  3. `https://zvezdoed.space/prison/api/v1/ping` (снаружи через Nginx).
+- Дать точный разложенный по миллисекундам ответ: **из чего складываются 311 мс** и **можно ли реально улучшить архитектуру (без фейковой подкрутки цифр), чтобы задержка стабильно находилась в зеленой зоне**.
+
+### 1.2. Живые баги и состояние прода на VPS (`178.17.60.16`)
+- Проанализировать `journalctl -u prisonbot.service -n 300 --no-pager` и `systemctl status prisonbot.service` + `systemctl cat prisonbot.service`:
+  - **Найти первопричину спама `POST /api/interaction/perform` -> `HTTP 400 Bad Request` («Ты уже сегодня качнул бицуху этому игроку»)**, зафиксированного в логах при последнем деплое: какой воркер/функция это вызывает, почему не кэширует/не останавливается после 400 и сколько лишних запросов в сутки уходит;
+  - **Найти первопричину `State 'stop-sigterm' timed out. Killing.` (`SIGKILL`)** при рестарте сервиса: что именно держит процесс при получении `SIGTERM` (SSE-стримы в `web/routes.py`, `APScheduler`, `Telethon`, `aiogram`, отсутствие `timeout_graceful_shutdown` в Uvicorn или `TimeoutStopSec` в systemd);
+  - проверить потребление CPU, RAM, свободное место на диске, размер `storage/prison_bot.db` (+ `-wal`/`-shm`), размер `/opt/prisonbot/backups/`, прогресс фонового обогащения общака (`obshak_coverage`), наличие `Traceback` / `429` / `5xx` за последние 24 часа.
+
+### 1.3. Архитектура, структура кода и технический долг
+- Оценить монолитные файлы и их связность (`web/static/app.js` ~488 КБ, `web/routes.py` ~338 КБ, `client/api/raids.py` ~79 КБ, `core/database.py` ~72 КБ, `core/drop_parser.py` ~52 КБ):
+  - выявить дублирующийся код, мертвый код (неиспользуемые функции/эндпоинты/переменные), глобальное мутабельное состояние (`bot_context`, модульные кэши) и риски гонок (`race conditions`);
+  - проверить загрузку тяжелых JSON-справочников (`storage/tattoo_clothing_cache.json` 8.7 МБ, `storage/bosses_catalog.json` 1.78 МБ): кэшируются ли они в памяти один раз или перечитываются с диска / блокируют event loop;
+  - проаудировать мусор в Git-репозитории (наличие `repomix-output.xml` на 51.8 МБ, `scratch/`, `desktop.ini`, `web/static/assets/icons/bot_logo.png` на 2.67 МБ, тяжелых PNG в `inf/` и `ref/`) и оценить, как это влияет на размер репо, CI и клиентский трафик.
+
+### 1.4. Логика воркеров, консистентность данных и обработка ошибок
+- Проверить все воркеры (`workers/*.py`) и `core/scheduler.py`:
+  - наличие `asyncio.Lock` / `max_instances=1` против наложения циклов;
+  - поведение при `401 Unauthorized` (самовосстановление токена в `AuthProvider`), `429 Too Many Requests` (backoff/circuit breaker), сетевых таймаутах и `5xx` от игры;
+  - проверить конкретные предупреждения из логов CI:
+    - `workers/social_worker.py:673` (`RuntimeWarning: coroutine ... was never awaited`);
+    - незакрытые соединения `aiosqlite` (`Event loop is closed`);
+    - `asyncio_default_fixture_loop_scope` в конфигурации `pytest`.
+  - проверить работу с SQLite (`core/database.py`, `core/models.py`): настройки `WAL`, `busy_timeout`, наличие индексов на часто фильтруемых колонках (`tracked_candidates`, `friend_outreach_history`, `action_logs`, `notifications`, `boss_battles`), рост таблиц логов/истории (есть ли автоочистка старых записей, чтобы БД не росла бесконечно).
+
+### 1.5. Безопасность (Security Audit)
+- Проверить все точки входа и данные:
+  - `web/auth.py` и `web/routes.py`: составить полный список всех эндпоинтов **без** проверки `X-Admin-Token` / Telegram initData и оценить, безопасно ли их оставлять открытыми; проверить сравнение токенов (используется ли `hmac.compare_digest`), защиту от брутфорса и CORS в `web/app.py`;
+  - фронтенд `web/static/app.js`: проверить опасные вставки в `innerHTML` с данными, приходящими из игры или Telegram-каналов (ники игроков, названия бригад, тексты новостей/рейдов) - есть ли реальные векторы XSS;
+  - `core/database.py`: проверить все `text(...)` / raw SQL запросы на риск SQL-инъекций;
+  - `core/asset_cache.py` и прокси-эндпоинты: проверить защиту от SSRF (можно ли через URL ассета заставить VPS обратиться к `127.0.0.1` или внутренним сервисам `crayfish_omni_hub` / `autoclip_service`) и Path Traversal (`../`);
+  - логи и секреты: проверить, не утекают ли JWT, `initData`, `ADMIN_TOKEN`, `BOT_TOKEN` в `journalctl`, `action_logs`, `git log` или ответы API; проверить права на `.env`, `storage/`, `/root/.ssh/` на VPS.
+
+### 1.6. Фронтенд, UX и производительность клиента
+- Проверить `web/static/index.html`, `styles.css`, `app.js`, `sw.js`:
+  - объем загрузки при первом открытии (размер несжатых и gzip-ассетов, количество параллельных запросов при старте, утечки слушателей/таймеров `setInterval` или SSE переподключений);
+  - согласованность версий кэша, работу Service Worker при обновлении через CI/CD (как быстро клиент получает новый `app.js` без `Ctrl+Shift+R`);
+  - риски деградации рендера на больших списках (400+ игроков в «Активных игроках», 150+ корешей в аудите).
+
+### 1.7. Инфраструктура, CI/CD и отказоустойчивость
+- Проверить `.github/workflows/deploy.yml`:
+  - надежность шага `deploy`, поведение при падении `pip install` или `systemctl restart` (нужен ли автооткат `git reset --hard <prev_commit>` при провале health-check);
+  - надежность стратегии бэкапов SQLite (локальные бэкапы vs внешний бэкап, корректность копирования БД в WAL-режиме: `cp` vs `sqlite3 .backup`, чтобы не получить битый бэкап при активной записи!).
 
 ---
 
 ## 2. КОНФИГУРАЦИЯ
 
-### 2.1. Файлы для изменения
-- `tests/test_improvements_v2.py` - изолировать `test_boss_victory_notification_web_and_telegram_formatting` с временной БД (`tmp_path`, `init_db`, `db_engine=engine`).
-- `tests/test_friend_outreach_worker.py` - задать явные детерминированные поля сортировки (`last_seen`, `total_damage`) для `6001` и `6002` в `test_run_profile_enrichment_pass_and_429_backoff_and_coverage`.
-- `core/database.py` - только при необходимости уточнить tie-breaker в `get_candidates_needing_profile_enrichment()`.
+### 2.1. Объекты аудита (только чтение)
+- **Локальный репозиторий:**
+  - `.github/workflows/deploy.yml`, `.gitignore`, `requirements.txt`, `main.py`
+  - `core/`: `config.py`, `database.py`, `models.py`, `scheduler.py`, `server_health.py`, `state_hub.py`, `asset_cache.py`, `drop_parser.py`
+  - `client/`: `http_client.py`, `auth_provider.py`, `client/api/*.py`
+  - `workers/*.py`, `telegram/*.py`, `bot/*.py`
+  - `web/`: `app.py`, `auth.py`, `routes.py`, `web/static/index.html`, `styles.css`, `app.js`, `sw.js`
+  - `tests/*.py`
+- **Живой VPS (`178.17.60.16:/opt/prisonbot`):**
+  - `systemctl status prisonbot.service`, `systemctl cat prisonbot.service`, `journalctl -u prisonbot.service`
+  - конфигурация Nginx для `zvezdoed.space`
+  - SQLite `/opt/prisonbot/storage/prison_bot.db` (только `SELECT` / `PRAGMA` / размеры таблиц, никаких `UPDATE`/`DELETE`!)
+  - метрики ОС (`free -h`, `df -h`, `ps aux`, `du -sh /opt/prisonbot/*`)
 
-### 2.2. Ограничения
-- **НЕ запускать ручной деплой на VPS** и не трогать боевые файлы на сервере - выкатку выполнит сам GitHub Actions после `git push` пользователя из VS Code.
-- **НЕ удалять** `reference_archive/`, скрипты `deploy_*.py` и не изменять правила `.gitignore` для `storage/*.json`.
+### 2.2. Жесткие ограничения безопасности аудита
+- **НИЧЕГО не редактировать и не удалять** ни локально, ни на VPS.
+- **НЕ перезапускать** `prisonbot.service` и не трогать соседние контейнеры (`crayfish_omni_hub`, `autoclip_service`).
+- **НЕ выводить** в отчет реальные значения секретов, токенов, паролей, ключей и `initData`.
 
 ---
 
 ## 3. ЛОГИКА / АРХИТЕКТУРА
 
-1. В `tests/test_improvements_v2.py::test_boss_victory_notification_web_and_telegram_formatting`:
-   - использовать ту же схему создания временной БД, что и в `tests/test_boss_worker.py::test_boss_defeat_hp_cascade_all_cases` (`get_engine` -> `init_db` -> `Account` -> `BossWorker(..., db_engine=engine)` -> `finally: await engine.dispose()`);
-   - убедиться, что `ActionLog` и `Notification` успешно записываются во временную БД, `boss_claim_sess_39` попадает в `worker._notified_victory_keys`, а уведомление в `sent_msgs` формируется корректно.
-2. В `tests/test_friend_outreach_worker.py::test_run_profile_enrichment_pass_and_429_backoff_and_coverage`:
-   - явно передать одинаковый `now_dt = datetime.utcnow()` (или `last_seen` для `6001` на 10 секунд свежее, чем для `6002`) и явный `total_damage`, чтобы `get_candidates_needing_profile_enrichment()` при любом разрешении таймера ОС (включая `ubuntu-latest`) всегда возвращал `[6001, 6002]`;
-   - проверить, что `c1.authority == 90000`, `c1.obshak_type == "vor"`, `c1.brigade_name == "TopClan"`, а `6002` остается `"unknown"` после `429`.
+### 3.1. Формат итогового отчета аудита
+По результатам проверки сформируй подробный, конкретный отчет (без воды и общих фраз) со следующей структурой:
+1. **Исполнительное резюме (Executive Summary):** общая оценка готовности проекта по шкале 1-10 по 6 осям (Архитектура, Надежность/Стабильность, Производительность, Безопасность, Качество кода/Тесты, DevOps/Инфраструктура) и главные сильные стороны.
+2. **Детальный разбор задержки `мс` (HUD пинг):**
+   - точные ссылки `файл:строка` на расчет на клиенте и сервере + текущие цветовые пороги;
+   - таблица живых замеров с VPS (`VPS -> Игра`, `localhost -> /ping`, `HTTPS -> /ping`);
+   - точный ответ, почему отображается ~`311 мс` (желтый) и конкретный инженерный план, как снизить задержку и сделать индикатор честным и зеленым.
+3. **Реестр найденных проблем по критичности:**
+   - **P0 (Критично - баги на проде, риски бана/потери данных/безопасности):** для каждой проблемы указать `файл:строка` (или лог VPS), точное описание причины, реальный риск и конкретный способ фикса.
+   - **P1 (Важно - производительность, стабильность, UX, технический долг):** в том же формате.
+   - **P2 (Улучшения - масштабируемость, рефакторинг, чистота репозитория):** в том же формате.
+4. **Карта состояния VPS и SQLite:** размеры таблиц, индексы, CPU/RAM/диск, статус `obshak_coverage`, анализ `stop-sigterm` и `interaction/perform` 400.
+5. **Дорожная карта исправлений (по спринтам):** какие задачи сгруппировать в Спринт 1 (быстрые критичные фиксы P0 + пинг), Спринт 2 (надежность/безопасность/БД) и Спринт 3 (рефакторинг монолитов и чистка репозитория).
 
 ---
 
 ## 4. ТЕСТИРОВАНИЕ
 
-1. Проверить оба исправленных теста в изоляции (и убедиться, что тест в `test_improvements_v2.py` проходит даже при отсутствии/недоступности дефолтного `storage/prison_bot.db`).
-2. Проверить синтаксис JS (`node --check web/static/app.js`, `node --check web/static/sw.js`).
-3. Прогнать весь пакет `python -m pytest -q tests/` - ожидается `320 passed` (0 failed).
+В рамках read-only аудита выполнить только диагностические (не модифицирующие) проверки:
+1. Проанализировать текущие предупреждения при прогоне `pytest` (без изменения файлов).
+2. Проверить качество и пробелы тестового покрытия (какие критические модули или сценарии отказа - например `429`, `401`, graceful shutdown, XSS/SSRF, SQLite lock - сейчас не покрыты тестами).
+3. Выполнить статические проверки: поиск небезопасных `innerHTML`, поиск `except Exception: pass` (проглатывание ошибок), поиск блокирующих вызовов внутри `async def` (`time.sleep`, `open`/`read_text` больших файлов, синхронный `requests`), поиск неэкранированного SQL.
 
 ---
 
 ## 5. ПОРЯДОК РЕАЛИЗАЦИИ ДЛЯ АГЕНТА
 
 ### Чеклист выполнения
-- [ ] 1. Исправить `tests/test_improvements_v2.py::test_boss_victory_notification_web_and_telegram_formatting` - подключить временную БД через `tmp_path`, `init_db(engine)` и передать `db_engine=engine` в `BossWorker(...)`.
-- [ ] 2. Исправить `tests/test_friend_outreach_worker.py::test_run_profile_enrichment_pass_and_429_backoff_and_coverage` - задать явные детерминированные значения `last_seen` / `total_damage` для `6001` и `6002` (и проверить `order_by` в `core/database.py::get_candidates_needing_profile_enrichment`).
-- [ ] 3. Быстро проверить остальные тесты в `tests/` на отсутствие обращений к дефолтной БД без `db_engine`.
-- [ ] 4. Запустить целевые тесты, `node --check` и полный `python -m pytest -q tests/`, убедиться в `0 failed`.
-- [ ] 5. Проверить `git status` (убедиться, что в изменениях только нужные файлы и нет временного мусора) и сообщить пользователю, что можно делать **Фиксация + Push** в VS Code для запуска зеленого CI/CD автодеплоя.
+- [ ] 1. Провести аудит задержки `мс` в коде (`web/static/app.js`, `web/routes.py`, `core/server_health.py`, `client/http_client.py`) и в Nginx на VPS, выполнить серию живых замеров RTT (`VPS -> Game`, `127.0.0.1:8085`, `https://zvezdoed.space/prison/`).
+- [ ] 2. Провести живой аудит VPS (`178.17.60.16:/opt/prisonbot`): `journalctl`, `systemctl`, первопричина спама `interaction/perform` 400, первопричина `stop-sigterm` -> `SIGKILL`, ресурсы ОС, размеры таблиц и WAL-режим SQLite, статус `obshak_coverage`.
+- [ ] 3. Провести аудит архитектуры, воркеров (`workers/*.py`, `core/scheduler.py`), `core/database.py` (индексы, транзакции, рост таблиц, `busy_timeout`), причин warnings в `pytest` (`social_worker.py:673`, `aiosqlite`).
+- [ ] 4. Провести аудит безопасности (`web/auth.py`, незащищенные роуты в `web/routes.py`, XSS через `innerHTML` в `web/static/app.js`, SSRF/Path Traversal в `core/asset_cache.py`, raw SQL, утечки в логи, права файлов на VPS).
+- [ ] 5. Провести аудит фронтенда (`app.js`, `styles.css`, `sw.js`, размеры ассетов), Git-репозитория (тяжелые/лишние файлы вроде `repomix-output.xml`, `bot_logo.png`, `scratch/`) и `.github/workflows/deploy.yml` (включая безопасность бэкапа SQLite в WAL-режиме и отсутствие автоотката).
+- [ ] 6. Убедиться через `git status`, что локальный репозиторий полностью чист (ни один файл не был изменен или создан), и предоставить структурированный отчет аудита по формату из раздела 3.1.
 
-### Команды проверки
+### Диагностические команды (read-only)
 ```bash
+git status
+git ls-files | xargs -r ls -lh 2>/dev/null | sort -k5 -hr | head -n 25
 node --check web/static/app.js
 node --check web/static/sw.js
-python -m pytest tests/test_friend_outreach_worker.py tests/test_improvements_v2.py -v
 python -m pytest -q tests/
-git status
 ```
